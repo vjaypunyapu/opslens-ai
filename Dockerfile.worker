@@ -1,0 +1,41 @@
+# ─── Build stage ──────────────────────────────────────────────────────────────
+FROM python:3.11-slim AS builder
+
+WORKDIR /build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --upgrade pip && \
+    pip wheel --no-cache-dir --no-deps --wheel-dir /build/wheels -r requirements.txt
+
+# ─── Runtime stage ────────────────────────────────────────────────────────────
+FROM python:3.11-slim AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    APP_ENV=production \
+    C_FORCE_ROOT=0
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /build/wheels /wheels
+RUN pip install --no-cache /wheels/*
+
+COPY apps/ apps/
+COPY migrations/ migrations/
+
+RUN addgroup --system opslens && adduser --system --ingroup opslens opslens
+USER opslens
+
+# Default: run the ingestion + insight worker
+# Override CMD to run beat scheduler: celery -A apps.worker.celery_app beat --loglevel=info
+CMD ["celery", "-A", "apps.worker.celery_app", "worker", \
+     "--loglevel=info", "--concurrency=4", \
+     "-Q", "ingestion,insights,alerts"]

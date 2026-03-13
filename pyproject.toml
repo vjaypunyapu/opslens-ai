@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "opslens-ai"
+version = "0.1.0"
+description = "OpsLens AI — Operational Intelligence Copilot"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+authors = [{ name = "OpsLens Team" }]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["apps*"]
+
+# ─── Pytest ───────────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+asyncio_mode     = "auto"
+testpaths        = ["tests"]
+python_files     = ["test_*.py"]
+python_classes   = ["Test*"]
+python_functions = ["test_*"]
+addopts          = "-v --tb=short"
+
+# ─── Ruff ─────────────────────────────────────────────────────────────────────
+[tool.ruff]
+target-version = "py311"
+line-length    = 100
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501", "B008"]   # long lines OK in SQL strings; B008 = FastAPI Depends()
+exclude = ["migrations/"]
+
+[tool.ruff.isort]
+known-first-party = ["apps"]
+
+# ─── Black ────────────────────────────────────────────────────────────────────
+[tool.black]
+line-length    = 100
+target-version = ["py311"]
+exclude        = "migrations/"
+
+# ─── Mypy ─────────────────────────────────────────────────────────────────────
+[tool.mypy]
+python_version         = "3.11"
+strict                 = false
+ignore_missing_imports = true
+exclude                = ["migrations/"]
+
+# ─── Coverage ─────────────────────────────────────────────────────────────────
+[tool.coverage.run]
+source   = ["apps"]
+omit     = ["*/tests/*", "migrations/*"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under   = 70
