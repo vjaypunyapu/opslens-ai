@@ -1,0 +1,41 @@
+# ─── Build stage ──────────────────────────────────────────────────────────────
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+# Copy package files first for layer caching
+COPY apps/web/package.json apps/web/package-lock.json* ./
+
+RUN npm ci --legacy-peer-deps
+
+COPY apps/web/ .
+
+# Build requires env vars at build time
+ARG NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+ARG NEXT_PUBLIC_API_URL=http://api:8000
+
+ENV NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+
+RUN npm run build
+
+# ─── Runtime stage ────────────────────────────────────────────────────────────
+FROM node:20-alpine AS runtime
+
+ENV NODE_ENV=production
+
+WORKDIR /app
+
+RUN addgroup --system nextjs && adduser --system --ingroup nextjs nextjs
+
+COPY --from=builder /app/public ./public
+COPY --from=builder --chown=nextjs:nextjs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nextjs /app/.next/static ./.next/static
+
+USER nextjs
+
+EXPOSE 3000
+ENV PORT=3000
+ENV HOSTNAME="0.0.0.0"
+
+CMD ["node", "server.js"]
