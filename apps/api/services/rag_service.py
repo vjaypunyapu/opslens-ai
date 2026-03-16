@@ -172,8 +172,17 @@ class RagService:
             retriever = self.get_retriever(tenant_id, source_types)
             lc_history = self._build_history(history)
 
-            # Retrieve relevant documents (non-streaming pre-fetch)
-            docs = await retriever.ainvoke(question)
+            # Retrieve relevant documents (non-streaming pre-fetch).
+            # If the Qdrant collection doesn't exist yet (no data synced), treat as empty.
+            try:
+                docs = await retriever.ainvoke(question)
+            except Exception as qdrant_exc:
+                msg = str(qdrant_exc).lower()
+                if "not found" in msg or "doesn't exist" in msg or "collection" in msg:
+                    logger.warning("Qdrant collection not found for tenant=%s — no data synced yet", tenant_id)
+                    docs = []
+                else:
+                    raise
             context_str = self._format_docs(docs)
 
             logger.debug("Retrieved %d docs for tenant=%s query_preview='%s'",

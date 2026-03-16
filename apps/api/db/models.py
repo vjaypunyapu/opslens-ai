@@ -12,6 +12,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     Numeric,
+    SmallInteger,
     String,
     Text,
     UniqueConstraint,
@@ -244,7 +245,7 @@ class ChatMessage(Base):
     sources: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
     token_count: Mapped[int | None] = mapped_column(Integer)
     latency_ms: Mapped[int | None] = mapped_column(Integer)
-    feedback: Mapped[str | None] = mapped_column(String(20))  # thumbs_up | thumbs_down
+    feedback: Mapped[int | None] = mapped_column(SmallInteger)  # 1 = thumbs_up, -1 = thumbs_down
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     session: Mapped[ChatSession] = relationship("ChatSession", back_populates="messages")

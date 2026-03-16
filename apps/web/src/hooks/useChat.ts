@@ -144,6 +144,8 @@ export function useChat(sessionId: string) {
       } finally {
         setIsStreaming(false);
         abortRef.current = null;
+        // Notify the layout to refresh session list so title shows up after first message
+        window.dispatchEvent(new CustomEvent("opslens:session-updated"));
       }
     },
     [sessionId, isStreaming, getToken],

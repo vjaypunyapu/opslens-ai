@@ -14,15 +14,29 @@ export default function ChatLayout({ children }: { children: React.ReactNode }) 
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [creating, setCreating] = useState(false);
 
+  const refreshSessions = async () => {
+    const token = await getToken();
+    const res = await fetch("/api/v1/chat/sessions", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (res.ok) setSessions(await res.json());
+  };
+
   useEffect(() => {
-    (async () => {
-      const token = await getToken();
-      const res = await fetch("/api/v1/chat/sessions", {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (res.ok) setSessions(await res.json());
-    })();
-  }, [getToken]);
+    refreshSessions();
+  }, [getToken]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Re-fetch sessions whenever the URL changes (user sends first message → title gets set)
+  useEffect(() => {
+    refreshSessions();
+  }, [pathname]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Listen for a custom event fired by the chat page after the first message is sent
+  useEffect(() => {
+    const handler = () => refreshSessions();
+    window.addEventListener("opslens:session-updated", handler);
+    return () => window.removeEventListener("opslens:session-updated", handler);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const createSession = async () => {
     setCreating(true);

@@ -266,7 +266,7 @@ async def submit_feedback(
     msg = result.scalar_one_or_none()
     if not msg:
         raise HTTPException(status_code=404, detail="Message not found")
-    msg.feedback = "thumbs_up" if body.score == 1 else "thumbs_down"
+    msg.feedback = body.score  # SMALLINT: 1 = thumbs_up, -1 = thumbs_down
     await db.commit()
     logger.info("Feedback %s on message %s", msg.feedback, body.message_id)
 
@@ -303,6 +303,6 @@ def _message_to_out(m: ChatMessage) -> MessageOut:
         role=m.role,
         content=m.content,
         source_doc_ids=source_ids,
-        feedback=int(m.feedback) if m.feedback and str(m.feedback).lstrip("-").isdigit() else None,
+        feedback=m.feedback,  # already SMALLINT (int | None)
         created_at=m.created_at.isoformat(),
     )
