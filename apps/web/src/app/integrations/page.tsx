@@ -29,7 +29,7 @@ const CREDENTIAL_FIELDS: Record<string, CredentialField[]> = {
   github: [
     { key: "access_token", label: "Personal Access Token", placeholder: "ghp_...", type: "password",
       hint: "Generate at GitHub → Settings → Developer settings → Personal access tokens" },
-    { key: "org",          label: "Organization / User",   placeholder: "your-org-or-username" },
+    { key: "org",          label: "Organization or Username (optional)", placeholder: "e.g. my-org or johndoe", hint: "Your GitHub username or org name — NOT your email. Leave blank to sync your own repos." },
   ],
   google_drive: [
     { key: "service_account_json", label: "Service Account JSON", placeholder: '{"type":"service_account",...}', type: "password",

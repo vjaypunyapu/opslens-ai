@@ -155,7 +155,7 @@ async def _save_and_embed(record: RawRecord, tenant_id: str) -> None:
 # ── GitHub fetcher ────────────────────────────────────────────────────────────
 async def _fetch_github(creds: dict, tenant_id: str, integration_id: str) -> int:
     token = creds.get("access_token", "")
-    org   = creds.get("org", "")
+    org   = (creds.get("org") or "").strip()
     if not token:
         raise ValueError("GitHub access_token missing from credentials")
 
@@ -167,15 +167,35 @@ async def _fetch_github(creds: dict, tenant_id: str, integration_id: str) -> int
     records: list[RawRecord] = []
 
     async with httpx.AsyncClient(headers=headers, timeout=30) as client:
-        # List repos (org or user)
-        if org:
-            repos_resp = await client.get(f"https://api.github.com/orgs/{org}/repos",
-                                          params={"per_page": 30, "sort": "updated"})
-        else:
-            repos_resp = await client.get("https://api.github.com/user/repos",
-                                          params={"per_page": 30, "sort": "updated"})
-        repos_resp.raise_for_status()
-        repos = repos_resp.json()
+        # Resolve repos: try org endpoint first if provided, fall back to user repos.
+        # An email address in the org field (common mistake) will 404/401 — handled gracefully.
+        repos: list[dict] = []
+        if org and "@" not in org:  # skip if user accidentally entered an email
+            org_resp = await client.get(
+                f"https://api.github.com/orgs/{org}/repos",
+                params={"per_page": 30, "sort": "updated"},
+            )
+            if org_resp.status_code == 200:
+                repos = org_resp.json()
+            else:
+                # Could be a user login, not an org — try user endpoint
+                user_resp = await client.get(
+                    f"https://api.github.com/users/{org}/repos",
+                    params={"per_page": 30, "sort": "updated"},
+                )
+                if user_resp.status_code == 200:
+                    repos = user_resp.json()
+                else:
+                    logger.warning("GitHub: could not fetch repos for org/user '%s' (status %s) — falling back to token owner's repos", org, org_resp.status_code)
+
+        if not repos:
+            # Fall back to the authenticated user's own repos
+            user_repos_resp = await client.get(
+                "https://api.github.com/user/repos",
+                params={"per_page": 30, "sort": "updated", "affiliation": "owner,collaborator"},
+            )
+            user_repos_resp.raise_for_status()
+            repos = user_repos_resp.json()
 
         for repo in repos[:10]:  # cap at 10 repos per sync
             repo_name  = repo["full_name"]
