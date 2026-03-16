@@ -176,17 +176,17 @@ class RagService:
             # If the Qdrant collection doesn't exist yet (no data synced), treat as empty.
             try:
                 docs = await retriever.ainvoke(question)
+                logger.info("RAG: retrieved %d docs for tenant=%s query_preview='%s'",
+                            len(docs), tenant_id, question[:80])
             except Exception as qdrant_exc:
                 msg = str(qdrant_exc).lower()
+                logger.error("RAG: Qdrant retrieval error for tenant=%s: %s", tenant_id, qdrant_exc, exc_info=True)
                 if "not found" in msg or "doesn't exist" in msg or "collection" in msg:
                     logger.warning("Qdrant collection not found for tenant=%s — no data synced yet", tenant_id)
                     docs = []
                 else:
                     raise
             context_str = self._format_docs(docs)
-
-            logger.debug("Retrieved %d docs for tenant=%s query_preview='%s'",
-                         len(docs), tenant_id, question[:80])
 
             # Build and run the LCEL chain
             chain = (
