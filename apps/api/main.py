@@ -171,6 +171,18 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE opslens.integrations "
                 "ADD COLUMN IF NOT EXISTS airbyte_source_id VARCHAR(255)"
             ))
+            await conn.execute(sa.text(
+                "ALTER TABLE opslens.integrations "
+                "ADD COLUMN IF NOT EXISTS config JSONB"
+            ))
+            await conn.execute(sa.text(
+                "ALTER TABLE opslens.integrations "
+                "ADD COLUMN IF NOT EXISTS total_records BIGINT NOT NULL DEFAULT 0"
+            ))
+            await conn.execute(sa.text(
+                "ALTER TABLE opslens.integrations "
+                "ADD COLUMN IF NOT EXISTS error_message TEXT"
+            ))
 
             # alert_rules: schema redesigned — original used different names/types
             await conn.execute(sa.text(

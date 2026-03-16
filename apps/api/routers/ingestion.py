@@ -120,8 +120,8 @@ async def connect_integration(
             detail=f"Integration for '{body.source_type}' already exists. Delete it first.",
         )
 
-    # Create Airbyte connection
-    airbyte_conn_id = await _create_airbyte_connection(body.source_type, body.config, body.credentials)
+    # Create Airbyte connection (returns None if Airbyte not configured — that's fine for dev)
+    airbyte_connection_id = await _create_airbyte_connection(body.source_type, body.config, body.credentials)
 
     # Encrypt credentials before storage
     encrypted = encrypt_credentials(body.credentials)
@@ -130,17 +130,19 @@ async def connect_integration(
         id=str(uuid.uuid4()),
         tenant_id=ctx.tenant_id,
         source_type=body.source_type,
-        airbyte_conn_id=airbyte_conn_id,
+        airbyte_connection_id=airbyte_connection_id,
         status="active",
         credentials=encrypted,
         config=body.config,
+        total_records=0,
     )
     db.add(integration)
     await db.commit()
     await db.refresh(integration)
 
-    # Trigger initial sync in background
-    background_tasks.add_task(_trigger_airbyte_sync, airbyte_conn_id, str(integration.id))
+    # Trigger initial sync in background (no-op if no Airbyte connection)
+    if airbyte_connection_id:
+        background_tasks.add_task(_trigger_airbyte_sync, airbyte_connection_id, str(integration.id))
     logger.info("Integration %s created for tenant %s", body.source_type, ctx.tenant_id)
 
     return _integration_to_out(integration)
@@ -156,8 +158,8 @@ async def disconnect_integration(
     """Disconnect an integration and delete its Airbyte connection."""
     integration = await _get_integration_or_404(db, integration_id, ctx.tenant_id)
 
-    if integration.airbyte_conn_id:
-        await _delete_airbyte_connection(integration.airbyte_conn_id)
+    if integration.airbyte_connection_id:
+        await _delete_airbyte_connection(integration.airbyte_connection_id)
 
     await db.delete(integration)
     await db.commit()
@@ -175,11 +177,11 @@ async def trigger_sync(
     """Trigger an immediate manual re-sync via Airbyte."""
     integration = await _get_integration_or_404(db, integration_id, ctx.tenant_id)
 
-    if not integration.airbyte_conn_id:
+    if not integration.airbyte_connection_id:
         raise HTTPException(status_code=400, detail="No Airbyte connection associated.")
 
     background_tasks.add_task(
-        _trigger_airbyte_sync, integration.airbyte_conn_id, integration_id
+        _trigger_airbyte_sync, integration.airbyte_connection_id, integration_id
     )
     return {"message": "Sync triggered", "integration_id": integration_id}
 
@@ -199,7 +201,7 @@ async def get_sync_status(
         last_synced_at=integration.last_synced_at.isoformat() if integration.last_synced_at else None,
         total_records=integration.total_records or 0,
         error_message=integration.error_message,
-        airbyte_connection_id=integration.airbyte_conn_id,
+        airbyte_connection_id=integration.airbyte_connection_id,
     )
 
 
@@ -231,7 +233,7 @@ async def airbyte_webhook(
 
     # Find the integration by Airbyte connection ID
     result = await db.execute(
-        sa.select(Integration).where(Integration.airbyte_conn_id == connection_id)
+        sa.select(Integration).where(Integration.airbyte_connection_id == connection_id)
     )
     integration = result.scalar_one_or_none()
     if not integration:

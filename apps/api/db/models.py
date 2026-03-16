@@ -86,8 +86,11 @@ class Integration(Base):
     airbyte_connection_id: Mapped[str | None] = mapped_column(String(255))
     airbyte_source_id: Mapped[str | None] = mapped_column(String(255))
     credentials: Mapped[dict[str, Any] | None] = mapped_column(JSONB)  # AES-256 encrypted
+    config: Mapped[dict[str, Any] | None] = mapped_column(JSONB)       # Source-specific config
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="pending")
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    total_records: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    error_message: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

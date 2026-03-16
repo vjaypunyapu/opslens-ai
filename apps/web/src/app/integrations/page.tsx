@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
-import { RefreshCw, Plug, CheckCircle2, XCircle, Clock, AlertCircle } from "lucide-react";
+import { RefreshCw, Plug, CheckCircle2, XCircle, Clock, AlertCircle, X } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { toast } from "sonner";
 import { AppShell } from "@/components/layout/AppShell";
@@ -11,6 +11,188 @@ import { Integration, SourceType } from "@/types";
 import { integrationsApi } from "@/lib/api";
 
 type StatusVariant = "active" | "pending" | "error" | "disconnected";
+
+// ── Credential field definitions per source ───────────────────────────────────
+type CredentialField = { key: string; label: string; placeholder: string; type?: string; hint?: string };
+
+const CREDENTIAL_FIELDS: Record<string, CredentialField[]> = {
+  jira: [
+    { key: "server_url",  label: "Jira Server URL",  placeholder: "https://yourcompany.atlassian.net", hint: "Your Atlassian Cloud URL" },
+    { key: "email",       label: "Account Email",    placeholder: "you@company.com" },
+    { key: "api_token",   label: "API Token",        placeholder: "Paste your Atlassian API token", type: "password",
+      hint: "Generate at id.atlassian.com → Security → API tokens" },
+  ],
+  slack: [
+    { key: "bot_token",   label: "Bot Token",        placeholder: "xoxb-...", type: "password",
+      hint: "From your Slack App → OAuth & Permissions → Bot User OAuth Token" },
+  ],
+  github: [
+    { key: "access_token", label: "Personal Access Token", placeholder: "ghp_...", type: "password",
+      hint: "Generate at GitHub → Settings → Developer settings → Personal access tokens" },
+    { key: "org",          label: "Organization / User",   placeholder: "your-org-or-username" },
+  ],
+  google_drive: [
+    { key: "service_account_json", label: "Service Account JSON", placeholder: '{"type":"service_account",...}', type: "password",
+      hint: "Paste the full JSON key file from Google Cloud Console → IAM → Service Accounts" },
+  ],
+  zendesk: [
+    { key: "subdomain",  label: "Subdomain",    placeholder: "yourcompany (from yourcompany.zendesk.com)" },
+    { key: "email",      label: "Agent Email",  placeholder: "agent@company.com" },
+    { key: "api_token",  label: "API Token",    placeholder: "Paste your Zendesk API token", type: "password",
+      hint: "Generate at Zendesk Admin → Apps & Integrations → Zendesk API" },
+  ],
+  hubspot: [
+    { key: "access_token", label: "Private App Token", placeholder: "pat-na1-...", type: "password",
+      hint: "Generate at HubSpot → Settings → Integrations → Private Apps" },
+  ],
+  elasticsearch: [
+    { key: "url",      label: "Elasticsearch URL", placeholder: "https://your-cluster:9200" },
+    { key: "username", label: "Username",           placeholder: "elastic" },
+    { key: "password", label: "Password",           placeholder: "••••••••", type: "password" },
+  ],
+  datadog: [
+    { key: "api_key", label: "API Key",         placeholder: "Paste your Datadog API key",         type: "password" },
+    { key: "app_key", label: "Application Key", placeholder: "Paste your Datadog application key", type: "password" },
+    { key: "site",    label: "Site",             placeholder: "datadoghq.com", hint: "e.g. datadoghq.com or datadoghq.eu" },
+  ],
+  cloudwatch: [
+    { key: "aws_access_key_id",     label: "AWS Access Key ID",     placeholder: "AKIA..." },
+    { key: "aws_secret_access_key", label: "AWS Secret Access Key", placeholder: "wJalr...", type: "password" },
+    { key: "region",                label: "AWS Region",            placeholder: "us-east-1" },
+  ],
+  splunk: [
+    { key: "host",        label: "Splunk Host",        placeholder: "https://your-splunk:8089" },
+    { key: "username",    label: "Username",            placeholder: "admin" },
+    { key: "password",    label: "Password",            placeholder: "••••••••", type: "password" },
+  ],
+  azure_monitor: [
+    { key: "tenant_id",       label: "Tenant ID",       placeholder: "Azure AD Tenant ID" },
+    { key: "client_id",       label: "Client ID",       placeholder: "App Registration Client ID" },
+    { key: "client_secret",   label: "Client Secret",   placeholder: "••••••••", type: "password" },
+    { key: "subscription_id", label: "Subscription ID", placeholder: "Azure Subscription ID" },
+  ],
+  gcp_logging: [
+    { key: "service_account_json", label: "Service Account JSON", placeholder: '{"type":"service_account",...}', type: "password",
+      hint: "Paste the GCP service account JSON key" },
+    { key: "project_id", label: "GCP Project ID", placeholder: "my-gcp-project" },
+  ],
+};
+
+// ── Credentials Modal ─────────────────────────────────────────────────────────
+function CredentialsModal({
+  sourceType,
+  onSubmit,
+  onCancel,
+  submitting,
+}: {
+  sourceType: SourceType;
+  onSubmit: (creds: Record<string, string>) => void;
+  onCancel: () => void;
+  submitting: boolean;
+}) {
+  const fields = CREDENTIAL_FIELDS[sourceType] ?? [];
+  const [values, setValues] = useState<Record<string, string>>(() =>
+    Object.fromEntries(fields.map((f) => [f.key, ""]))
+  );
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const missing = fields.filter((f) => !values[f.key]?.trim());
+    if (missing.length) {
+      toast.error(`Please fill in: ${missing.map((f) => f.label).join(", ")}`);
+      return;
+    }
+    onSubmit(values);
+  };
+
+  return (
+    <div style={{
+      position: "fixed", inset: 0, zIndex: 50,
+      background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)",
+      display: "flex", alignItems: "center", justifyContent: "center", padding: "1rem",
+    }}>
+      <div style={{
+        background: "#1e293b", border: "1px solid rgba(255,255,255,0.1)",
+        borderRadius: "1rem", padding: "1.5rem", width: "100%", maxWidth: "480px",
+        boxShadow: "0 25px 50px rgba(0,0,0,0.5)",
+      }}>
+        {/* Header */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "1.25rem" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "0.625rem" }}>
+            <span style={{ fontSize: "1.5rem" }}>{SOURCE_TYPE_ICONS[sourceType]}</span>
+            <div>
+              <h2 style={{ color: "#f1f5f9", fontSize: "1rem", fontWeight: 600, margin: 0 }}>
+                Connect {SOURCE_TYPE_LABELS[sourceType]}
+              </h2>
+              <p style={{ color: "#64748b", fontSize: "0.75rem", margin: "0.125rem 0 0" }}>
+                Enter your credentials to start syncing
+              </p>
+            </div>
+          </div>
+          <button onClick={onCancel} style={{ background: "none", border: "none", color: "#64748b", cursor: "pointer", padding: "0.25rem" }}>
+            <X size={18} />
+          </button>
+        </div>
+
+        {/* Form */}
+        <form onSubmit={handleSubmit}>
+          <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+            {fields.map((field) => (
+              <div key={field.key}>
+                <label style={{ display: "block", color: "#94a3b8", fontSize: "0.8125rem", fontWeight: 500, marginBottom: "0.375rem" }}>
+                  {field.label}
+                </label>
+                <input
+                  type={field.type ?? "text"}
+                  value={values[field.key]}
+                  onChange={(e) => setValues((v) => ({ ...v, [field.key]: e.target.value }))}
+                  placeholder={field.placeholder}
+                  autoComplete="off"
+                  style={{
+                    width: "100%", boxSizing: "border-box",
+                    background: "#0f172a", border: "1px solid rgba(255,255,255,0.1)",
+                    borderRadius: "0.5rem", padding: "0.625rem 0.75rem",
+                    color: "#f1f5f9", fontSize: "0.875rem", outline: "none",
+                  }}
+                />
+                {field.hint && (
+                  <p style={{ color: "#475569", fontSize: "0.75rem", marginTop: "0.25rem" }}>{field.hint}</p>
+                )}
+              </div>
+            ))}
+          </div>
+
+          <div style={{ display: "flex", gap: "0.75rem", marginTop: "1.5rem" }}>
+            <button
+              type="button"
+              onClick={onCancel}
+              style={{
+                flex: 1, padding: "0.625rem", borderRadius: "0.5rem",
+                background: "none", border: "1px solid rgba(255,255,255,0.1)",
+                color: "#94a3b8", fontSize: "0.875rem", cursor: "pointer",
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={submitting}
+              style={{
+                flex: 2, padding: "0.625rem", borderRadius: "0.5rem",
+                background: submitting ? "#0f766e" : "#14b8a6",
+                border: "none", color: "white", fontSize: "0.875rem",
+                fontWeight: 600, cursor: submitting ? "not-allowed" : "pointer",
+                display: "flex", alignItems: "center", justifyContent: "center", gap: "0.5rem",
+              }}
+            >
+              {submitting ? "Connecting…" : `Connect ${SOURCE_TYPE_LABELS[sourceType]}`}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
 
 const STATUS_ICON: Record<StatusVariant, React.ReactNode> = {
   active:       <CheckCircle2 className="h-4 w-4 text-green-500" />,
@@ -63,61 +245,78 @@ function SourceGrid({
   onDisconnect: (id: string, t: SourceType) => void;
   onSync: (id: string, t: SourceType) => void;
 }) {
+  const statusColors: Record<StatusVariant, string> = {
+    active: "#22c55e", pending: "#eab308", error: "#ef4444", disconnected: "#64748b",
+  };
+
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "1rem" }}>
       {sources.map(({ type, description }) => {
         const existing = getIntegration(type);
         const isActive = existing?.status === "active";
         const isPending = connecting === type || syncing === existing?.id;
+        const statusVariant = (existing?.status ?? "disconnected") as StatusVariant;
 
         return (
           <div
             key={type}
-            className={cn(
-              "bg-white border rounded-xl p-5 flex flex-col gap-4 transition-shadow hover:shadow-md",
-              isActive ? "border-green-200" : "border-gray-200",
-            )}
+            style={{
+              background: "#1e293b",
+              border: `1px solid ${isActive ? "rgba(34,197,94,0.3)" : "rgba(255,255,255,0.07)"}`,
+              borderRadius: "0.75rem", padding: "1.25rem",
+              display: "flex", flexDirection: "column", gap: "1rem",
+            }}
           >
-            <div className="flex items-start gap-3">
-              <span className="text-2xl">{SOURCE_TYPE_ICONS[type]}</span>
-              <div className="flex-1">
-                <div className="flex items-center gap-2">
-                  <h3 className="text-sm font-semibold text-gray-800">
+            {/* Title row */}
+            <div style={{ display: "flex", alignItems: "flex-start", gap: "0.75rem" }}>
+              <span style={{ fontSize: "1.5rem", lineHeight: 1 }}>{SOURCE_TYPE_ICONS[type]}</span>
+              <div style={{ flex: 1 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
+                  <h3 style={{ color: "#f1f5f9", fontSize: "0.875rem", fontWeight: 600, margin: 0 }}>
                     {SOURCE_TYPE_LABELS[type]}
                   </h3>
                   {existing && (
-                    <div className="flex items-center gap-1">
-                      {STATUS_ICON[existing.status as StatusVariant]}
-                      <span className="text-xs text-gray-500">
-                        {STATUS_LABEL[existing.status as StatusVariant]}
-                      </span>
-                    </div>
+                    <span style={{
+                      fontSize: "0.7rem", padding: "0.125rem 0.5rem", borderRadius: "9999px",
+                      background: `${statusColors[statusVariant]}20`,
+                      color: statusColors[statusVariant], fontWeight: 600,
+                    }}>
+                      {STATUS_LABEL[statusVariant]}
+                    </span>
                   )}
                 </div>
-                <p className="text-xs text-gray-400 mt-0.5">{description}</p>
+                <p style={{ color: "#64748b", fontSize: "0.75rem", marginTop: "0.25rem" }}>{description}</p>
               </div>
             </div>
 
             {existing?.last_synced_at && (
-              <p className="text-xs text-gray-400">
-                Last synced{" "}
-                {formatDistanceToNow(new Date(existing.last_synced_at), { addSuffix: true })}
+              <p style={{ color: "#475569", fontSize: "0.75rem", margin: 0 }}>
+                Last synced {formatDistanceToNow(new Date(existing.last_synced_at), { addSuffix: true })}
               </p>
             )}
 
-            <div className="flex gap-2 mt-auto">
+            {/* Action buttons */}
+            <div style={{ display: "flex", gap: "0.5rem", marginTop: "auto" }}>
               {existing ? (
                 <>
                   <button
                     onClick={() => onSync(existing.id, type)}
                     disabled={!!isPending}
-                    className="flex-1 text-sm px-3 py-1.5 rounded-lg border border-gray-200 text-gray-600 hover:border-brand-teal hover:text-brand-teal transition-colors disabled:opacity-50"
+                    style={{
+                      flex: 1, fontSize: "0.8125rem", padding: "0.5rem 0.75rem", borderRadius: "0.5rem",
+                      border: "1px solid rgba(255,255,255,0.1)", background: "none",
+                      color: isPending ? "#475569" : "#94a3b8", cursor: isPending ? "not-allowed" : "pointer",
+                    }}
                   >
-                    {syncing === existing.id ? "Syncing..." : "Sync now"}
+                    {syncing === existing.id ? "Syncing…" : "Sync now"}
                   </button>
                   <button
                     onClick={() => onDisconnect(existing.id, type)}
-                    className="text-sm px-3 py-1.5 rounded-lg border border-gray-200 text-red-400 hover:border-red-300 hover:text-red-600 transition-colors"
+                    style={{
+                      fontSize: "0.8125rem", padding: "0.5rem 0.75rem", borderRadius: "0.5rem",
+                      border: "1px solid rgba(239,68,68,0.3)", background: "none",
+                      color: "#f87171", cursor: "pointer",
+                    }}
                   >
                     Disconnect
                   </button>
@@ -126,10 +325,16 @@ function SourceGrid({
                 <button
                   onClick={() => onConnect(type)}
                   disabled={!!connecting}
-                  className="flex-1 flex items-center justify-center gap-1.5 text-sm px-3 py-1.5 rounded-lg bg-brand-navy text-white hover:bg-brand-blue transition-colors disabled:opacity-50"
+                  style={{
+                    flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "0.375rem",
+                    fontSize: "0.8125rem", padding: "0.5rem 0.75rem", borderRadius: "0.5rem",
+                    background: connecting === type ? "#0f766e" : "#14b8a6",
+                    border: "none", color: "white", fontWeight: 600,
+                    cursor: connecting ? "not-allowed" : "pointer", opacity: connecting && connecting !== type ? 0.5 : 1,
+                  }}
                 >
-                  <Plug className="h-3.5 w-3.5" />
-                  {connecting === type ? "Connecting..." : "Connect"}
+                  <Plug size={13} />
+                  {connecting === type ? "Connecting…" : "Connect"}
                 </button>
               )}
             </div>
@@ -146,6 +351,8 @@ export default function IntegrationsPage() {
   const [loading, setLoading]           = useState(true);
   const [connecting, setConnecting]     = useState<SourceType | null>(null);
   const [syncing, setSyncing]           = useState<string | null>(null);
+  // Modal state: which source type is waiting for credentials
+  const [pendingConnect, setPendingConnect] = useState<SourceType | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -164,15 +371,25 @@ export default function IntegrationsPage() {
   const getIntegration = (type: SourceType) =>
     integrations.find((i) => i.source_type === type);
 
-  const handleConnect = async (type: SourceType) => {
+  // Step 1: clicking "Connect" opens the credentials modal
+  const handleConnect = (type: SourceType) => {
+    setPendingConnect(type);
+  };
+
+  // Step 2: modal submits credentials → actual API call
+  const handleCredentialsSubmit = async (credentials: Record<string, string>) => {
+    if (!pendingConnect) return;
+    const type = pendingConnect;
     setConnecting(type);
     try {
       const token = await getToken();
-      await integrationsApi.connect(token!, type, {});
-      toast.success(`${SOURCE_TYPE_LABELS[type]} connected - first sync starting...`);
+      await integrationsApi.connect(token!, type, credentials);
+      toast.success(`${SOURCE_TYPE_LABELS[type]} connected — first sync starting…`);
+      setPendingConnect(null);
       await load();
-    } catch {
-      toast.error("Failed to connect. Check your credentials.");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to connect";
+      toast.error(msg);
     } finally {
       setConnecting(null);
     }
@@ -217,63 +434,84 @@ export default function IntegrationsPage() {
 
   return (
     <AppShell>
-      <div className="p-6 max-w-4xl mx-auto w-full space-y-8">
-        <div className="flex items-center justify-between">
+      {/* Credentials modal */}
+      {pendingConnect && (
+        <CredentialsModal
+          sourceType={pendingConnect}
+          onSubmit={handleCredentialsSubmit}
+          onCancel={() => setPendingConnect(null)}
+          submitting={connecting === pendingConnect}
+        />
+      )}
+
+      <div style={{ padding: "1.5rem", maxWidth: "56rem", margin: "0 auto", width: "100%", display: "flex", flexDirection: "column", gap: "2rem" }}>
+        {/* Header */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <div>
-            <h1 className="text-xl font-bold text-gray-900">Integrations</h1>
-            <p className="text-sm text-gray-400 mt-0.5">
+            <h1 style={{ color: "#f1f5f9", fontSize: "1.25rem", fontWeight: 700, margin: 0 }}>Integrations</h1>
+            <p style={{ color: "#64748b", fontSize: "0.875rem", marginTop: "0.25rem" }}>
               Connect your tools to start ingesting operational data
             </p>
           </div>
           <button
             onClick={load}
             disabled={loading}
-            className="flex items-center gap-1.5 text-sm px-3 py-2 rounded-lg border border-gray-200 text-gray-600 hover:border-gray-300 transition-colors"
+            style={{
+              display: "flex", alignItems: "center", gap: "0.375rem",
+              fontSize: "0.875rem", padding: "0.5rem 0.75rem", borderRadius: "0.5rem",
+              border: "1px solid rgba(255,255,255,0.1)", background: "none",
+              color: "#94a3b8", cursor: "pointer",
+            }}
           >
-            <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
+            <RefreshCw size={14} style={{ animation: loading ? "spin 1s linear infinite" : "none" }} />
             Refresh
           </button>
         </div>
 
+        {/* Stats */}
         {!loading && (
-          <div className="flex gap-6 text-sm">
-            <span className="text-gray-400">
-              <span className="font-semibold text-green-600">{connectedCount}</span>{" "}connected
+          <div style={{ display: "flex", gap: "1.5rem", fontSize: "0.875rem" }}>
+            <span style={{ color: "#64748b" }}>
+              <span style={{ fontWeight: 600, color: "#22c55e" }}>{connectedCount}</span> connected
             </span>
-            <span className="text-gray-400">
-              <span className="font-semibold text-gray-700">
-                {ALL_SOURCES.length - connectedCount}
-              </span>{" "}available
+            <span style={{ color: "#64748b" }}>
+              <span style={{ fontWeight: 600, color: "#f1f5f9" }}>{ALL_SOURCES.length - connectedCount}</span> available
             </span>
           </div>
         )}
 
-        <section className="space-y-3">
+        {/* Collaboration section */}
+        <section style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
           <div>
-            <h2 className="text-sm font-semibold text-gray-700">Collaboration &amp; Ticketing</h2>
-            <p className="text-xs text-gray-400 mt-0.5">
+            <h2 style={{ color: "#f1f5f9", fontSize: "0.875rem", fontWeight: 600, margin: 0 }}>Collaboration &amp; Ticketing</h2>
+            <p style={{ color: "#64748b", fontSize: "0.75rem", marginTop: "0.25rem" }}>
               Messages, issues, documents, and customer support data
             </p>
           </div>
           <SourceGrid sources={COLLAB_SOURCES} {...sharedProps} />
         </section>
 
-        <section className="space-y-3">
+        {/* Log / observability section */}
+        <section style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
           <div>
-            <h2 className="text-sm font-semibold text-gray-700">Log &amp; Observability Platforms</h2>
-            <p className="text-xs text-gray-400 mt-0.5">
+            <h2 style={{ color: "#f1f5f9", fontSize: "0.875rem", fontWeight: 600, margin: 0 }}>Log &amp; Observability Platforms</h2>
+            <p style={{ color: "#64748b", fontSize: "0.75rem", marginTop: "0.25rem" }}>
               Connect log systems to power AI-assisted incident investigation and root cause analysis
             </p>
           </div>
           <SourceGrid sources={LOG_SOURCES} {...sharedProps} />
         </section>
 
-        <div className="bg-brand-ice border border-brand-teal/30 rounded-xl p-4 text-sm text-brand-blue">
-          <p className="font-medium mb-1">How data ingestion works</p>
-          <p className="text-brand-blue/70">
+        {/* Info banner */}
+        <div style={{
+          background: "rgba(20,184,166,0.08)", border: "1px solid rgba(20,184,166,0.25)",
+          borderRadius: "0.75rem", padding: "1rem", fontSize: "0.875rem",
+        }}>
+          <p style={{ color: "#2dd4bf", fontWeight: 600, margin: "0 0 0.25rem" }}>How data ingestion works</p>
+          <p style={{ color: "#64748b", margin: 0, lineHeight: 1.6 }}>
             After connecting, OpsLens AI syncs your data on a schedule. Documents and log entries are
             chunked, embedded, and stored in Qdrant for RAG queries and incident signal correlation.
-            Log platforms are especially powerful during incident investigations: correlated signals
+            Log platforms are especially powerful during incident investigations — correlated signals
             from logs, commits, tickets, and Slack are used to generate root cause analysis automatically.
           </p>
         </div>
