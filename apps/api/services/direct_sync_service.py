@@ -88,15 +88,18 @@ async def _embed_and_upsert(doc: CanonicalDocument, chunks: list[str], tenant_id
                 id=str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{doc.id}:{chunk_idx}")),
                 vector=emb.embedding,
                 payload={
-                    "tenant_id":       tenant_id,
-                    "document_id":     str(doc.id),
-                    "chunk_index":     chunk_idx,
-                    "source_type":     doc.source_type,
-                    "title":           doc.title or "",
-                    "url":             doc.url or "",
-                    "author":          doc.author or "",
-                    "created_at":      doc.source_created_at.isoformat() if doc.source_created_at else None,
-                    "content_preview": batch[i][:400],
+                    # LangChain QdrantVectorStore expects these two top-level keys
+                    "page_content": batch[i],
+                    "metadata": {
+                        "tenant_id":   tenant_id,
+                        "document_id": str(doc.id),
+                        "chunk_index": chunk_idx,
+                        "source_type": doc.source_type,
+                        "title":       doc.title or "",
+                        "url":         doc.url or "",
+                        "author":      doc.author or "",
+                        "created_at":  doc.source_created_at.isoformat() if doc.source_created_at else None,
+                    },
                 },
             ))
 
@@ -118,8 +121,6 @@ async def _save_and_embed(record: RawRecord, tenant_id: str) -> None:
             )
         )
         existing = result.scalar_one_or_none()
-        if existing and existing.embedding_status == "done":
-            return  # already processed
 
         if existing:
             doc = existing
