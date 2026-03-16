@@ -156,6 +156,7 @@ async def _save_and_embed(record: RawRecord, tenant_id: str) -> None:
                 source_created_at=record.created_at,
                 source_updated_at=record.updated_at,
                 embedding_status="pending",
+                chunk_count=0,
             )
             db.add(doc)
             await db.commit()
