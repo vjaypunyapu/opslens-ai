@@ -71,12 +71,22 @@ def _chunk_text(text: str) -> list[str]:
 # ── Embed + upsert to Qdrant ──────────────────────────────────────────────────
 async def _embed_and_upsert(doc: CanonicalDocument, chunks: list[str], tenant_id: str) -> None:
     collection = f"opslens_{tenant_id}"
-    existing = [c.name for c in _qdrant.get_collections().collections]
-    if collection not in existing:
-        _qdrant.create_collection(
-            collection_name=collection,
-            vectors_config=VectorParams(size=EMBED_DIMS, distance=Distance.COSINE),
-        )
+    logger.info("embed_and_upsert: doc=%s chunks=%d collection=%s", doc.id, len(chunks), collection)
+
+    # Ensure collection exists
+    try:
+        existing = [c.name for c in _qdrant.get_collections().collections]
+        logger.info("embed_and_upsert: existing collections=%s", existing)
+        if collection not in existing:
+            logger.info("embed_and_upsert: creating collection %s", collection)
+            _qdrant.create_collection(
+                collection_name=collection,
+                vectors_config=VectorParams(size=EMBED_DIMS, distance=Distance.COSINE),
+            )
+            logger.info("embed_and_upsert: collection %s created", collection)
+    except Exception as exc:
+        logger.error("embed_and_upsert: FAILED to ensure collection: %s", exc, exc_info=True)
+        raise
 
     points: list[PointStruct] = []
     for batch_start in range(0, len(chunks), EMBED_BATCH):
@@ -104,8 +114,15 @@ async def _embed_and_upsert(doc: CanonicalDocument, chunks: list[str], tenant_id
             ))
 
     if points:
-        _qdrant.upsert(collection_name=collection, points=points, wait=True)
-        logger.info("Upserted %d vectors to %s", len(points), collection)
+        try:
+            logger.info("embed_and_upsert: upserting %d points to %s", len(points), collection)
+            _qdrant.upsert(collection_name=collection, points=points, wait=True)
+            logger.info("Upserted %d vectors to %s", len(points), collection)
+        except Exception as exc:
+            logger.error("embed_and_upsert: FAILED to upsert to Qdrant: %s", exc, exc_info=True)
+            raise
+    else:
+        logger.warning("embed_and_upsert: no points to upsert for doc=%s (chunks were empty?)", doc.id)
 
 
 # ── Save record to DB + embed ─────────────────────────────────────────────────
