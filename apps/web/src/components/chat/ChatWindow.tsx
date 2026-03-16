@@ -9,55 +9,56 @@ const SUGGESTED = [
   "What are the top customer complaints this week?",
   "Which Jira tickets have been blocked the longest?",
   "Are there any patterns between recent releases and support tickets?",
-  "Which customers are at risk of churning?",
+  "Which GitHub repos have the most open issues?",
 ];
 
-interface Props {
-  sessionId: string;
-}
+interface Props { sessionId: string; }
 
 export function ChatWindow({ sessionId }: Props) {
   const { messages, isStreaming, error, loadMessages, sendMessage, stopStreaming, sendFeedback } =
     useChat(sessionId);
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    loadMessages();
-  }, [loadMessages]);
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  useEffect(() => { loadMessages(); }, [loadMessages]);
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
   const isEmpty = messages.length === 0;
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto">
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "#0f172a" }}>
+      {/* Messages area */}
+      <div style={{ flex: 1, overflowY: "auto", padding: "1.5rem 1rem" }}>
         {isEmpty ? (
           /* Empty state */
-          <div className="h-full flex flex-col items-center justify-center gap-6 px-4">
-            <div className="flex flex-col items-center gap-2 text-center">
-              <div className="h-12 w-12 rounded-2xl bg-brand-navy flex items-center justify-center">
-                <Sparkles className="h-6 w-6 text-brand-teal" />
+          <div style={{ height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: "1.5rem", padding: "0 1rem" }}>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "0.75rem", textAlign: "center" }}>
+              <div style={{
+                width: 52, height: 52, borderRadius: "1rem",
+                background: "linear-gradient(135deg, #0f766e, #14b8a6)",
+                display: "flex", alignItems: "center", justifyContent: "center",
+              }}>
+                <Sparkles size={24} color="white" />
               </div>
-              <h2 className="text-xl font-semibold text-gray-800">
+              <h2 style={{ color: "#f1f5f9", fontSize: "1.125rem", fontWeight: 600, margin: 0 }}>
                 Ask about your operations
               </h2>
-              <p className="text-sm text-gray-400 max-w-sm">
-                I have access to your Slack, Jira, Zendesk, GitHub, and more.
-                Ask anything.
+              <p style={{ color: "#64748b", fontSize: "0.875rem", maxWidth: 360, margin: 0, lineHeight: 1.6 }}>
+                I have access to your connected sources — Slack, Jira, GitHub, and more. Ask anything.
               </p>
             </div>
 
             {/* Suggested prompts */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 w-full max-w-lg">
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem", width: "100%", maxWidth: 520 }}>
               {SUGGESTED.map((s) => (
                 <button
                   key={s}
                   onClick={() => sendMessage(s)}
-                  className="text-left text-sm px-4 py-3 rounded-xl border border-gray-200 text-gray-600 hover:border-brand-teal hover:text-brand-teal bg-white transition-colors"
+                  style={{
+                    textAlign: "left", fontSize: "0.8125rem", padding: "0.75rem",
+                    borderRadius: "0.75rem", border: "1px solid rgba(255,255,255,0.08)",
+                    background: "#1e293b", color: "#94a3b8", cursor: "pointer",
+                    lineHeight: 1.5,
+                  }}
                 >
                   {s}
                 </button>
@@ -65,20 +66,16 @@ export function ChatWindow({ sessionId }: Props) {
             </div>
           </div>
         ) : (
-          <div className="px-4 py-6 space-y-6 max-w-3xl mx-auto w-full">
+          <div style={{ maxWidth: 720, margin: "0 auto", width: "100%", display: "flex", flexDirection: "column", gap: "1.25rem" }}>
             {messages.map((msg) => (
               <MessageBubble
                 key={msg.id}
                 message={msg}
-                onFeedback={
-                  msg.role === "assistant"
-                    ? (f) => sendFeedback(msg.id, f)
-                    : undefined
-                }
+                onFeedback={msg.role === "assistant" ? (f) => sendFeedback(msg.id, f) : undefined}
               />
             ))}
             {error && (
-              <p className="text-sm text-red-500 text-center">
+              <p style={{ fontSize: "0.875rem", color: "#f87171", textAlign: "center", margin: 0 }}>
                 ⚠ {error}
               </p>
             )}
@@ -88,11 +85,7 @@ export function ChatWindow({ sessionId }: Props) {
       </div>
 
       {/* Input */}
-      <ChatInput
-        onSend={sendMessage}
-        onStop={stopStreaming}
-        isStreaming={isStreaming}
-      />
+      <ChatInput onSend={sendMessage} onStop={stopStreaming} isStreaming={isStreaming} />
     </div>
   );
 }
