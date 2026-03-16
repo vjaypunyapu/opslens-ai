@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
-import { Plus, Pencil, Trash2, Zap, History } from "lucide-react";
+import { Plus, Pencil, Trash2, Zap, History, Bell } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { toast } from "sonner";
 import { AppShell } from "@/components/layout/AppShell";
@@ -101,36 +101,48 @@ export default function AlertsPage() {
 
   return (
     <AppShell>
-      <div className="p-6 max-w-4xl mx-auto w-full space-y-6">
+      <div style={{ padding: "28px 32px", maxWidth: 1100, margin: "0 auto" }}>
         {/* Header */}
-        <div className="flex items-center justify-between">
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 28 }}>
           <div>
-            <h1 className="text-xl font-bold text-gray-900">Alerts</h1>
-            <p className="text-sm text-gray-400 mt-0.5">
+            <h1 style={{ fontSize: 22, fontWeight: 700, color: "#f1f5f9", margin: 0 }}>Alerts</h1>
+            <p style={{ fontSize: 13, color: "#64748b", margin: "4px 0 0" }}>
               Get notified when patterns match your rules
             </p>
           </div>
           {tab === "rules" && (
             <button
               onClick={() => { setEditing(null); setShowForm(true); }}
-              className="flex items-center gap-1.5 text-sm px-3 py-2 rounded-lg bg-brand-navy text-white hover:bg-brand-blue transition-colors"
+              style={{
+                display: "flex", alignItems: "center", gap: 8,
+                background: "rgba(20,184,166,0.15)", border: "1px solid rgba(20,184,166,0.3)",
+                borderRadius: 8, padding: "9px 18px", color: "#2dd4bf",
+                fontSize: 13, fontWeight: 500, cursor: "pointer",
+              }}
             >
-              <Plus className="h-4 w-4" />
+              <Plus size={15} />
               New rule
             </button>
           )}
         </div>
 
         {/* Tabs */}
-        <div className="flex rounded-lg border border-gray-200 overflow-hidden bg-white w-fit">
+        <div style={{
+          display: "flex", background: "#1e293b", borderRadius: 8,
+          border: "1px solid rgba(255,255,255,0.07)", overflow: "hidden",
+          width: "fit-content", marginBottom: 24,
+        }}>
           {(["rules", "history"] as Tab[]).map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
-              className={cn(
-                "px-4 py-1.5 text-sm capitalize transition-colors",
-                tab === t ? "bg-brand-navy text-white font-medium" : "text-gray-600 hover:bg-gray-50",
-              )}
+              style={{
+                padding: "8px 24px", fontSize: 13, fontWeight: 500,
+                border: "none", cursor: "pointer", textTransform: "capitalize",
+                background: tab === t ? "rgba(20,184,166,0.15)" : "transparent",
+                color: tab === t ? "#2dd4bf" : "#64748b",
+                borderRight: "1px solid rgba(255,255,255,0.06)",
+              }}
             >
               {t}
             </button>
@@ -139,8 +151,11 @@ export default function AlertsPage() {
 
         {/* Inline form */}
         {showForm && (
-          <div className="bg-white border border-gray-200 rounded-xl p-5 shadow-sm">
-            <h3 className="text-sm font-semibold text-gray-800 mb-4">
+          <div style={{
+            background: "#1e293b", border: "1px solid rgba(255,255,255,0.07)",
+            borderRadius: 12, padding: "20px 24px", marginBottom: 20,
+          }}>
+            <h3 style={{ fontSize: 14, fontWeight: 600, color: "#e2e8f0", margin: "0 0 16px" }}>
               {editing ? "Edit rule" : "New alert rule"}
             </h3>
             <AlertRuleForm
@@ -155,80 +170,83 @@ export default function AlertsPage() {
         {/* Rules list */}
         {tab === "rules" && (
           loading ? (
-            <div className="space-y-3">
-              {[...Array(3)].map((_, i) => (
-                <div key={i} className="h-20 bg-gray-100 rounded-xl animate-pulse" />
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {[0, 1, 2].map((i) => (
+                <div key={i} style={{ height: 80, borderRadius: 12, background: "#1e293b", opacity: 0.5 }} />
               ))}
             </div>
           ) : rules.length === 0 ? (
-            <div className="text-center py-16 text-gray-400">
-              <p className="text-sm">No alert rules yet. Create your first one.</p>
+            <div style={{ textAlign: "center", padding: "64px 0" }}>
+              <Bell size={40} color="#334155" style={{ display: "block", margin: "0 auto 16px" }} />
+              <p style={{ fontSize: 14, color: "#475569", margin: 0 }}>No alert rules yet.</p>
+              <p style={{ fontSize: 12, color: "#334155", marginTop: 6 }}>
+                Create your first rule to start getting notified.
+              </p>
             </div>
           ) : (
-            <div className="space-y-3">
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
               {rules.map((rule) => (
                 <div
                   key={rule.id}
-                  className="bg-white border border-gray-200 rounded-xl p-4 flex items-start gap-4"
+                  style={{
+                    background: "#1e293b", border: "1px solid rgba(255,255,255,0.07)",
+                    borderRadius: 12, padding: "16px 20px",
+                    display: "flex", alignItems: "flex-start", gap: 16,
+                  }}
                 >
                   {/* Active toggle */}
                   <button
                     onClick={() => toggleActive(rule)}
-                    className={cn(
-                      "mt-0.5 h-5 w-5 rounded-full border-2 shrink-0 transition-colors",
-                      rule.is_active
-                        ? "bg-brand-teal border-brand-teal"
-                        : "bg-white border-gray-300",
-                    )}
                     title={rule.is_active ? "Disable" : "Enable"}
+                    style={{
+                      width: 22, height: 22, borderRadius: "50%", flexShrink: 0, marginTop: 2,
+                      border: rule.is_active ? "2px solid #14b8a6" : "2px solid #334155",
+                      background: rule.is_active ? "#14b8a6" : "transparent",
+                      cursor: "pointer",
+                    }}
                   />
-
                   {/* Info */}
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-semibold text-gray-800">{rule.name}</p>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <p style={{ fontSize: 14, fontWeight: 600, color: "#e2e8f0", margin: 0 }}>{rule.name}</p>
                     {rule.description && (
-                      <p className="text-xs text-gray-400 mt-0.5">{rule.description}</p>
+                      <p style={{ fontSize: 12, color: "#64748b", margin: "3px 0 0" }}>{rule.description}</p>
                     )}
-                    <div className="flex flex-wrap gap-2 mt-2">
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
                       {rule.conditions.map((c, i) => (
-                        <span
-                          key={i}
-                          className="text-xs bg-gray-50 border border-gray-100 rounded-full px-2 py-0.5 text-gray-600"
-                        >
+                        <span key={i} style={{
+                          fontSize: 11, background: "rgba(255,255,255,0.05)",
+                          border: "1px solid rgba(255,255,255,0.08)",
+                          borderRadius: 20, padding: "3px 10px", color: "#94a3b8",
+                        }}>
                           {c.field} {c.operator} {String(c.value)}
                         </span>
                       ))}
                     </div>
                     {rule.last_triggered_at && (
-                      <p className="text-xs text-gray-400 mt-1.5">
-                        Last fired{" "}
-                        {formatDistanceToNow(new Date(rule.last_triggered_at), { addSuffix: true })}
+                      <p style={{ fontSize: 11, color: "#475569", margin: "6px 0 0" }}>
+                        Last fired {formatDistanceToNow(new Date(rule.last_triggered_at), { addSuffix: true })}
                       </p>
                     )}
                   </div>
-
                   {/* Actions */}
-                  <div className="flex items-center gap-1 shrink-0">
-                    <button
-                      onClick={() => handleTest(rule.id)}
-                      title="Test fire"
-                      className="p-1.5 text-gray-400 hover:text-brand-teal rounded-lg hover:bg-gray-50 transition-colors"
-                    >
-                      <Zap className="h-4 w-4" />
+                  <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+                    <button onClick={() => handleTest(rule.id)} title="Test fire" style={{
+                      padding: 8, borderRadius: 8, border: "none",
+                      background: "transparent", color: "#475569", cursor: "pointer",
+                    }}>
+                      <Zap size={15} />
                     </button>
-                    <button
-                      onClick={() => { setEditing(rule); setShowForm(true); }}
-                      title="Edit"
-                      className="p-1.5 text-gray-400 hover:text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
-                    >
-                      <Pencil className="h-4 w-4" />
+                    <button onClick={() => { setEditing(rule); setShowForm(true); }} title="Edit" style={{
+                      padding: 8, borderRadius: 8, border: "none",
+                      background: "transparent", color: "#475569", cursor: "pointer",
+                    }}>
+                      <Pencil size={15} />
                     </button>
-                    <button
-                      onClick={() => handleDelete(rule.id)}
-                      title="Delete"
-                      className="p-1.5 text-gray-400 hover:text-red-500 rounded-lg hover:bg-gray-50 transition-colors"
-                    >
-                      <Trash2 className="h-4 w-4" />
+                    <button onClick={() => handleDelete(rule.id)} title="Delete" style={{
+                      padding: 8, borderRadius: 8, border: "none",
+                      background: "transparent", color: "#475569", cursor: "pointer",
+                    }}>
+                      <Trash2 size={15} />
                     </button>
                   </div>
                 </div>
@@ -240,24 +258,26 @@ export default function AlertsPage() {
         {/* History */}
         {tab === "history" && (
           history.length === 0 ? (
-            <div className="text-center py-16 text-gray-400">
-              <p className="text-sm">No alerts have fired yet.</p>
+            <div style={{ textAlign: "center", padding: "64px 0" }}>
+              <History size={40} color="#334155" style={{ display: "block", margin: "0 auto 16px" }} />
+              <p style={{ fontSize: 14, color: "#475569", margin: 0 }}>No alerts have fired yet.</p>
             </div>
           ) : (
-            <div className="space-y-2">
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {history.map((h) => (
-                <div
-                  key={h.id}
-                  className="bg-white border border-gray-200 rounded-xl p-4 flex items-center gap-4"
-                >
-                  <History className="h-4 w-4 text-gray-400 shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-gray-800">{h.rule_name}</p>
-                    <p className="text-xs text-gray-400 mt-0.5">
+                <div key={h.id} style={{
+                  background: "#1e293b", border: "1px solid rgba(255,255,255,0.07)",
+                  borderRadius: 12, padding: "14px 20px",
+                  display: "flex", alignItems: "center", gap: 16,
+                }}>
+                  <History size={16} color="#475569" style={{ flexShrink: 0 }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <p style={{ fontSize: 13, fontWeight: 500, color: "#e2e8f0", margin: 0 }}>{h.rule_name}</p>
+                    <p style={{ fontSize: 11, color: "#64748b", margin: "3px 0 0" }}>
                       Notified: {h.channels_notified.join(", ")}
                     </p>
                   </div>
-                  <span className="text-xs text-gray-400 shrink-0">
+                  <span style={{ fontSize: 11, color: "#475569", flexShrink: 0 }}>
                     {formatDistanceToNow(new Date(h.triggered_at), { addSuffix: true })}
                   </span>
                 </div>
@@ -266,6 +286,7 @@ export default function AlertsPage() {
           )
         )}
       </div>
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </AppShell>
   );
 }

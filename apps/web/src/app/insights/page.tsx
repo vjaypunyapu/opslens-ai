@@ -1,13 +1,12 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
-import { RefreshCw, Zap } from "lucide-react";
+import { RefreshCw, Zap, Lightbulb, CheckCircle, BellOff, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/layout/AppShell";
 import { InsightCard } from "@/components/insights/InsightCard";
-import { cn } from "@/lib/utils";
-import { INSIGHT_TYPE_LABELS, MAGNITUDE_COLORS } from "@/lib/utils";
-import { Insight, InsightMagnitude, InsightStatus, InsightSummary, InsightType } from "@/types";
+import { INSIGHT_TYPE_LABELS } from "@/lib/utils";
+import { Insight, InsightStatus, InsightSummary, InsightType } from "@/types";
 import { insightsApi } from "@/lib/api";
 
 const STATUS_TABS: { value: InsightStatus | "all"; label: string }[] = [
@@ -28,28 +27,25 @@ const TYPE_FILTERS: { value: InsightType | ""; label: string }[] = [
 
 export default function InsightsPage() {
   const { getToken } = useAuth();
-  const [insights, setInsights]   = useState<Insight[]>([]);
-  const [summary, setSummary]     = useState<InsightSummary | null>(null);
-  const [status, setStatus]       = useState<InsightStatus | "all">("active");
+  const [insights, setInsights]     = useState<Insight[]>([]);
+  const [summary, setSummary]       = useState<InsightSummary | null>(null);
+  const [status, setStatus]         = useState<InsightStatus | "all">("active");
   const [typeFilter, setTypeFilter] = useState<InsightType | "">("");
-  const [loading, setLoading]     = useState(true);
+  const [loading, setLoading]       = useState(true);
   const [generating, setGenerating] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-    const token = await getToken();
-    const [list, sum] = await Promise.all([
-      insightsApi.list(token!, {
-        status: status === "all" ? undefined : status,
-        type: typeFilter || undefined,
-      }),
-      insightsApi.summary(token!),
-    ]);
-    setInsights(list);
-    setSummary(sum);
+      const token = await getToken();
+      const [list, sum] = await Promise.all([
+        insightsApi.list(token!, { status: status === "all" ? undefined : status, type: typeFilter || undefined }),
+        insightsApi.summary(token!),
+      ]);
+      setInsights(list);
+      setSummary(sum);
     } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : 'Failed to load insights');
+      toast.error(err instanceof Error ? err.message : "Failed to load insights");
     } finally {
       setLoading(false);
     }
@@ -57,11 +53,7 @@ export default function InsightsPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  const handleStatusChange = async (
-    id: string,
-    newStatus: "active" | "resolved" | "snoozed",
-    snoozeHours?: number,
-  ) => {
+  const handleStatusChange = async (id: string, newStatus: "active" | "resolved" | "snoozed", snoozeHours?: number) => {
     const token = await getToken();
     await insightsApi.updateStatus(id, newStatus, snoozeHours, token!);
     await load();
@@ -77,116 +69,129 @@ export default function InsightsPage() {
     setGenerating(false);
   };
 
+  const kpis = [
+    { label: "Active",   value: summary?.active ?? 0,                color: "#f59e0b", icon: Lightbulb },
+    { label: "Critical", value: summary?.by_magnitude?.critical ?? 0, color: "#ef4444", icon: AlertTriangle },
+    { label: "Resolved", value: summary?.resolved ?? 0,              color: "#22c55e", icon: CheckCircle },
+    { label: "Snoozed",  value: summary?.snoozed ?? 0,               color: "#64748b", icon: BellOff },
+  ];
+
   return (
     <AppShell>
-      <div className="p-6 max-w-4xl mx-auto w-full space-y-6">
+      <div style={{ padding: "28px 32px", maxWidth: 1100, margin: "0 auto" }}>
         {/* Header */}
-        <div className="flex items-center justify-between">
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 28 }}>
           <div>
-            <h1 className="text-xl font-bold text-gray-900">Insights</h1>
-            <p className="text-sm text-gray-400 mt-0.5">
+            <h1 style={{ fontSize: 22, fontWeight: 700, color: "#f1f5f9", margin: 0 }}>Insights</h1>
+            <p style={{ fontSize: 13, color: "#64748b", margin: "4px 0 0" }}>
               AI-detected patterns across your operational data
             </p>
           </div>
-          <div className="flex gap-2">
-            <button
-              onClick={load}
-              disabled={loading}
-              className="flex items-center gap-1.5 text-sm px-3 py-2 rounded-lg border border-gray-200 text-gray-600 hover:border-gray-300 transition-colors disabled:opacity-50"
-            >
-              <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
+          <div style={{ display: "flex", gap: 10 }}>
+            <button onClick={load} disabled={loading} style={{
+              display: "flex", alignItems: "center", gap: 7,
+              background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)",
+              borderRadius: 8, padding: "8px 16px", color: "#cbd5e1",
+              fontSize: 13, fontWeight: 500, cursor: "pointer",
+            }}>
+              <RefreshCw size={14} style={loading ? { animation: "spin 1s linear infinite" } : {}} />
               Refresh
             </button>
-            <button
-              onClick={handleGenerate}
-              disabled={generating}
-              className="flex items-center gap-1.5 text-sm px-3 py-2 rounded-lg bg-brand-navy text-white hover:bg-brand-blue transition-colors disabled:opacity-50"
-            >
-              <Zap className="h-3.5 w-3.5" />
+            <button onClick={handleGenerate} disabled={generating} style={{
+              display: "flex", alignItems: "center", gap: 7,
+              background: "rgba(20,184,166,0.15)", border: "1px solid rgba(20,184,166,0.3)",
+              borderRadius: 8, padding: "8px 16px", color: "#2dd4bf",
+              fontSize: 13, fontWeight: 500, cursor: "pointer",
+            }}>
+              <Zap size={14} />
               {generating ? "Running…" : "Run now"}
             </button>
           </div>
         </div>
 
-        {/* Summary cards */}
-        {summary && (
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            {(
-              [
-                { label: "Active",   value: summary.active,   color: "text-orange-600" },
-                { label: "Critical", value: summary.by_magnitude?.critical ?? 0, color: "text-red-600" },
-                { label: "Resolved", value: summary.resolved, color: "text-green-600" },
-                { label: "Snoozed",  value: summary.snoozed,  color: "text-gray-400" },
-              ] as const
-            ).map(({ label, value, color }) => (
-              <div
-                key={label}
-                className="bg-white border border-gray-200 rounded-xl p-4 text-center"
-              >
-                <p className={cn("text-2xl font-bold", color)}>{value}</p>
-                <p className="text-xs text-gray-500 mt-1">{label}</p>
+        {/* KPI strip */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14, marginBottom: 28 }}>
+          {kpis.map(({ label, value, color, icon: Icon }) => (
+            <div key={label} style={{
+              background: "#1e293b", borderRadius: 12, padding: "18px 20px",
+              border: "1px solid rgba(255,255,255,0.07)",
+              display: "flex", alignItems: "center", gap: 14,
+            }}>
+              <div style={{
+                width: 40, height: 40, borderRadius: 10, flexShrink: 0,
+                background: `${color}22`, display: "flex", alignItems: "center", justifyContent: "center",
+              }}>
+                <Icon size={18} color={color} />
               </div>
-            ))}
-          </div>
-        )}
+              <div>
+                <div style={{ fontSize: 26, fontWeight: 700, color: "#f1f5f9", lineHeight: 1 }}>{value}</div>
+                <div style={{ fontSize: 12, color: "#64748b", marginTop: 4 }}>{label}</div>
+              </div>
+            </div>
+          ))}
+        </div>
 
         {/* Filters */}
-        <div className="flex flex-wrap gap-3 items-center">
-          {/* Status tabs */}
-          <div className="flex rounded-lg border border-gray-200 overflow-hidden bg-white">
+        <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 24 }}>
+          <div style={{
+            display: "flex", background: "#1e293b", borderRadius: 8,
+            border: "1px solid rgba(255,255,255,0.07)", overflow: "hidden",
+          }}>
             {STATUS_TABS.map((tab) => (
               <button
                 key={tab.value}
                 onClick={() => setStatus(tab.value)}
-                className={cn(
-                  "px-3 py-1.5 text-sm transition-colors",
-                  status === tab.value
-                    ? "bg-brand-navy text-white font-medium"
-                    : "text-gray-600 hover:bg-gray-50",
-                )}
+                style={{
+                  padding: "8px 18px", fontSize: 13, fontWeight: 500, border: "none", cursor: "pointer",
+                  background: status === tab.value ? "rgba(20,184,166,0.15)" : "transparent",
+                  color: status === tab.value ? "#2dd4bf" : "#64748b",
+                  borderRight: "1px solid rgba(255,255,255,0.06)",
+                }}
               >
                 {tab.label}
               </button>
             ))}
           </div>
 
-          {/* Type select */}
           <select
             value={typeFilter}
             onChange={(e) => setTypeFilter(e.target.value as InsightType | "")}
-            className="text-sm border border-gray-200 rounded-lg px-3 py-1.5 text-gray-600 bg-white focus:outline-none focus:border-brand-teal"
+            style={{
+              padding: "8px 14px", fontSize: 13, borderRadius: 8, outline: "none",
+              background: "#1e293b", border: "1px solid rgba(255,255,255,0.07)",
+              color: "#94a3b8", cursor: "pointer",
+            }}
           >
             {TYPE_FILTERS.map((f) => (
-              <option key={f.value} value={f.value}>
-                {f.label}
-              </option>
+              <option key={f.value} value={f.value} style={{ background: "#1e293b" }}>{f.label}</option>
             ))}
           </select>
         </div>
 
-        {/* Cards */}
+        {/* Content */}
         {loading ? (
-          <div className="space-y-3">
-            {[...Array(3)].map((_, i) => (
-              <div key={i} className="h-24 bg-gray-100 rounded-xl animate-pulse" />
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {[0, 1, 2].map((i) => (
+              <div key={i} style={{ height: 88, borderRadius: 12, background: "#1e293b", opacity: 0.5 }} />
             ))}
           </div>
         ) : insights.length === 0 ? (
-          <div className="text-center py-16 text-gray-400">
-            <p className="text-sm">No insights found for the selected filters.</p>
+          <div style={{ textAlign: "center", padding: "64px 0" }}>
+            <Lightbulb size={40} color="#334155" style={{ display: "block", margin: "0 auto 16px" }} />
+            <p style={{ fontSize: 14, color: "#475569", margin: 0 }}>No insights for the selected filters.</p>
+            <p style={{ fontSize: 12, color: "#334155", marginTop: 6 }}>
+              Connect a data source and click "Run now" to generate insights.
+            </p>
           </div>
         ) : (
-          <div className="space-y-3">
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             {insights.map((i) => (
-              <InsightCard
-                key={i.id}
-                insight={i}
-                onStatusChange={handleStatusChange}
-              />
+              <InsightCard key={i.id} insight={i} onStatusChange={handleStatusChange} />
             ))}
           </div>
         )}
       </div>
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </AppShell>
   );
 }

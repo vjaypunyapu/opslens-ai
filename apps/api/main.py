@@ -71,7 +71,71 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE opslens.chat_messages "
                 "ADD COLUMN IF NOT EXISTS feedback VARCHAR(20)"
             ))
-            # insights columns added after initial create_all — idempotent
+            # insights: schema was redesigned — original SQL used TEXT/NUMERIC types
+            # that conflict with current ORM. Fix column types idempotently.
+
+            # confidence: was TEXT ('high'/'medium'/'low') → NUMERIC(3,2) float 0-1
+            # Uses CASCADE to drop any dependent views (e.g. v_active_insights)
+            await conn.execute(sa.text("""
+                DO $$ BEGIN
+                    IF EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'opslens' AND table_name = 'insights'
+                          AND column_name = 'confidence' AND data_type != 'numeric'
+                    ) THEN
+                        ALTER TABLE opslens.insights DROP COLUMN confidence CASCADE;
+                        ALTER TABLE opslens.insights ADD COLUMN confidence NUMERIC(3,2);
+                    END IF;
+                END; $$
+            """))
+
+            # magnitude: was NUMERIC → VARCHAR(20) label ('critical'/'high'/'medium'/'low')
+            # Uses CASCADE to drop any dependent views
+            await conn.execute(sa.text("""
+                DO $$ BEGIN
+                    IF EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'opslens' AND table_name = 'insights'
+                          AND column_name = 'magnitude' AND data_type = 'numeric'
+                    ) THEN
+                        ALTER TABLE opslens.insights DROP COLUMN magnitude CASCADE;
+                        ALTER TABLE opslens.insights
+                            ADD COLUMN magnitude VARCHAR(20) NOT NULL DEFAULT 'medium';
+                    END IF;
+                END; $$
+            """))
+
+            # source_types: was TEXT[] → JSONB array
+            # Must drop the old default before changing type, then set new JSONB default
+            await conn.execute(sa.text("""
+                DO $$ BEGIN
+                    IF EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'opslens' AND table_name = 'insights'
+                          AND column_name = 'source_types' AND data_type = 'ARRAY'
+                    ) THEN
+                        ALTER TABLE opslens.insights
+                            ALTER COLUMN source_types DROP DEFAULT;
+                        ALTER TABLE opslens.insights
+                            ALTER COLUMN source_types TYPE JSONB
+                            USING to_jsonb(source_types);
+                        ALTER TABLE opslens.insights
+                            ALTER COLUMN source_types SET NOT NULL;
+                        ALTER TABLE opslens.insights
+                            ALTER COLUMN source_types SET DEFAULT '[]'::jsonb;
+                    END IF;
+                END; $$
+            """))
+
+            # ADD any missing columns (all idempotent)
+            await conn.execute(sa.text(
+                "ALTER TABLE opslens.insights "
+                "ADD COLUMN IF NOT EXISTS source_types JSONB NOT NULL DEFAULT '[]'"
+            ))
+            await conn.execute(sa.text(
+                "ALTER TABLE opslens.insights "
+                "ADD COLUMN IF NOT EXISTS evidence JSONB NOT NULL DEFAULT '{}'"
+            ))
             await conn.execute(sa.text(
                 "ALTER TABLE opslens.insights "
                 "ADD COLUMN IF NOT EXISTS generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"
@@ -86,7 +150,86 @@ async def lifespan(app: FastAPI):
             ))
             await conn.execute(sa.text(
                 "ALTER TABLE opslens.insights "
+                "ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"
+            ))
+            await conn.execute(sa.text(
+                "ALTER TABLE opslens.insights "
                 "ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"
+            ))
+            # users: updated_at was added to ORM after initial schema
+            await conn.execute(sa.text(
+                "ALTER TABLE opslens.users "
+                "ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"
+            ))
+
+            # integrations: original schema used airbyte_conn_id; ORM uses longer names
+            await conn.execute(sa.text(
+                "ALTER TABLE opslens.integrations "
+                "ADD COLUMN IF NOT EXISTS airbyte_connection_id VARCHAR(255)"
+            ))
+            await conn.execute(sa.text(
+                "ALTER TABLE opslens.integrations "
+                "ADD COLUMN IF NOT EXISTS airbyte_source_id VARCHAR(255)"
+            ))
+
+            # alert_rules: schema redesigned — original used different names/types
+            await conn.execute(sa.text(
+                "ALTER TABLE opslens.alert_rules "
+                "ADD COLUMN IF NOT EXISTS description TEXT"
+            ))
+            # conditions (plural JSONB) — original had 'condition' (singular)
+            await conn.execute(sa.text(
+                "ALTER TABLE opslens.alert_rules "
+                "ADD COLUMN IF NOT EXISTS conditions JSONB NOT NULL DEFAULT '[]'"
+            ))
+            # is_active — original had 'enabled'
+            await conn.execute(sa.text(
+                "ALTER TABLE opslens.alert_rules "
+                "ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE"
+            ))
+            # cooldown_minutes — original had cooldown_hours
+            await conn.execute(sa.text(
+                "ALTER TABLE opslens.alert_rules "
+                "ADD COLUMN IF NOT EXISTS cooldown_minutes INTEGER NOT NULL DEFAULT 60"
+            ))
+            # last_triggered_at — original had last_fired_at
+            await conn.execute(sa.text(
+                "ALTER TABLE opslens.alert_rules "
+                "ADD COLUMN IF NOT EXISTS last_triggered_at TIMESTAMPTZ"
+            ))
+            # channels: was TEXT[] → JSONB
+            await conn.execute(sa.text("""
+                DO $$ BEGIN
+                    IF EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'opslens' AND table_name = 'alert_rules'
+                          AND column_name = 'channels' AND data_type = 'ARRAY'
+                    ) THEN
+                        ALTER TABLE opslens.alert_rules
+                            ALTER COLUMN channels DROP DEFAULT;
+                        ALTER TABLE opslens.alert_rules
+                            ALTER COLUMN channels TYPE JSONB
+                            USING to_jsonb(channels);
+                        ALTER TABLE opslens.alert_rules
+                            ALTER COLUMN channels SET NOT NULL;
+                        ALTER TABLE opslens.alert_rules
+                            ALTER COLUMN channels SET DEFAULT '[]'::jsonb;
+                    END IF;
+                END; $$
+            """))
+
+            # alert_history: column names changed between schema versions
+            await conn.execute(sa.text(
+                "ALTER TABLE opslens.alert_history "
+                "ADD COLUMN IF NOT EXISTS trigger_data JSONB NOT NULL DEFAULT '{}'"
+            ))
+            await conn.execute(sa.text(
+                "ALTER TABLE opslens.alert_history "
+                "ADD COLUMN IF NOT EXISTS channels_notified JSONB NOT NULL DEFAULT '[]'"
+            ))
+            await conn.execute(sa.text(
+                "ALTER TABLE opslens.alert_history "
+                "ADD COLUMN IF NOT EXISTS triggered_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"
             ))
             # canonical_documents: columns added after initial create_all
             await conn.execute(sa.text(
