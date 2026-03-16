@@ -54,6 +54,7 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
         request.state.tenant_id    = tenant_id
         request.state.user_id      = user_id
         request.state.role         = payload.get("role", "member")
+        request.state.email        = payload.get("email", "")
         request.state.company_name = payload.get("company_name", "")
         if not request.state.tenant_id:
             return JSONResponse(status_code=401, content={"detail": "JWT missing tenant identifier."})
