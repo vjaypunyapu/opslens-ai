@@ -186,37 +186,36 @@ async def _fetch_github(creds: dict, tenant_id: str, integration_id: str) -> int
     records: list[RawRecord] = []
 
     async with httpx.AsyncClient(headers=headers, timeout=30) as client:
-        # Resolve repos: try org endpoint first if provided, fall back to user repos.
-        # An email address in the org field (common mistake) will 404/401 — handled gracefully.
-        repos: list[dict] = []
-        if org and "@" not in org:  # skip if user accidentally entered an email
+        # Always fetch the full authenticated repo list (includes private repos).
+        # /user/repos?affiliation=owner,collaborator returns everything the PAT can access.
+        # If an org is specified (and is a real GitHub org, not a username), also fetch
+        # that org's repos and merge them in.
+        user_repos_resp = await client.get(
+            "https://api.github.com/user/repos",
+            params={"per_page": 100, "sort": "updated", "affiliation": "owner,collaborator"},
+        )
+        user_repos_resp.raise_for_status()
+        repos: list[dict] = user_repos_resp.json()
+        logger.info("GitHub: PAT owner has access to %d repos", len(repos))
+
+        # If org is explicitly set (and isn't an email or the user's own login), also pull
+        # org repos in case the PAT doesn't have them via affiliation.
+        if org and "@" not in org:
             org_resp = await client.get(
                 f"https://api.github.com/orgs/{org}/repos",
-                params={"per_page": 30, "sort": "updated"},
+                params={"per_page": 100, "sort": "updated"},
             )
             if org_resp.status_code == 200:
-                repos = org_resp.json()
-            else:
-                # Could be a user login, not an org — try user endpoint
-                user_resp = await client.get(
-                    f"https://api.github.com/users/{org}/repos",
-                    params={"per_page": 30, "sort": "updated"},
-                )
-                if user_resp.status_code == 200:
-                    repos = user_resp.json()
-                else:
-                    logger.warning("GitHub: could not fetch repos for org/user '%s' (status %s) — falling back to token owner's repos", org, org_resp.status_code)
+                existing_names = {r["full_name"] for r in repos}
+                for r in org_resp.json():
+                    if r["full_name"] not in existing_names:
+                        repos.append(r)
+                logger.info("GitHub: merged org '%s' repos, total now %d", org, len(repos))
 
-        if not repos:
-            # Fall back to the authenticated user's own repos
-            user_repos_resp = await client.get(
-                "https://api.github.com/user/repos",
-                params={"per_page": 30, "sort": "updated", "affiliation": "owner,collaborator"},
-            )
-            user_repos_resp.raise_for_status()
-            repos = user_repos_resp.json()
+        # Sort by most recently updated and cap to avoid extremely long syncs
+        repos.sort(key=lambda r: r.get("updated_at", ""), reverse=True)
 
-        for repo in repos[:10]:  # cap at 10 repos per sync
+        for repo in repos[:20]:  # cap at 20 repos per sync
             repo_name  = repo["full_name"]
             repo_url   = repo.get("html_url", "")
             repo_desc  = repo.get("description") or ""
