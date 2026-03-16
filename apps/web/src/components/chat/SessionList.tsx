@@ -17,14 +17,19 @@ export function SessionList({ sessions, currentId, onCreated }: Props) {
   const { getToken } = useAuth();
 
   const createSession = async () => {
-    const token = await getToken();
-    const res = await fetch("/api/v1/rag/sessions", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    const session: ChatSession = await res.json();
-    onCreated(session);
-    router.push(`/chat/${session.id}`);
+    try {
+      const token = await getToken();
+      const res = await fetch("/api/v1/chat/sessions", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error(`Failed to create session: ${res.statusText}`);
+      const session: ChatSession = await res.json();
+      onCreated(session);
+      router.push(`/chat/${session.id}`);
+    } catch (err: unknown) {
+      console.error('Failed to create session:', err);
+    }
   };
 
   return (

@@ -14,6 +14,7 @@ app = Celery(
         "apps.worker.tasks.ingestion",
         "apps.worker.tasks.insight_runner",
         "apps.worker.tasks.alert_runner",
+        "apps.worker.tasks.master",      # fan-out tasks used by Beat schedule
     ],
 )
 

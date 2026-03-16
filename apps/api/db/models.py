@@ -117,6 +117,7 @@ class CanonicalDocument(Base):
     url: Mapped[str | None] = mapped_column(Text)
     doc_metadata: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     embedding_status: Mapped[str] = mapped_column(String(50), nullable=False, default="pending")
+    chunk_count: Mapped[int | None] = mapped_column(Integer)
     source_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     source_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -144,6 +145,8 @@ class Insight(Base):
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="active")
     source_types: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     evidence: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     snoozed_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -242,6 +245,64 @@ class ChatMessage(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     session: Mapped[ChatSession] = relationship("ChatSession", back_populates="messages")
+
+
+# ─── Incidents ────────────────────────────────────────────────────────────────
+class Incident(Base):
+    """
+    Represents a production incident investigation.
+    Stores the correlated timeline and AI-generated root cause analysis.
+    """
+    __tablename__ = "incidents"
+    __table_args__ = {"schema": "opslens"}
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("opslens.tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    title: Mapped[str] = mapped_column(String(512), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    # Status: open | investigating | analysing | resolved | closed
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="open")
+    severity: Mapped[str] = mapped_column(String(20), nullable=False, default="p2")  # p0/p1/p2/p3/p4
+    service: Mapped[str | None] = mapped_column(String(255))   # affected service name
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # AI-generated content (populated by the investigation worker)
+    timeline: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
+    root_cause: Mapped[str | None] = mapped_column(Text)
+    contributing_factors: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    recommendations: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    signals: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
+
+    created_by: Mapped[str | None] = mapped_column(String(255))  # Clerk user_id
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    tenant: Mapped[Tenant] = relationship("Tenant")
+
+
+# ─── Ingestion Queue ──────────────────────────────────────────────────────────
+class IngestionQueue(Base):
+    """
+    Staging table for raw records received from Airbyte webhooks or direct API
+    calls before they are normalised and embedded.
+    """
+    __tablename__ = "ingestion_queue"
+    __table_args__ = {"schema": "opslens"}
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("opslens.tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    source_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    raw_data: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    error_msg: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 # ─── Audit Logs ───────────────────────────────────────────────────────────────

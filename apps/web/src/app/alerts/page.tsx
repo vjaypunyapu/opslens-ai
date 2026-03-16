@@ -24,14 +24,23 @@ export default function AlertsPage() {
 
   const loadRules = useCallback(async () => {
     setLoading(true);
-    const token = await getToken();
-    setRules(await alertsApi.listRules(token!));
-    setLoading(false);
+    try {
+      const token = await getToken();
+      setRules(await alertsApi.listRules(token!));
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Failed to load rules');
+    } finally {
+      setLoading(false);
+    }
   }, [getToken]);
 
   const loadHistory = useCallback(async () => {
-    const token = await getToken();
-    setHistory(await alertsApi.listHistory(token!));
+    try {
+      const token = await getToken();
+      setHistory(await alertsApi.listHistory(token!));
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Failed to load history');
+    }
   }, [getToken]);
 
   useEffect(() => { loadRules(); }, [loadRules]);
@@ -39,38 +48,55 @@ export default function AlertsPage() {
 
   const handleSave = async (data: Omit<AlertRule, "id" | "created_at" | "updated_at" | "last_triggered_at">) => {
     setSubmitting(true);
-    const token = await getToken();
-    if (editing) {
-      await alertsApi.updateRule(editing.id, data, token!);
-      toast.success("Rule updated");
-    } else {
-      await alertsApi.createRule(token!, data);
-      toast.success("Rule created");
+    try {
+      const token = await getToken();
+      if (editing) {
+        await alertsApi.updateRule(editing.id, data, token!);
+        toast.success("Rule updated");
+      } else {
+        await alertsApi.createRule(token!, data);
+        toast.success("Rule created");
+      }
+      setShowForm(false);
+      setEditing(null);
+      loadRules();
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Failed to save rule');
+    } finally {
+      setSubmitting(false);
     }
-    setShowForm(false);
-    setEditing(null);
-    setSubmitting(false);
-    loadRules();
   };
 
   const handleDelete = async (id: string) => {
     if (!confirm("Delete this alert rule?")) return;
-    const token = await getToken();
-    await alertsApi.deleteRule(id, token!);
-    toast.success("Rule deleted");
-    loadRules();
+    try {
+      const token = await getToken();
+      await alertsApi.deleteRule(id, token!);
+      toast.success("Rule deleted");
+      loadRules();
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Failed to delete rule');
+    }
   };
 
   const handleTest = async (id: string) => {
-    const token = await getToken();
-    const result = await alertsApi.testRule(id, token!);
-    toast[result.fired ? "success" : "info"](result.message);
+    try {
+      const token = await getToken();
+      const result = await alertsApi.testRule(id, token!);
+      toast[result.fired ? "success" : "info"](result.message);
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Test failed');
+    }
   };
 
   const toggleActive = async (rule: AlertRule) => {
-    const token = await getToken();
-    await alertsApi.updateRule(rule.id, { is_active: !rule.is_active }, token!);
-    loadRules();
+    try {
+      const token = await getToken();
+      await alertsApi.updateRule(rule.id, { is_active: !rule.is_active }, token!);
+      loadRules();
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Failed to update rule');
+    }
   };
 
   return (

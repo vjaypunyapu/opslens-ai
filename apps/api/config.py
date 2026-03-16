@@ -66,7 +66,8 @@ class Settings(BaseSettings):
 
     # ── Auth (Clerk / Auth0 — RS256 JWT) ──────────────────────────────────────
     JWT_ALGORITHM: str = "RS256"
-    JWT_PUBLIC_KEY: str = ""    # RSA public key PEM string (set via env)
+    JWT_PUBLIC_KEY: str = ""         # RSA PEM (optional if URL set)
+    JWT_PUBLIC_KEY_URL: str | None = None  # JWKS endpoint (Clerk/.well-known/jwks.json)
     JWT_AUDIENCE: str | None = None
     JWT_ISSUER: str | None = None
 

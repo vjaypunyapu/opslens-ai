@@ -78,14 +78,15 @@ async def create_session(
 ):
     """Create a new chat session for the authenticated user."""
     session = ChatSession(
-        id=str(uuid.uuid4()),
         tenant_id=ctx.tenant_id,
-        user_id=ctx.user_id,
+        # user_id is a UUID FK — ctx.user_id is the Clerk string ID, not an internal UUID.
+        # Leave it null; tenant_id provides sufficient isolation for now.
+        user_id=None,
     )
     db.add(session)
     await db.commit()
     await db.refresh(session)
-    logger.info("Created chat session %s for user %s", session.id, ctx.user_id)
+    logger.info("Created chat session %s for tenant %s", session.id, ctx.tenant_id)
     return _session_to_out(session, 0)
 
 
@@ -102,7 +103,6 @@ async def list_sessions(
         sa.select(ChatSession)
         .where(
             ChatSession.tenant_id == ctx.tenant_id,
-            ChatSession.user_id == ctx.user_id,
         )
         .order_by(ChatSession.updated_at.desc())
         .limit(limit)
@@ -118,7 +118,7 @@ async def list_sessions(
         .where(ChatMessage.session_id.in_([s.id for s in sessions]))
         .group_by(ChatMessage.session_id)
     )
-    counts = {row.session_id: row.n for row in counts_result}
+    counts = {str(row.session_id): row.n for row in counts_result}
     return [_session_to_out(s, counts.get(str(s.id), 0)) for s in sessions]
 
 
@@ -175,8 +175,8 @@ async def query_session(
 
     # Persist user message
     user_msg = ChatMessage(
-        id=str(uuid.uuid4()),
-        session_id=str(session.id),
+        id=uuid.uuid4(),
+        session_id=session.id,
         role="user",
         content=body.content,
     )
@@ -195,7 +195,7 @@ async def query_session(
         tokens: list[str] = []
         try:
             async for event in rag.stream(
-                tenant_id=ctx.tenant_id,
+                tenant_id=str(ctx.tenant_id),
                 company_name=ctx.company_name,
                 question=body.content,
                 history=history,
@@ -210,8 +210,8 @@ async def query_session(
             if assistant_content:
                 async with db.begin_nested():
                     db.add(ChatMessage(
-                        id=str(uuid.uuid4()),
-                        session_id=str(session.id),
+                        id=uuid.uuid4(),
+                        session_id=session.id,
                         role="assistant",
                         content=assistant_content,
                         latency_ms=int((time.monotonic() - start) * 1000),
@@ -266,9 +266,9 @@ async def submit_feedback(
     msg = result.scalar_one_or_none()
     if not msg:
         raise HTTPException(status_code=404, detail="Message not found")
-    msg.feedback = body.score
+    msg.feedback = "thumbs_up" if body.score == 1 else "thumbs_down"
     await db.commit()
-    logger.info("Feedback %d on message %s", body.score, body.message_id)
+    logger.info("Feedback %s on message %s", msg.feedback, body.message_id)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -296,11 +296,13 @@ def _session_to_out(s: ChatSession, message_count: int) -> SessionOut:
 
 
 def _message_to_out(m: ChatMessage) -> MessageOut:
+    # m.sources is a list of dicts; extract ids if present, else empty list
+    source_ids = [str(s.get("id", s.get("doc_id", ""))) for s in (m.sources or []) if isinstance(s, dict)]
     return MessageOut(
         id=str(m.id),
         role=m.role,
         content=m.content,
-        source_doc_ids=[str(d) for d in (m.source_doc_ids or [])],
-        feedback=m.feedback,
+        source_doc_ids=source_ids,
+        feedback=int(m.feedback) if m.feedback and str(m.feedback).lstrip("-").isdigit() else None,
         created_at=m.created_at.isoformat(),
     )

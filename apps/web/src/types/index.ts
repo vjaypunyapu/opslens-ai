@@ -9,7 +9,19 @@ export type InsightType =
   | "release_correlation"
   | "eng_bottleneck"
   | "churn_risk";
-export type SourceType = "slack" | "jira" | "google_drive" | "zendesk" | "github" | "hubspot";
+export type SourceType =
+  | "slack"
+  | "jira"
+  | "google_drive"
+  | "zendesk"
+  | "github"
+  | "hubspot"
+  | "elasticsearch"
+  | "datadog"
+  | "cloudwatch"
+  | "splunk"
+  | "azure_monitor"
+  | "gcp_logging";
 export type AlertOperator = "gt" | "gte" | "lt" | "lte" | "eq" | "contains";
 
 // ─── Chat ─────────────────────────────────────────────────────────────────────

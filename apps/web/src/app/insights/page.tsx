@@ -37,6 +37,7 @@ export default function InsightsPage() {
 
   const load = useCallback(async () => {
     setLoading(true);
+    try {
     const token = await getToken();
     const [list, sum] = await Promise.all([
       insightsApi.list(token!, {
@@ -47,7 +48,11 @@ export default function InsightsPage() {
     ]);
     setInsights(list);
     setSummary(sum);
-    setLoading(false);
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Failed to load insights');
+    } finally {
+      setLoading(false);
+    }
   }, [getToken, status, typeFilter]);
 
   useEffect(() => { load(); }, [load]);

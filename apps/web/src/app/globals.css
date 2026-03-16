@@ -1,38 +1,24 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
-
 @layer base {
-  :root {
-    --sidebar-width: 260px;
-  }
-
-  body {
-    @apply bg-gray-50 text-gray-900 antialiased;
-  }
-
-  /* Custom scrollbar */
-  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  :root { --sidebar-width: 260px; }
+  body { @apply bg-gray-50 text-gray-900 antialiased; font-family: 'Inter', system-ui, sans-serif; }
+  ::-webkit-scrollbar { width: 5px; height: 5px; }
   ::-webkit-scrollbar-track { @apply bg-transparent; }
   ::-webkit-scrollbar-thumb { @apply bg-gray-300 rounded-full; }
   ::-webkit-scrollbar-thumb:hover { @apply bg-gray-400; }
 }
-
 @layer components {
-  .prose-chat {
-    @apply text-sm leading-relaxed;
-  }
+  .prose-chat { @apply text-sm leading-relaxed; }
   .prose-chat p { @apply mb-3 last:mb-0; }
   .prose-chat ul { @apply list-disc pl-5 mb-3 space-y-1; }
   .prose-chat ol { @apply list-decimal pl-5 mb-3 space-y-1; }
-  .prose-chat code {
-    @apply bg-gray-100 text-gray-800 px-1.5 py-0.5 rounded text-xs font-mono;
-  }
-  .prose-chat pre {
-    @apply bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto mb-3;
-  }
+  .prose-chat code { @apply bg-gray-100 text-gray-800 px-1.5 py-0.5 rounded text-xs font-mono; }
+  .prose-chat pre { @apply bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto mb-3; }
   .prose-chat pre code { @apply bg-transparent text-gray-100 p-0; }
   .prose-chat strong { @apply font-semibold; }
   .prose-chat h3 { @apply font-semibold text-base mt-4 mb-2; }

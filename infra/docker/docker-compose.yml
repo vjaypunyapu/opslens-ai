@@ -1,12 +1,5 @@
-version: "3.9"
-
-# OpsLens AI – Local Development Docker Compose
-# All services run on a shared bridge network.
-# Secrets are read from .env (never commit real keys).
-
 services:
 
-  # ── PostgreSQL ──────────────────────────────────────────────────────────────
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
@@ -18,14 +11,12 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./postgres/init.sql:/docker-entrypoint-initdb.d/01_init.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U opslens"]
       interval: 5s
       timeout: 5s
       retries: 5
 
-  # ── Redis ───────────────────────────────────────────────────────────────────
   redis:
     image: redis:7-alpine
     restart: unless-stopped
@@ -38,116 +29,97 @@ services:
       timeout: 5s
       retries: 5
 
-  # ── Qdrant ──────────────────────────────────────────────────────────────────
   qdrant:
     image: qdrant/qdrant:v1.9.0
     restart: unless-stopped
     ports:
-      - "6333:6333"   # REST API
-      - "6334:6334"   # gRPC
+      - "6333:6333"
+      - "6334:6334"
     volumes:
       - qdrant_data:/qdrant/storage
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:6333/healthz || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
 
-  # ── FastAPI Backend ──────────────────────────────────────────────────────────
   api:
     build:
       context: ../..
-      dockerfile: infra/docker/Dockerfile.api
+      dockerfile: Dockerfile.api
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "8000:8000"
     env_file: ../../.env
     environment:
-      DATABASE_URL:       postgresql+asyncpg://opslens:opslens_dev@postgres/opslens
-      QDRANT_URL:         http://qdrant:6333
-      REDIS_URL:          redis://redis:6379/0
-      CELERY_BROKER_URL:  redis://redis:6379/1
+      DATABASE_URL:      postgresql+asyncpg://opslens:opslens_dev@postgres/opslens
+      QDRANT_URL:        http://qdrant:6333
+      REDIS_URL:         redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
     depends_on:
       postgres: { condition: service_healthy }
       redis:    { condition: service_healthy }
-      qdrant:   { condition: service_healthy }
+      qdrant:   { condition: service_started }
     volumes:
-      - ../../apps/api:/app/apps/api   # hot-reload in dev
-    command: >
-      uvicorn apps.api.main:app
-        --host 0.0.0.0
-        --port 8080
-        --reload
-        --log-level info
+      - ../../apps:/app/apps
+    command: uvicorn apps.api.main:app --host 0.0.0.0 --port 8000 --reload --log-level info
 
-  # ── Celery Worker ────────────────────────────────────────────────────────────
   worker:
     build:
       context: ../..
-      dockerfile: infra/docker/Dockerfile.worker
+      dockerfile: Dockerfile.worker
     restart: unless-stopped
     env_file: ../../.env
     environment:
       DATABASE_URL:          postgresql+asyncpg://opslens:opslens_dev@postgres/opslens
       QDRANT_URL:            http://qdrant:6333
-      REDIS_URL:             redis://redis:6379/0
-      CELERY_BROKER_URL:     redis://redis:6379/1
-      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      CELERY_BROKER_URL:     redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
     depends_on:
       postgres: { condition: service_healthy }
       redis:    { condition: service_healthy }
-      qdrant:   { condition: service_healthy }
-    command: >
-      celery -A apps.worker.celery_app worker
-        --loglevel=info
-        --concurrency=4
-        --queues=default,embeddings,insights,alerts
+    volumes:
+      - ../../apps:/app/apps
+    command: celery -A apps.worker.celery_app worker --loglevel=info --concurrency=2 -Q ingestion,insights,alerts
 
-  # ── Celery Beat (scheduler) ──────────────────────────────────────────────────
   beat:
     build:
       context: ../..
-      dockerfile: infra/docker/Dockerfile.worker
+      dockerfile: Dockerfile.worker
     restart: unless-stopped
     env_file: ../../.env
     environment:
-      CELERY_BROKER_URL:     redis://redis:6379/1
-      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      CELERY_BROKER_URL:     redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
     depends_on:
       - redis
-    command: >
-      celery -A apps.worker.celery_app beat
-        --loglevel=info
-        --scheduler django_celery_beat.schedulers:DatabaseScheduler
+    volumes:
+      - ../../apps:/app/apps
+    command: celery -A apps.worker.celery_app beat --loglevel=info
 
-  # ── Next.js Frontend ─────────────────────────────────────────────────────────
   web:
-    build:
-      context: ../../apps/web
-      target: development
+    image: node:20-alpine
+    working_dir: /app
     restart: unless-stopped
     ports:
       - "3000:3000"
     environment:
-      NEXT_PUBLIC_API_URL: http://localhost:8080
+      API_URL: http://api:8000
+      NEXT_PUBLIC_API_URL: http://api:8000
+      NEXT_TELEMETRY_DISABLED: "1"
     volumes:
       - ../../apps/web:/app
-      - /app/node_modules
-      - /app/.next
+      - web_node_modules:/app/node_modules
+    command: sh -c "npm install --legacy-peer-deps && npm run dev"
     depends_on:
       - api
 
-  # ── Flower (Celery monitoring) ────────────────────────────────────────────────
   flower:
     image: mher/flower:2.0
     restart: unless-stopped
     ports:
       - "5555:5555"
     environment:
-      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_BROKER_URL: redis://redis:6379/0
     depends_on:
       - redis
 
 volumes:
   postgres_data:
   qdrant_data:
+  web_node_modules:

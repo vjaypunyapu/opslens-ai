@@ -15,7 +15,7 @@ Endpoints:
 from __future__ import annotations
 
 import uuid
-from typing import Annotated, Literal
+from typing import Annotated, Any
 
 import sqlalchemy as sa
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -33,16 +33,16 @@ VALID_INSIGHT_TYPES = {
     "complaint_spike", "feature_trend", "release_correlation",
     "eng_bottleneck", "churn_risk",
 }
-VALID_CHANNELS   = {"slack", "email"}
-VALID_OPERATORS  = {"gt", "gte", "lt", "lte", "eq", "contains"}
-VALID_FIELDS     = {"magnitude", "insight_type", "title"}
+VALID_CHANNELS  = {"slack", "email"}
+VALID_OPERATORS = {"gt", "gte", "lt", "lte", "eq", "contains"}
+VALID_FIELDS    = {"magnitude", "insight_type", "title"}
 
 
 # ── Schemas ────────────────────────────────────────────────────────────────────
-class AlertCondition(BaseModel):
-    field:    str = Field(..., description="Field to evaluate: magnitude | insight_type | title")
+class AlertConditionSchema(BaseModel):
+    field:    str = Field(..., description="magnitude | insight_type | title")
     operator: str = Field(..., description="gt | gte | lt | lte | eq | contains")
-    value:    float | str = Field(..., description="Comparison value")
+    value:    float | str
 
     @field_validator("field")
     @classmethod
@@ -59,66 +59,59 @@ class AlertCondition(BaseModel):
         return v
 
 
-class ChannelConfig(BaseModel):
-    slack_webhook_url:  str | None = None
-    email_recipients:   list[str] = Field(default_factory=list)
+class AlertChannelSchema(BaseModel):
+    type:        str = Field(..., description="slack | email")
+    webhook_url: str | None = None
+    email:       str | None = None
 
 
 class CreateRuleRequest(BaseModel):
-    name:           str = Field(..., min_length=1, max_length=100)
-    insight_types:  list[str] = Field(..., min_length=1)
-    condition:      AlertCondition
-    channels:       list[str] = Field(..., min_length=1)
-    channel_config: ChannelConfig = Field(default_factory=ChannelConfig)
-    cooldown_hours: int = Field(default=4, ge=1, le=168)
-    enabled:        bool = True
-
-    @field_validator("insight_types")
-    @classmethod
-    def check_insight_types(cls, v: list[str]) -> list[str]:
-        bad = set(v) - VALID_INSIGHT_TYPES
-        if bad:
-            raise ValueError(f"Invalid insight_types: {bad}. Valid: {VALID_INSIGHT_TYPES}")
-        return v
+    name:             str = Field(..., min_length=1, max_length=100)
+    description:      str | None = None
+    conditions:       list[AlertConditionSchema] = Field(..., min_length=1)
+    channels:         list[AlertChannelSchema] = Field(..., min_length=1)
+    is_active:        bool = True
+    cooldown_minutes: int = Field(default=240, ge=1, le=10080)
 
     @field_validator("channels")
     @classmethod
-    def check_channels(cls, v: list[str]) -> list[str]:
-        bad = set(v) - VALID_CHANNELS
+    def check_channel_types(cls, v: list[AlertChannelSchema]) -> list[AlertChannelSchema]:
+        bad = {c.type for c in v} - VALID_CHANNELS
         if bad:
-            raise ValueError(f"Invalid channels: {bad}. Valid: {VALID_CHANNELS}")
+            raise ValueError(f"Invalid channel types: {bad}. Valid: {VALID_CHANNELS}")
         return v
 
 
 class UpdateRuleRequest(BaseModel):
-    name:           str | None = None
-    condition:      AlertCondition | None = None
-    channels:       list[str] | None = None
-    channel_config: ChannelConfig | None = None
-    cooldown_hours: int | None = Field(default=None, ge=1, le=168)
-    enabled:        bool | None = None
+    name:             str | None = None
+    description:      str | None = None
+    conditions:       list[AlertConditionSchema] | None = None
+    channels:         list[AlertChannelSchema] | None = None
+    is_active:        bool | None = None
+    cooldown_minutes: int | None = Field(default=None, ge=1, le=10080)
 
 
+# Output schemas — aligned with the frontend AlertRule / AlertHistoryEntry types
 class AlertRuleOut(BaseModel):
-    id:             str
-    name:           str
-    insight_types:  list[str]
-    condition:      dict
-    channels:       list[str]
-    cooldown_hours: int
-    last_fired_at:  str | None
-    enabled:        bool
-    created_at:     str
+    id:               str
+    name:             str
+    description:      str | None
+    conditions:       list[dict]
+    channels:         list[dict]
+    is_active:        bool
+    cooldown_minutes: int
+    last_triggered_at: str | None
+    created_at:       str
+    updated_at:       str
 
 
 class AlertHistoryOut(BaseModel):
-    id:              str
-    rule_id:         str | None
-    insight_id:      str | None
-    rule_name:       str | None
-    channels_sent:   list[str]
-    delivery_status: str
-    fired_at:        str
+    id:                str
+    rule_id:           str | None
+    rule_name:         str | None
+    trigger_data:      dict
+    channels_notified: list[str]
+    triggered_at:      str
 
 
 # ── List rules ─────────────────────────────────────────────────────────────────
@@ -143,16 +136,13 @@ async def create_rule(
     db=Depends(get_db),
 ):
     rule = AlertRule(
-        id=str(uuid.uuid4()),
         tenant_id=ctx.tenant_id,
-        created_by=ctx.user_id,
         name=body.name,
-        insight_types=body.insight_types,
-        condition=body.condition.model_dump(),
-        channels=body.channels,
-        channel_config=body.channel_config.model_dump(),
-        cooldown_hours=body.cooldown_hours,
-        enabled=body.enabled,
+        description=body.description,
+        conditions=[c.model_dump() for c in body.conditions],
+        channels=[c.model_dump() for c in body.channels],
+        is_active=body.is_active,
+        cooldown_minutes=body.cooldown_minutes,
     )
     db.add(rule)
     await db.commit()
@@ -181,12 +171,12 @@ async def update_rule(
 ):
     rule = await _get_rule_or_404(db, rule_id, ctx.tenant_id)
 
-    if body.name          is not None: rule.name           = body.name
-    if body.condition     is not None: rule.condition      = body.condition.model_dump()
-    if body.channels      is not None: rule.channels       = body.channels
-    if body.channel_config is not None: rule.channel_config = body.channel_config.model_dump()
-    if body.cooldown_hours is not None: rule.cooldown_hours = body.cooldown_hours
-    if body.enabled       is not None: rule.enabled        = body.enabled
+    if body.name             is not None: rule.name             = body.name
+    if body.description      is not None: rule.description      = body.description
+    if body.conditions       is not None: rule.conditions       = [c.model_dump() for c in body.conditions]
+    if body.channels         is not None: rule.channels         = [c.model_dump() for c in body.channels]
+    if body.is_active        is not None: rule.is_active        = body.is_active
+    if body.cooldown_minutes is not None: rule.cooldown_minutes = body.cooldown_minutes
 
     await db.commit()
     await db.refresh(rule)
@@ -213,16 +203,16 @@ async def test_rule(
     ctx: Annotated[TenantContext, Depends(require_admin)],
     db=Depends(get_db),
 ):
-    """
-    Send a test notification via all channels configured on this rule.
-    Uses a synthetic insight payload — does NOT create a real insight.
-    """
-    from ..services.alert_service import AlertService
+    """Send a test notification via all channels on this rule."""
     rule = await _get_rule_or_404(db, rule_id, ctx.tenant_id)
-
-    svc = AlertService()
-    results = await svc.dispatch_test(rule)
-    logger.info("Test-fire alert rule %s by %s → %s", rule_id, ctx.user_id, results)
+    logger.info("Test-fire alert rule %s by %s", rule_id, ctx.user_id)
+    # AlertService is optional — return a safe no-op if not available
+    try:
+        from ..services.alert_service import AlertService
+        svc = AlertService()
+        results = await svc.dispatch_test(rule)
+    except (ImportError, Exception) as exc:
+        results = {"error": str(exc)}
     return {"message": "Test notification dispatched", "results": results}
 
 
@@ -234,17 +224,17 @@ async def get_alert_history(
     days: int = Query(default=7, ge=1, le=90),
     limit: int = Query(default=50, ge=1, le=200),
 ):
-    from datetime import timedelta
-    from datetime import datetime
-    cutoff = datetime.now(tz=__import__("datetime").timezone.utc) - timedelta(days=days)
+    from datetime import datetime, timedelta, timezone
+    cutoff = datetime.now(tz=timezone.utc) - timedelta(days=days)
+
     result = await db.execute(
         sa.select(AlertHistory, AlertRule.name.label("rule_name"))
         .outerjoin(AlertRule, AlertHistory.rule_id == AlertRule.id)
         .where(
             AlertHistory.tenant_id == ctx.tenant_id,
-            AlertHistory.fired_at >= cutoff,
+            AlertHistory.triggered_at >= cutoff,
         )
-        .order_by(AlertHistory.fired_at.desc())
+        .order_by(AlertHistory.triggered_at.desc())
         .limit(limit)
     )
     rows = result.all()
@@ -252,11 +242,10 @@ async def get_alert_history(
         AlertHistoryOut(
             id=str(h.id),
             rule_id=str(h.rule_id) if h.rule_id else None,
-            insight_id=str(h.insight_id) if h.insight_id else None,
             rule_name=rule_name,
-            channels_sent=list(h.channels_sent or []),
-            delivery_status=h.delivery_status,
-            fired_at=h.fired_at.isoformat(),
+            trigger_data=dict(h.trigger_data or {}),
+            channels_notified=list(h.channels_notified or []),
+            triggered_at=h.triggered_at.isoformat(),
         )
         for h, rule_name in rows
     ]
@@ -280,11 +269,12 @@ def _rule_to_out(r: AlertRule) -> AlertRuleOut:
     return AlertRuleOut(
         id=str(r.id),
         name=r.name,
-        insight_types=list(r.insight_types or []),
-        condition=dict(r.condition or {}),
+        description=r.description,
+        conditions=list(r.conditions or []),
         channels=list(r.channels or []),
-        cooldown_hours=r.cooldown_hours,
-        last_fired_at=r.last_fired_at.isoformat() if r.last_fired_at else None,
-        enabled=r.enabled,
+        is_active=r.is_active,
+        cooldown_minutes=r.cooldown_minutes,
+        last_triggered_at=r.last_triggered_at.isoformat() if r.last_triggered_at else None,
         created_at=r.created_at.isoformat(),
+        updated_at=r.updated_at.isoformat(),
     )

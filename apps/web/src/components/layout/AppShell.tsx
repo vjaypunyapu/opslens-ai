@@ -2,12 +2,9 @@ import { Sidebar } from "./Sidebar";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex h-screen overflow-hidden">
+    <div style={{ display: "flex", height: "100vh", overflow: "hidden", background: "#f9fafb" }}>
       <Sidebar />
-      <main
-        className="flex-1 overflow-auto"
-        style={{ marginLeft: "var(--sidebar-width)" }}
-      >
+      <main style={{ flex: 1, overflow: "auto", marginLeft: "260px" }}>
         {children}
       </main>
     </div>

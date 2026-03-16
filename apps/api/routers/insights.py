@@ -43,7 +43,8 @@ class InsightOut(BaseModel):
     insight_type: str
     title: str
     summary: str
-    magnitude: float | None
+    magnitude: str | None       # "low" | "medium" | "high"
+    confidence: float | None
     status: str
     source_types: list[str]
     generated_at: str
@@ -123,21 +124,43 @@ async def get_summary(
     days: int = Query(default=7, ge=1, le=90),
 ):
     """
-    Return a count of active insights grouped by type.
-    Used by the dashboard header to show quick-glance stats.
+    Return aggregated counts: total, active, resolved, snoozed, by_type, by_magnitude.
+    Used by the insights page to show quick-glance stats.
     """
     from datetime import timedelta
     cutoff = datetime.now(tz=timezone.utc) - timedelta(days=days)
-    result = await db.execute(
+
+    status_result = await db.execute(
+        sa.select(Insight.status, sa.func.count(Insight.id).label("count"))
+        .where(Insight.tenant_id == ctx.tenant_id, Insight.generated_at >= cutoff)
+        .group_by(Insight.status)
+    )
+    by_status: dict[str, int] = {row.status: row.count for row in status_result.fetchall()}
+
+    type_result = await db.execute(
         sa.select(Insight.insight_type, sa.func.count(Insight.id).label("count"))
-        .where(
-            Insight.tenant_id == ctx.tenant_id,
-            Insight.status == "active",
-            Insight.generated_at >= cutoff,
-        )
+        .where(Insight.tenant_id == ctx.tenant_id, Insight.status == "active",
+               Insight.generated_at >= cutoff)
         .group_by(Insight.insight_type)
     )
-    return {row.insight_type: row.count for row in result.fetchall()}
+    by_type: dict[str, int] = {row.insight_type: row.count for row in type_result.fetchall()}
+
+    mag_result = await db.execute(
+        sa.select(Insight.magnitude, sa.func.count(Insight.id).label("count"))
+        .where(Insight.tenant_id == ctx.tenant_id, Insight.status == "active",
+               Insight.generated_at >= cutoff)
+        .group_by(Insight.magnitude)
+    )
+    by_magnitude: dict[str, int] = {row.magnitude: row.count for row in mag_result.fetchall()}
+
+    return {
+        "total":      sum(by_status.values()),
+        "active":     by_status.get("active", 0),
+        "resolved":   by_status.get("resolved", 0),
+        "snoozed":    by_status.get("snoozed", 0),
+        "by_type":    by_type,
+        "by_magnitude": by_magnitude,
+    }
 
 
 @router.get("/{insight_id}", response_model=InsightOut)
@@ -165,12 +188,12 @@ async def trigger_generation(
     if insight_type and insight_type not in VALID_INSIGHT_TYPES:
         raise HTTPException(400, f"Invalid insight_type: {insight_type}")
 
-    run_all_insights_for_tenant.delay(ctx.tenant_id, only_type=insight_type)
+    run_all_insights_for_tenant.delay(str(ctx.tenant_id), only_type=insight_type)
     logger.info("On-demand insight generation triggered by %s for tenant %s",
                 ctx.user_id, ctx.tenant_id)
     return {
         "message": "Insight generation dispatched",
-        "tenant_id": ctx.tenant_id,
+        "tenant_id": str(ctx.tenant_id),
         "insight_type": insight_type or "all",
     }
 
@@ -235,7 +258,8 @@ def _insight_to_out(i: Insight) -> InsightOut:
         insight_type=i.insight_type,
         title=i.title,
         summary=i.summary,
-        magnitude=float(i.magnitude) if i.magnitude is not None else None,
+        magnitude=i.magnitude,          # keep as string: "low" | "medium" | "high"
+        confidence=float(i.confidence) if i.confidence is not None else None,
         status=i.status,
         source_types=list(i.source_types or []),
         generated_at=i.generated_at.isoformat(),

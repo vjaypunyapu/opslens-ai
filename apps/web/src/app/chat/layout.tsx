@@ -12,7 +12,7 @@ export default function ChatLayout({ children }: { children: React.ReactNode }) 
   useEffect(() => {
     (async () => {
       const token = await getToken();
-      const res = await fetch("/api/v1/rag/sessions", {
+      const res = await fetch("/api/v1/chat/sessions", {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (res.ok) setSessions(await res.json());

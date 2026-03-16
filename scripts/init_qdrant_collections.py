@@ -1,15 +1,6 @@
-"""
-OpsLens AI – Qdrant Collection Initialisation
-Run once per tenant during onboarding, or as an idempotent startup check.
-
-Usage:
-    python scripts/init_qdrant_collections.py --tenant-id <uuid>
-    python scripts/init_qdrant_collections.py --all-tenants
-"""
 import argparse
-import asyncio
+import os
 
-import sqlalchemy as sa
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
@@ -19,41 +10,29 @@ from qdrant_client.models import (
     VectorParams,
 )
 
-from apps.api.config import settings
-from apps.api.db.session import AsyncSession
-from apps.api.models.tenant import Tenant
-
-EMBED_DIMS = 1536
+EMBED_DIMS        = 1536
 COLLECTION_PREFIX = "opslens_"
+QDRANT_URL        = os.getenv("QDRANT_URL", "http://localhost:6333")
+QDRANT_API_KEY    = os.getenv("QDRANT_API_KEY", None)
 
 
-def create_collection_for_tenant(client: QdrantClient, tenant_id: str) -> bool:
-    """Create (or verify) a Qdrant collection for a tenant. Returns True if created."""
+def get_client():
+    return QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
+
+
+def create_collection_for_tenant(client, tenant_id):
     collection_name = f"{COLLECTION_PREFIX}{tenant_id}"
-
     existing = {c.name for c in client.get_collections().collections}
     if collection_name in existing:
-        print(f"  [SKIP] Collection '{collection_name}' already exists.")
+        print(f"  [SKIP] '{collection_name}' already exists.")
         return False
 
     client.create_collection(
         collection_name=collection_name,
-        vectors_config=VectorParams(
-            size=EMBED_DIMS,
-            distance=Distance.COSINE,
-            on_disk=False,      # set True for large tenants (>500k vectors)
-        ),
-        hnsw_config=HnswConfigDiff(
-            m=16,               # number of edges per node in HNSW graph
-            ef_construct=100,   # construction time / accuracy tradeoff
-            full_scan_threshold=10_000,
-        ),
-        optimizers_config=OptimizersConfigDiff(
-            indexing_threshold=20_000,  # start indexing after 20k vectors
-        ),
+        vectors_config=VectorParams(size=EMBED_DIMS, distance=Distance.COSINE),
+        hnsw_config=HnswConfigDiff(m=16, ef_construct=100),
+        optimizers_config=OptimizersConfigDiff(indexing_threshold=20_000),
     )
-
-    # Create payload indices for fast filtered search
     for field, schema_type in [
         ("source_type", PayloadSchemaType.KEYWORD),
         ("tenant_id",   PayloadSchemaType.KEYWORD),
@@ -66,37 +45,30 @@ def create_collection_for_tenant(client: QdrantClient, tenant_id: str) -> bool:
             field_name=field,
             field_schema=schema_type,
         )
-
-    print(f"  [OK]   Created collection '{collection_name}' with {EMBED_DIMS}-dim vectors.")
+    print(f"  [OK] Created '{collection_name}' ({EMBED_DIMS}-dim cosine).")
     return True
 
 
-async def init_all_tenants():
-    client = QdrantClient(url=settings.QDRANT_URL, api_key=settings.QDRANT_API_KEY)
-
-    async with AsyncSession() as db:
-        result = await db.execute(sa.select(Tenant.id))
-        tenant_ids = [str(row[0]) for row in result.fetchall()]
-
-    print(f"Initialising Qdrant collections for {len(tenant_ids)} tenant(s)...")
-    for tid in tenant_ids:
-        create_collection_for_tenant(client, tid)
-    print("Done.")
-
-
-async def init_single_tenant(tenant_id: str):
-    client = QdrantClient(url=settings.QDRANT_URL, api_key=settings.QDRANT_API_KEY)
-    create_collection_for_tenant(client, tenant_id)
-
-
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Initialise Qdrant collections for OpsLens tenants")
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--tenant-id", help="Single tenant UUID")
+    parser = argparse.ArgumentParser()
+    group  = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--tenant-id")
     group.add_argument("--all-tenants", action="store_true")
     args = parser.parse_args()
 
-    if args.all_tenants:
-        asyncio.run(init_all_tenants())
+    client = get_client()
+    if args.tenant_id:
+        create_collection_for_tenant(client, args.tenant_id)
     else:
-        asyncio.run(init_single_tenant(args.tenant_id))
+        import psycopg2
+        db_url = os.getenv("DATABASE_URL", "postgresql://opslens:opslens_dev@localhost:5432/opslens")
+        db_url = db_url.replace("postgresql+asyncpg://", "postgresql://")
+        conn = psycopg2.connect(db_url)
+        cur  = conn.cursor()
+        cur.execute("SELECT id FROM opslens.tenants")
+        ids  = [str(r[0]) for r in cur.fetchall()]
+        conn.close()
+        print(f"Found {len(ids)} tenant(s)...")
+        for tid in ids:
+            create_collection_for_tenant(client, tid)
+        print("Done.")

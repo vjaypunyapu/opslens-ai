@@ -18,11 +18,18 @@ export function useChat(sessionId: string) {
   const abortRef = useRef<AbortController | null>(null);
 
   const loadMessages = useCallback(async () => {
-    const token = await getToken();
-    const res = await fetch(`/api/v1/rag/sessions/${sessionId}/messages`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (res.ok) setMessages(await res.json());
+    try {
+      const token = await getToken();
+      const res = await fetch(`/api/v1/chat/sessions/${sessionId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setMessages(data.messages ?? []);
+      }
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to load messages');
+    }
   }, [sessionId, getToken]);
 
   const sendMessage = useCallback(
@@ -65,14 +72,14 @@ export function useChat(sessionId: string) {
 
       try {
         const token = await getToken();
-        const res = await fetch(`/api/v1/rag/sessions/${sessionId}/query`, {
+        const res = await fetch(`/api/v1/chat/sessions/${sessionId}/query`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${token}`,
           },
           body: JSON.stringify({
-            question,
+            content: question,
             filters: sourceTypes?.length ? { source_types: sourceTypes } : undefined,
           }),
           signal: ctrl.signal,
@@ -149,13 +156,16 @@ export function useChat(sessionId: string) {
   const sendFeedback = useCallback(
     async (messageId: string, feedback: "thumbs_up" | "thumbs_down") => {
       const token = await getToken();
-      await fetch(`/api/v1/rag/sessions/${sessionId}/messages/${messageId}/feedback`, {
+      await fetch("/api/v1/chat/feedback", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ feedback }),
+        body: JSON.stringify({
+          message_id: messageId,
+          score: feedback === "thumbs_up" ? 1 : -1,
+        }),
       });
       setMessages((prev) =>
         prev.map((m) => (m.id === messageId ? { ...m, feedback } : m)),
