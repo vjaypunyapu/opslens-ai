@@ -26,6 +26,7 @@ from ..auth.dependencies import TenantContext, require_admin, require_viewer
 from ..config import settings
 from ..db.session import get_db
 from ..models.integration import Integration
+from ..services.direct_sync_service import run_direct_sync
 from ..utils.logging import get_logger
 from ..utils.crypto import encrypt_credentials, decrypt_credentials
 
@@ -140,9 +141,12 @@ async def connect_integration(
     await db.commit()
     await db.refresh(integration)
 
-    # Trigger initial sync in background (no-op if no Airbyte connection)
+    # Trigger initial sync in background
     if airbyte_connection_id:
         background_tasks.add_task(_trigger_airbyte_sync, airbyte_connection_id, str(integration.id))
+    else:
+        # No Airbyte (dev mode) — sync directly from the source API
+        background_tasks.add_task(run_direct_sync, str(integration.id), str(ctx.tenant_id))
     logger.info("Integration %s created for tenant %s", body.source_type, ctx.tenant_id)
 
     return _integration_to_out(integration)
@@ -174,16 +178,22 @@ async def trigger_sync(
     background_tasks: BackgroundTasks,
     db=Depends(get_db),
 ):
-    """Trigger an immediate manual re-sync via Airbyte."""
+    """
+    Trigger an immediate manual re-sync.
+    - If Airbyte is configured: delegates to Airbyte.
+    - If no Airbyte connection (local dev): runs a direct API sync using stored credentials.
+    """
     integration = await _get_integration_or_404(db, integration_id, ctx.tenant_id)
 
-    if not integration.airbyte_connection_id:
-        raise HTTPException(status_code=400, detail="No Airbyte connection associated.")
+    if integration.airbyte_connection_id:
+        background_tasks.add_task(
+            _trigger_airbyte_sync, integration.airbyte_connection_id, integration_id
+        )
+        return {"message": "Sync triggered via Airbyte", "integration_id": integration_id}
 
-    background_tasks.add_task(
-        _trigger_airbyte_sync, integration.airbyte_connection_id, integration_id
-    )
-    return {"message": "Sync triggered", "integration_id": integration_id}
+    # No Airbyte — fall back to direct API sync
+    background_tasks.add_task(run_direct_sync, integration_id, str(ctx.tenant_id))
+    return {"message": "Sync triggered (direct)", "integration_id": integration_id}
 
 
 # ── Sync status ────────────────────────────────────────────────────────────────
