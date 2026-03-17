@@ -1,1 +1,1 @@
-from apps.api.db.models import AlertRule, AlertHistory  # noqa: F401
+from apps.api.db.models import AlertHistory, AlertRule  # noqa: F401

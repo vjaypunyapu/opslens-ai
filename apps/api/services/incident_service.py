@@ -15,7 +15,6 @@ The investigation:
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
@@ -83,7 +82,6 @@ async def investigate_incident(
     Designed to run as a background task (called from the router or Celery).
     """
     from qdrant_client import QdrantClient
-    from qdrant_client.models import Filter, FieldCondition, MatchValue
 
     qdrant = QdrantClient(url=settings.QDRANT_URL, api_key=settings.QDRANT_API_KEY or None)
     collection = f"opslens_{tenant_id}"

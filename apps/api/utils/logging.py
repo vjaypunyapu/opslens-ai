@@ -2,6 +2,7 @@
 import logging
 import sys
 
+
 def configure_logging(level: int = logging.INFO) -> None:
     root = logging.getLogger()
     if root.handlers:

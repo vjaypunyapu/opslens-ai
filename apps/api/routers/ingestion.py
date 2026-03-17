@@ -15,11 +15,12 @@ Endpoints:
 from __future__ import annotations
 
 import uuid
+from datetime import timezone
 from typing import Annotated
 
 import httpx
 import sqlalchemy as sa
-from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 from ..auth.dependencies import TenantContext, require_admin, require_viewer
@@ -27,8 +28,8 @@ from ..config import settings
 from ..db.session import get_db
 from ..models.integration import Integration
 from ..services.direct_sync_service import run_direct_sync
+from ..utils.crypto import encrypt_credentials
 from ..utils.logging import get_logger
-from ..utils.crypto import encrypt_credentials, decrypt_credentials
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -259,7 +260,7 @@ async def airbyte_webhook(
     if sync_status == "succeeded":
         integration.status = "active"
         integration.total_records = (integration.total_records or 0) + records_synced
-        from datetime import datetime, timezone
+        from datetime import datetime
         integration.last_synced_at = datetime.now(tz=timezone.utc)
         await db.commit()
 

@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from ..auth.dependencies import TenantContext, require_member, require_viewer
+from ..auth.dependencies import TenantContext, require_member
 from ..db.session import get_db
 from ..models.chat import ChatMessage, ChatSession
 from ..services.rag_service import RagService, get_rag_service

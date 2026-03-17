@@ -1,14 +1,18 @@
 from __future__ import annotations
-import json, os
-from typing import Any
-from cryptography.fernet import Fernet, InvalidToken
+
+import json
+import os
+
+from cryptography.fernet import Fernet
+
 from .logging import get_logger
 
 logger = get_logger(__name__)
 _KEY = os.getenv("CREDENTIAL_ENCRYPTION_KEY", "")
 
 if not _KEY:
-    import base64, hashlib
+    import base64
+    import hashlib
     _fallback = base64.urlsafe_b64encode(hashlib.sha256(b"opslens-dev-only").digest())
     logger.warning("CREDENTIAL_ENCRYPTION_KEY not set — using insecure dev fallback.")
     _fernet = Fernet(_fallback)

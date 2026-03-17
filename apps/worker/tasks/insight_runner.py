@@ -77,7 +77,7 @@ def detect_complaint_spike(self, tenant_id: str):
     try:
         asyncio.run(_detect_complaint_spike(tenant_id))
     except Exception as exc:
-        raise self.retry(exc=exc)
+        raise self.retry(exc=exc) from exc
 
 
 async def _detect_complaint_spike(tenant_id: str):
@@ -118,7 +118,7 @@ def detect_feature_trend(self, tenant_id: str):
     try:
         asyncio.run(_detect_feature_trend(tenant_id))
     except Exception as exc:
-        raise self.retry(exc=exc)
+        raise self.retry(exc=exc) from exc
 
 
 async def _detect_feature_trend(tenant_id: str):
@@ -163,7 +163,7 @@ def detect_eng_bottleneck(self, tenant_id: str):
     try:
         asyncio.run(_detect_eng_bottleneck(tenant_id))
     except Exception as exc:
-        raise self.retry(exc=exc)
+        raise self.retry(exc=exc) from exc
 
 
 async def _detect_eng_bottleneck(tenant_id: str):

@@ -20,8 +20,9 @@ from fastapi.responses import JSONResponse
 
 from .auth.middleware import JWTAuthMiddleware
 from .config import settings
-from .db.session import engine, Base
-from .routers import alerts, dashboard, incidents, ingestion, insights, rag, settings as settings_router, users
+from .db.session import Base, engine
+from .routers import alerts, dashboard, incidents, ingestion, insights, rag, users
+from .routers import settings as settings_router
 from .utils.logging import configure_logging, get_logger
 
 logger = get_logger(__name__)
@@ -372,12 +373,14 @@ def create_app() -> FastAPI:
         DEV-ONLY: test the full tenant-provision + chat-session DB round-trip.
         No auth required. Remove before deploying to production.
         """
+        import re as _re
         import traceback as _tb
         import uuid as _uuid
-        import re as _re
+
         import sqlalchemy as _sa
+
+        from .db.models import ChatSession, Tenant
         from .db.session import AsyncSessionFactory
-        from .db.models import Tenant, ChatSession
 
         results: dict = {}
 

@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
-from typing import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -11,10 +11,10 @@ import pytest_asyncio
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from apps.api.auth.dependencies import TenantContext
 from apps.api.db.models import Base
 from apps.api.db.session import get_db
 from apps.api.main import app
-from apps.api.auth.dependencies import TenantContext
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 TEST_TENANT_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
@@ -41,10 +41,9 @@ async def create_test_tables():
 @pytest_asyncio.fixture
 async def db_session() -> AsyncGenerator[AsyncSession, None]:
     """Provide a transactional DB session that rolls back after each test."""
-    async with _engine.begin() as conn:
-        async with _TestingSessionLocal(bind=conn) as session:
-            yield session
-            await session.rollback()
+    async with _engine.begin() as conn, _TestingSessionLocal(bind=conn) as session:
+        yield session
+        await session.rollback()
 
 
 # ─── FastAPI Test Client ───────────────────────────────────────────────────────
@@ -74,7 +73,7 @@ async def api_client(db_session: AsyncSession, tenant_ctx: TenantContext) -> Asy
     def override_require_admin():
         return tenant_ctx
 
-    from apps.api.auth.dependencies import require_viewer, require_member, require_admin
+    from apps.api.auth.dependencies import require_admin, require_member, require_viewer
 
     app.dependency_overrides[get_db]            = override_get_db
     app.dependency_overrides[require_viewer]    = override_require_viewer

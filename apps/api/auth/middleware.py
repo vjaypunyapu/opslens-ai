@@ -1,12 +1,15 @@
 """OpsLens AI - JWT Auth Middleware (JWKS + static PEM support)"""
 from __future__ import annotations
+
 import traceback
-from typing import Callable
+from collections.abc import Callable
+
 import jwt
-from jwt import PyJWKClient
 from fastapi import Request, Response, status
 from fastapi.responses import JSONResponse
+from jwt import PyJWKClient
 from starlette.middleware.base import BaseHTTPMiddleware
+
 from ..config import settings
 from ..utils.logging import get_logger
 

@@ -15,7 +15,7 @@ from celery import shared_task
 from celery.utils.log import get_task_logger
 from openai import AsyncOpenAI
 from qdrant_client import QdrantClient
-from qdrant_client.models import PointStruct, VectorParams, Distance
+from qdrant_client.models import Distance, PointStruct, VectorParams
 
 from ..config import settings
 from ..db import AsyncSession
@@ -184,7 +184,7 @@ class GitHubNormalizer:
                 content="\n\n".join(filter(None, [
                     raw.get("body", "") or "",
                     f"State: {raw.get('state', 'unknown')}",
-                    f"Labels: {', '.join(l.get('name','') for l in raw.get('labels', []))}",
+                    f"Labels: {', '.join(label.get('name','') for label in raw.get('labels', []))}",
                 ])),
                 author=user.get("login", ""),
                 url=raw.get("html_url", ""),
@@ -676,7 +676,7 @@ def process_document(self, doc_id: str, tenant_id: str) -> dict:
         return asyncio.run(_process_async(doc_id, tenant_id))
     except Exception as exc:
         logger.exception("process_document failed for %s: %s", doc_id, exc)
-        raise self.retry(exc=exc)
+        raise self.retry(exc=exc) from exc
 
 
 async def _process_async(doc_id: str, tenant_id: str) -> dict:
