@@ -296,6 +296,8 @@ async def _fetch_jira(creds: dict, tenant_id: str, integration_id: str) -> int:
                                "created", "updated", "issuetype", "project"],
                 },
             )
+            if not resp.is_success:
+                logger.error("Jira search HTTP %s — body: %s", resp.status_code, resp.text[:500])
             resp.raise_for_status()
             data   = resp.json()
             issues = data.get("issues", [])
