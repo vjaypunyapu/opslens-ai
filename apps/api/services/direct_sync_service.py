@@ -322,7 +322,15 @@ async def _fetch_jira(creds: dict, tenant_id: str, integration_id: str) -> int:
                 else:
                     desc = ""
 
-                content = f"{f.get('summary', '')}\n\n{desc}".strip()
+                status    = (f.get("status") or {}).get("name", "Unknown")
+                issue_type = (f.get("issuetype") or {}).get("name", "")
+                project   = (f.get("project") or {}).get("name", "")
+                assignee  = (f.get("assignee") or {}).get("displayName", "Unassigned")
+                content = (
+                    f"[{issue['key']}] {f.get('summary', '')}\n"
+                    f"Status: {status}  Type: {issue_type}  Project: {project}  Assignee: {assignee}\n\n"
+                    f"{desc}"
+                ).strip()
                 if not content:
                     continue
 
