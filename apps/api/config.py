@@ -57,12 +57,21 @@ class Settings(BaseSettings):
     QDRANT_TOP_K: int = 10
     QDRANT_COLLECTION_PREFIX: str = "opslens_"
 
+    # ── LLM Provider ─────────────────────────────────────────────────────────
+    # Set LLM_PROVIDER=ollama to keep all data on-premises (no OpenAI calls).
+    LLM_PROVIDER: Literal["openai", "ollama"] = "openai"
+
     # ── OpenAI ────────────────────────────────────────────────────────────────
     OPENAI_API_KEY: str = ""
     OPENAI_EMBED_MODEL: str = "text-embedding-3-small"
     OPENAI_CHAT_MODEL: str = "gpt-4o"
     OPENAI_MAX_TOKENS: int = 2048
     OPENAI_TEMPERATURE: float = 0.0
+
+    # ── Ollama (on-prem / private LLM) ────────────────────────────────────────
+    OLLAMA_URL: str = "http://ollama:11434"
+    OLLAMA_CHAT_MODEL: str = "llama3.1"
+    OLLAMA_EMBED_MODEL: str = "nomic-embed-text"  # 768-dim, fast, local
 
     # ── Auth (Clerk / Auth0 — RS256 JWT) ──────────────────────────────────────
     JWT_ALGORITHM: str = "RS256"

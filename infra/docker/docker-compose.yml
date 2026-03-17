@@ -38,6 +38,19 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
 
+  # ── Optional: Ollama (on-prem LLM — set LLM_PROVIDER=ollama in .env) ────────
+  # Start with: docker compose --profile ollama up
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["ollama"]
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    # Pull models on first start: docker exec docker-ollama-1 ollama pull llama3.1
+    # For embeddings:             docker exec docker-ollama-1 ollama pull nomic-embed-text
+
   api:
     build:
       context: ../..
@@ -122,4 +135,5 @@ services:
 volumes:
   postgres_data:
   qdrant_data:
+  ollama_data:
   web_node_modules:

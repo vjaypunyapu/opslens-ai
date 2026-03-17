@@ -46,17 +46,32 @@ _qdrant_client = QdrantClient(
     api_key=settings.QDRANT_API_KEY,
     timeout=10,
 )
-_embeddings = OpenAIEmbeddings(
-    model=settings.OPENAI_EMBED_MODEL,
-    openai_api_key=settings.OPENAI_API_KEY,
-)
-_llm = ChatOpenAI(
-    model=settings.OPENAI_CHAT_MODEL,
-    temperature=settings.OPENAI_TEMPERATURE,
-    max_tokens=settings.OPENAI_MAX_TOKENS,
-    streaming=True,
-    openai_api_key=settings.OPENAI_API_KEY,
-)
+
+if settings.LLM_PROVIDER == "ollama":
+    from langchain_ollama import ChatOllama, OllamaEmbeddings
+    _embeddings = OllamaEmbeddings(
+        model=settings.OLLAMA_EMBED_MODEL,
+        base_url=settings.OLLAMA_URL,
+    )
+    _llm = ChatOllama(
+        model=settings.OLLAMA_CHAT_MODEL,
+        base_url=settings.OLLAMA_URL,
+        temperature=settings.OPENAI_TEMPERATURE,
+    )
+    logger.info("LLM provider: Ollama (%s) @ %s", settings.OLLAMA_CHAT_MODEL, settings.OLLAMA_URL)
+else:
+    _embeddings = OpenAIEmbeddings(
+        model=settings.OPENAI_EMBED_MODEL,
+        openai_api_key=settings.OPENAI_API_KEY,
+    )
+    _llm = ChatOpenAI(
+        model=settings.OPENAI_CHAT_MODEL,
+        temperature=settings.OPENAI_TEMPERATURE,
+        max_tokens=settings.OPENAI_MAX_TOKENS,
+        streaming=True,
+        openai_api_key=settings.OPENAI_API_KEY,
+    )
+    logger.info("LLM provider: OpenAI (%s)", settings.OPENAI_CHAT_MODEL)
 
 # ── System prompt ────────────────────────────────────────────────────────────
 _SYSTEM_PROMPT = """\
@@ -187,6 +202,7 @@ class RagService:
                 else:
                     raise
             context_str = self._format_docs(docs)
+            logger.info("RAG context preview for tenant=%s: %s", tenant_id, context_str[:600])
 
             # Build and run the LCEL chain
             chain = (

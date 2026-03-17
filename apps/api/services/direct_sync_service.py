@@ -33,8 +33,14 @@ logger = get_logger(__name__)
 CHUNK_TOKENS   = 512
 OVERLAP_TOKENS = 50
 EMBED_BATCH    = 50
-EMBED_MODEL    = "text-embedding-3-small"
-EMBED_DIMS     = 1536
+
+# Embedding model / dims depend on provider
+if settings.LLM_PROVIDER == "ollama":
+    EMBED_MODEL = settings.OLLAMA_EMBED_MODEL   # e.g. "nomic-embed-text"
+    EMBED_DIMS  = 768                            # nomic-embed-text output dims
+else:
+    EMBED_MODEL = settings.OPENAI_EMBED_MODEL   # "text-embedding-3-small"
+    EMBED_DIMS  = 1536
 
 _enc     = tiktoken.get_encoding("cl100k_base")
 _openai  = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
@@ -91,12 +97,24 @@ async def _embed_and_upsert(doc: CanonicalDocument, chunks: list[str], tenant_id
     points: list[PointStruct] = []
     for batch_start in range(0, len(chunks), EMBED_BATCH):
         batch = chunks[batch_start: batch_start + EMBED_BATCH]
-        response = await _openai.embeddings.create(model=EMBED_MODEL, input=batch)
-        for i, emb in enumerate(response.data):
+
+        if settings.LLM_PROVIDER == "ollama":
+            import httpx as _httpx
+            ollama_resp = await _httpx.AsyncClient(timeout=60).post(
+                f"{settings.OLLAMA_URL}/api/embed",
+                json={"model": EMBED_MODEL, "input": batch},
+            )
+            ollama_resp.raise_for_status()
+            embeddings_list = ollama_resp.json()["embeddings"]
+        else:
+            response = await _openai.embeddings.create(model=EMBED_MODEL, input=batch)
+            embeddings_list = [e.embedding for e in response.data]
+
+        for i, vector in enumerate(embeddings_list):
             chunk_idx = batch_start + i
             points.append(PointStruct(
                 id=str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{doc.id}:{chunk_idx}")),
-                vector=emb.embedding,
+                vector=vector,
                 payload={
                     # LangChain QdrantVectorStore expects these two top-level keys
                     "page_content": batch[i],
