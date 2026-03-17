@@ -285,8 +285,9 @@ async def _fetch_jira(creds: dict, tenant_id: str, integration_id: str) -> int:
     async with httpx.AsyncClient(auth=auth, headers=headers, timeout=30) as client:
         start_at, max_results = 0, 50
         while True:
+            # /rest/api/3/search was deprecated (410 Gone); use /rest/api/3/search/jql
             resp = await client.get(
-                f"{server_url}/rest/api/3/search",
+                f"{server_url}/rest/api/3/search/jql",
                 params={
                     "jql": "ORDER BY updated DESC",
                     "startAt": start_at,
