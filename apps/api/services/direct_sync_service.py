@@ -283,18 +283,21 @@ async def _fetch_jira(creds: dict, tenant_id: str, integration_id: str) -> int:
     records: list[RawRecord] = []
 
     async with httpx.AsyncClient(auth=auth, headers=headers, timeout=30) as client:
-        start_at, max_results = 0, 50
+        # /rest/api/3/search/jql uses cursor-based pagination via nextPageToken
+        next_page_token: str | None = None
         while True:
-            # Use POST /rest/api/3/search/jql (GET deprecated with 410, POST with JSON body required)
+            body: dict = {
+                "jql": "created >= -365d ORDER BY updated DESC",
+                "maxResults": 50,
+                "fields": ["summary", "description", "status", "assignee", "reporter",
+                           "created", "updated", "issuetype", "project"],
+            }
+            if next_page_token:
+                body["nextPageToken"] = next_page_token
+
             resp = await client.post(
                 f"{server_url}/rest/api/3/search/jql",
-                json={
-                    "jql": "created >= -365d ORDER BY updated DESC",
-                    "startAt": start_at,
-                    "maxResults": max_results,
-                    "fields": ["summary", "description", "status", "assignee", "reporter",
-                               "created", "updated", "issuetype", "project"],
-                },
+                json=body,
             )
             if not resp.is_success:
                 logger.error("Jira search HTTP %s — body: %s", resp.status_code, resp.text[:500])
@@ -304,20 +307,20 @@ async def _fetch_jira(creds: dict, tenant_id: str, integration_id: str) -> int:
             if not issues:
                 break
 
+            def _extract_adf(node: dict) -> str:
+                if node.get("type") == "text":
+                    return node.get("text", "")
+                return " ".join(_extract_adf(c) for c in node.get("content", []))
+
             for issue in issues:
                 f = issue.get("fields", {})
-                desc = ""
-                # Jira description can be Atlassian Document Format (ADF) or plain text
                 raw_desc = f.get("description")
                 if isinstance(raw_desc, str):
                     desc = raw_desc
                 elif isinstance(raw_desc, dict):
-                    # Extract plain text from ADF content blocks
-                    def _extract_adf(node: dict) -> str:
-                        if node.get("type") == "text":
-                            return node.get("text", "")
-                        return " ".join(_extract_adf(c) for c in node.get("content", []))
                     desc = _extract_adf(raw_desc)
+                else:
+                    desc = ""
 
                 content = f"{f.get('summary', '')}\n\n{desc}".strip()
                 if not content:
@@ -340,8 +343,8 @@ async def _fetch_jira(creds: dict, tenant_id: str, integration_id: str) -> int:
                     },
                 ))
 
-            start_at += max_results
-            if start_at >= data.get("total", 0) or len(records) >= 200:
+            next_page_token = data.get("nextPageToken")
+            if not next_page_token or len(records) >= 200:
                 break
 
     logger.info("Jira direct sync: %d records for tenant %s", len(records), tenant_id)
