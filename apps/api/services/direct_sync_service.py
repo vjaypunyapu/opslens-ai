@@ -289,7 +289,7 @@ async def _fetch_jira(creds: dict, tenant_id: str, integration_id: str) -> int:
             resp = await client.post(
                 f"{server_url}/rest/api/3/search/jql",
                 json={
-                    "jql": "ORDER BY updated DESC",
+                    "jql": "created >= -365d ORDER BY updated DESC",
                     "startAt": start_at,
                     "maxResults": max_results,
                     "fields": ["summary", "description", "status", "assignee", "reporter",
