@@ -595,7 +595,7 @@ async def embed_and_upsert(
     chunks: list[str],
     tenant_id: str,
 ) -> None:
-    """Embed all chunks and upsert to Qdrant in batches."""
+    """Embed chunks and upsert each batch immediately to avoid memory spikes."""
     collection_name = f"opslens_{tenant_id}"
 
     # Ensure collection exists
@@ -606,15 +606,16 @@ async def embed_and_upsert(
             vectors_config=VectorParams(size=EMBED_DIMS, distance=Distance.COSINE),
         )
 
-    points: list[PointStruct] = []
+    upserted_points = 0
 
     for batch_start in range(0, len(chunks), EMBED_BATCH):
         batch = chunks[batch_start: batch_start + EMBED_BATCH]
         response = await _openai.embeddings.create(model=EMBED_MODEL, input=batch)
+        batch_points: list[PointStruct] = []
 
         for local_i, emb_obj in enumerate(response.data):
             chunk_idx = batch_start + local_i
-            points.append(
+            batch_points.append(
                 PointStruct(
                     id=str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{doc.id}:{chunk_idx}")),
                     vector=emb_obj.embedding,
@@ -632,9 +633,12 @@ async def embed_and_upsert(
                 )
             )
 
-    if points:
-        _qdrant.upsert(collection_name=collection_name, points=points, wait=True)
-        logger.info("Upserted %d points to %s", len(points), collection_name)
+        if batch_points:
+            _qdrant.upsert(collection_name=collection_name, points=batch_points, wait=True)
+            upserted_points += len(batch_points)
+
+    if upserted_points:
+        logger.info("Upserted %d points to %s", upserted_points, collection_name)
 
 
 # ── Celery task ───────────────────────────────────────────────────────────────
