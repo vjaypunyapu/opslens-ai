@@ -31,7 +31,6 @@ async def get_dashboard(
     """Return all KPIs and recent activity for the workspace dashboard."""
     now = datetime.now(timezone.utc)
     week_ago = now - timedelta(days=7)
-    day_ago  = now - timedelta(days=1)
 
     tid = ctx.tenant_id
 

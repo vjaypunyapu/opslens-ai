@@ -8,6 +8,7 @@ python-multipart>=0.0.9       # form data support
 
 # ── Database ──────────────────────────────────────────────────────────────────
 sqlalchemy[asyncio]>=2.0.30
+aiosqlite>=0.20.0
 asyncpg>=0.29.0               # async PostgreSQL driver
 alembic>=1.13.0               # database migrations
 psycopg2-binary>=2.9.9        # sync driver (for Alembic autogenerate)

@@ -1,9 +1,12 @@
 from __future__ import annotations
+
 import uuid
 from typing import Annotated
+
 import sqlalchemy as sa
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+
 from ..auth.dependencies import TenantContext, require_admin, require_viewer
 from ..db.models import Tenant, User
 from ..db.session import get_db

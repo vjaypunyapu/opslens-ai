@@ -4,7 +4,6 @@ Evaluates alert rules against new insights and dispatches notifications.
 """
 from __future__ import annotations
 
-import json
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -124,7 +123,7 @@ def evaluate_alerts_for_tenant(self, tenant_id: str):
     try:
         asyncio.run(_evaluate_alerts_async(tenant_id))
     except Exception as exc:
-        raise self.retry(exc=exc)
+        raise self.retry(exc=exc) from exc
 
 
 async def _evaluate_alerts_async(tenant_id: str):
@@ -135,7 +134,7 @@ async def _evaluate_alerts_async(tenant_id: str):
         rules_result = await db.execute(
             sa.select(AlertRule).where(
                 AlertRule.tenant_id == tenant_id,
-                AlertRule.enabled == True,
+                AlertRule.enabled,
             )
         )
         rules: list[AlertRule] = rules_result.scalars().all()

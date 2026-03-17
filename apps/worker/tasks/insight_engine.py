@@ -710,7 +710,7 @@ def run_insights_for_tenant(self, tenant_id: str, only_type: str | None = None) 
         return asyncio.run(_run_all())
 
     except Exception as exc:
-        raise self.retry(exc=exc)
+        raise self.retry(exc=exc) from exc
 
 
 @shared_task(name="insights.run_all_tenants")

@@ -14,8 +14,8 @@ Endpoints:
 """
 from __future__ import annotations
 
-import uuid
-from typing import Annotated, Any
+from datetime import timezone
+from typing import Annotated
 
 import sqlalchemy as sa
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -171,12 +171,18 @@ async def update_rule(
 ):
     rule = await _get_rule_or_404(db, rule_id, ctx.tenant_id)
 
-    if body.name             is not None: rule.name             = body.name
-    if body.description      is not None: rule.description      = body.description
-    if body.conditions       is not None: rule.conditions       = [c.model_dump() for c in body.conditions]
-    if body.channels         is not None: rule.channels         = [c.model_dump() for c in body.channels]
-    if body.is_active        is not None: rule.is_active        = body.is_active
-    if body.cooldown_minutes is not None: rule.cooldown_minutes = body.cooldown_minutes
+    if body.name is not None:
+        rule.name = body.name
+    if body.description is not None:
+        rule.description = body.description
+    if body.conditions is not None:
+        rule.conditions = [c.model_dump() for c in body.conditions]
+    if body.channels is not None:
+        rule.channels = [c.model_dump() for c in body.channels]
+    if body.is_active is not None:
+        rule.is_active = body.is_active
+    if body.cooldown_minutes is not None:
+        rule.cooldown_minutes = body.cooldown_minutes
 
     await db.commit()
     await db.refresh(rule)
@@ -224,7 +230,7 @@ async def get_alert_history(
     days: int = Query(default=7, ge=1, le=90),
     limit: int = Query(default=50, ge=1, le=200),
 ):
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
     cutoff = datetime.now(tz=timezone.utc) - timedelta(days=days)
 
     result = await db.execute(

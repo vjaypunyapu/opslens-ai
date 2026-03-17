@@ -15,7 +15,6 @@ from __future__ import annotations
 import re
 import uuid as _uuid
 from dataclasses import dataclass
-from typing import Annotated
 
 import sqlalchemy as sa
 from fastapi import Depends, HTTPException, Request, status

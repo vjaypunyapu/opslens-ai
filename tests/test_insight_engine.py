@@ -22,7 +22,6 @@ from apps.worker.tasks.insight_engine import (
     save_insight,
 )
 
-
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
 NOW = datetime.now(tz=timezone.utc)

@@ -8,14 +8,14 @@ import hashlib
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, Protocol
 
 import tiktoken
 from celery import shared_task
 from celery.utils.log import get_task_logger
 from openai import AsyncOpenAI
 from qdrant_client import QdrantClient
-from qdrant_client.models import PointStruct, VectorParams, Distance
+from qdrant_client.models import Distance, PointStruct, VectorParams
 
 from ..config import settings
 from ..db import AsyncSession
@@ -24,7 +24,30 @@ from ..models.document import CanonicalDocument
 logger = get_task_logger(__name__)
 
 # ── Singletons ───────────────────────────────────────────────────────────────
-_enc = tiktoken.get_encoding("cl100k_base")
+class _Tokenizer(Protocol):
+    def encode(self, text: str) -> list[int]: ...
+    def decode(self, tokens: list[int]) -> str: ...
+
+
+class _FallbackTokenizer:
+    @staticmethod
+    def encode(text: str) -> list[int]:
+        return [ord(ch) for ch in text]
+
+    @staticmethod
+    def decode(tokens: list[int]) -> str:
+        return "".join(chr(t) for t in tokens)
+
+
+def _build_tokenizer() -> _Tokenizer:
+    try:
+        return tiktoken.get_encoding("cl100k_base")
+    except Exception as exc:
+        logger.warning("Failed to load tiktoken cl100k_base; using fallback tokenizer: %s", exc)
+        return _FallbackTokenizer()
+
+
+_enc = _build_tokenizer()
 _openai = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 _qdrant = QdrantClient(url=settings.QDRANT_URL, api_key=settings.QDRANT_API_KEY)
 
@@ -161,7 +184,7 @@ class GitHubNormalizer:
                 content="\n\n".join(filter(None, [
                     raw.get("body", "") or "",
                     f"State: {raw.get('state', 'unknown')}",
-                    f"Labels: {', '.join(l.get('name','') for l in raw.get('labels', []))}",
+                    f"Labels: {', '.join(label.get('name','') for label in raw.get('labels', []))}",
                 ])),
                 author=user.get("login", ""),
                 url=raw.get("html_url", ""),
@@ -653,7 +676,7 @@ def process_document(self, doc_id: str, tenant_id: str) -> dict:
         return asyncio.run(_process_async(doc_id, tenant_id))
     except Exception as exc:
         logger.exception("process_document failed for %s: %s", doc_id, exc)
-        raise self.retry(exc=exc)
+        raise self.retry(exc=exc) from exc
 
 
 async def _process_async(doc_id: str, tenant_id: str) -> dict:

@@ -119,7 +119,7 @@ class Settings(BaseSettings):
         return v
 
     @model_validator(mode="after")
-    def validate_production_secrets(self) -> "Settings":
+    def validate_production_secrets(self) -> Settings:
         if self.ENV == "production":
             assert self.OPENAI_API_KEY, "OPENAI_API_KEY must be set in production"
             assert self.JWT_PUBLIC_KEY, "JWT_PUBLIC_KEY must be set in production"

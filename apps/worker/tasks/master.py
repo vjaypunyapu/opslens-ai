@@ -57,7 +57,7 @@ def process_all_staging():
     """
     For every tenant, dispatch process_staging_batch for each active source type.
     """
-    from .ingestion import process_staging_batch, NORMALIZERS
+    from .ingestion import NORMALIZERS, process_staging_batch
 
     async def _get_tenant_integrations():
         from ..models.integration import Integration
