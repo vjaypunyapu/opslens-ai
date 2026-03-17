@@ -285,14 +285,15 @@ async def _fetch_jira(creds: dict, tenant_id: str, integration_id: str) -> int:
     async with httpx.AsyncClient(auth=auth, headers=headers, timeout=30) as client:
         start_at, max_results = 0, 50
         while True:
-            # /rest/api/3/search was deprecated (410 Gone); use /rest/api/3/search/jql
-            resp = await client.get(
+            # Use POST /rest/api/3/search/jql (GET deprecated with 410, POST with JSON body required)
+            resp = await client.post(
                 f"{server_url}/rest/api/3/search/jql",
-                params={
+                json={
                     "jql": "ORDER BY updated DESC",
                     "startAt": start_at,
                     "maxResults": max_results,
-                    "fields": "summary,description,status,assignee,reporter,created,updated,issuetype,project",
+                    "fields": ["summary", "description", "status", "assignee", "reporter",
+                               "created", "updated", "issuetype", "project"],
                 },
             )
             resp.raise_for_status()
