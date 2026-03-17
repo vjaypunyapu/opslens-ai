@@ -12,7 +12,7 @@ import hashlib
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Protocol
 
 import httpx
 import sqlalchemy as sa
@@ -42,7 +42,32 @@ else:
     EMBED_MODEL = settings.OPENAI_EMBED_MODEL   # "text-embedding-3-small"
     EMBED_DIMS  = 1536
 
-_enc     = tiktoken.get_encoding("cl100k_base")
+class _Tokenizer(Protocol):
+    def encode(self, text: str) -> list[int]: ...
+    def decode(self, tokens: list[int]) -> str: ...
+
+
+class _FallbackTokenizer:
+    """Offline-safe tokenizer fallback for environments without tiktoken assets."""
+
+    @staticmethod
+    def encode(text: str) -> list[int]:
+        return [ord(ch) for ch in text]
+
+    @staticmethod
+    def decode(tokens: list[int]) -> str:
+        return "".join(chr(t) for t in tokens)
+
+
+def _build_tokenizer() -> _Tokenizer:
+    try:
+        return tiktoken.get_encoding("cl100k_base")
+    except Exception as exc:
+        logger.warning("Failed to load tiktoken cl100k_base; using fallback tokenizer: %s", exc)
+        return _FallbackTokenizer()
+
+
+_enc     = _build_tokenizer()
 _openai  = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 _qdrant  = QdrantClient(url=settings.QDRANT_URL, api_key=settings.QDRANT_API_KEY or None)
 

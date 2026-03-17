@@ -8,7 +8,7 @@ import hashlib
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, Protocol
 
 import tiktoken
 from celery import shared_task
@@ -24,7 +24,30 @@ from ..models.document import CanonicalDocument
 logger = get_task_logger(__name__)
 
 # ── Singletons ───────────────────────────────────────────────────────────────
-_enc = tiktoken.get_encoding("cl100k_base")
+class _Tokenizer(Protocol):
+    def encode(self, text: str) -> list[int]: ...
+    def decode(self, tokens: list[int]) -> str: ...
+
+
+class _FallbackTokenizer:
+    @staticmethod
+    def encode(text: str) -> list[int]:
+        return [ord(ch) for ch in text]
+
+    @staticmethod
+    def decode(tokens: list[int]) -> str:
+        return "".join(chr(t) for t in tokens)
+
+
+def _build_tokenizer() -> _Tokenizer:
+    try:
+        return tiktoken.get_encoding("cl100k_base")
+    except Exception as exc:
+        logger.warning("Failed to load tiktoken cl100k_base; using fallback tokenizer: %s", exc)
+        return _FallbackTokenizer()
+
+
+_enc = _build_tokenizer()
 _openai = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 _qdrant = QdrantClient(url=settings.QDRANT_URL, api_key=settings.QDRANT_API_KEY)
 
@@ -595,7 +618,7 @@ async def embed_and_upsert(
     chunks: list[str],
     tenant_id: str,
 ) -> None:
-    """Embed all chunks and upsert to Qdrant in batches."""
+    """Embed chunks and upsert each batch immediately to avoid memory spikes."""
     collection_name = f"opslens_{tenant_id}"
 
     # Ensure collection exists
@@ -606,15 +629,16 @@ async def embed_and_upsert(
             vectors_config=VectorParams(size=EMBED_DIMS, distance=Distance.COSINE),
         )
 
-    points: list[PointStruct] = []
+    upserted_points = 0
 
     for batch_start in range(0, len(chunks), EMBED_BATCH):
         batch = chunks[batch_start: batch_start + EMBED_BATCH]
         response = await _openai.embeddings.create(model=EMBED_MODEL, input=batch)
+        batch_points: list[PointStruct] = []
 
         for local_i, emb_obj in enumerate(response.data):
             chunk_idx = batch_start + local_i
-            points.append(
+            batch_points.append(
                 PointStruct(
                     id=str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{doc.id}:{chunk_idx}")),
                     vector=emb_obj.embedding,
@@ -632,9 +656,12 @@ async def embed_and_upsert(
                 )
             )
 
-    if points:
-        _qdrant.upsert(collection_name=collection_name, points=points, wait=True)
-        logger.info("Upserted %d points to %s", len(points), collection_name)
+        if batch_points:
+            _qdrant.upsert(collection_name=collection_name, points=batch_points, wait=True)
+            upserted_points += len(batch_points)
+
+    if upserted_points:
+        logger.info("Upserted %d points to %s", upserted_points, collection_name)
 
 
 # ── Celery task ───────────────────────────────────────────────────────────────

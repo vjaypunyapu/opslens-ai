@@ -33,14 +33,20 @@ from ..utils.crypto import encrypt_credentials, decrypt_credentials
 router = APIRouter()
 logger = get_logger(__name__)
 
-SUPPORTED_SOURCES = {"slack", "gdrive", "jira", "zendesk", "github", "hubspot"}
+SUPPORTED_SOURCES = {
+    "slack", "gdrive", "jira", "zendesk", "github", "hubspot",
+    "elasticsearch", "datadog", "cloudwatch", "splunk", "azure_monitor", "gcp_logging",
+}
 
 
 # ── Request / Response schemas ────────────────────────────────────────────────
 class ConnectRequest(BaseModel):
     source_type: str = Field(
         ...,
-        description="One of: slack | gdrive | jira | zendesk | github | hubspot",
+        description=(
+            "One of: slack | gdrive | jira | zendesk | github | hubspot | "
+            "elasticsearch | datadog | cloudwatch | splunk | azure_monitor | gcp_logging"
+        ),
     )
     config: dict = Field(default_factory=dict, description="Source-specific config")
     credentials: dict = Field(
@@ -285,9 +291,14 @@ async def _create_airbyte_connection(
             timeout=15,
         ) as client:
             # 1. Create source
+            source_definition_id = _source_definition_id(source_type)
+            if not source_definition_id:
+                logger.info("No Airbyte sourceDefinitionId configured for %s; falling back to direct sync", source_type)
+                return None
+
             src_resp = await client.post("/sources", json={
                 "name": f"opslens-{source_type}",
-                "sourceDefinitionId": _source_definition_id(source_type),
+                "sourceDefinitionId": source_definition_id,
                 "workspaceId": config.get("airbyte_workspace_id", ""),
                 "connectionConfiguration": {**config, **credentials},
             })
@@ -348,6 +359,14 @@ def _source_definition_id(source_type: str) -> str:
         "zendesk":  "79c1aa37-dae3-42ae-b066-a00d0ebe4ba5",
         "github":   "ef69ef6e-aa7f-4af1-a01d-ef775033524e",
         "hubspot":  "36c891d9-4bd9-4ac1-b9d2-4d7a0f6b21a1",
+        # Log/observability connectors (IDs can vary by Airbyte deployment).
+        # Override in env when different from these defaults.
+        "elasticsearch": settings.AIRBYTE_SOURCE_DEF_ELASTICSEARCH,
+        "datadog":       settings.AIRBYTE_SOURCE_DEF_DATADOG,
+        "cloudwatch":    settings.AIRBYTE_SOURCE_DEF_CLOUDWATCH,
+        "splunk":        settings.AIRBYTE_SOURCE_DEF_SPLUNK,
+        "azure_monitor": settings.AIRBYTE_SOURCE_DEF_AZURE_MONITOR,
+        "gcp_logging":   settings.AIRBYTE_SOURCE_DEF_GCP_LOGGING,
     }.get(source_type, "")
 
 
@@ -361,6 +380,13 @@ def _build_sync_catalog(source_type: str) -> dict:
         "zendesk": ["tickets", "comments", "users"],
         "github":  ["commits", "pull_requests", "issues"],
         "hubspot": ["deals", "contacts", "companies"],
+        # Common stream names for log/observability connectors.
+        "elasticsearch": ["logs"],
+        "datadog":       ["logs"],
+        "cloudwatch":    ["logs"],
+        "splunk":        ["events"],
+        "azure_monitor": ["logs"],
+        "gcp_logging":   ["logs"],
     }
     streams = streams_map.get(source_type, [])
     return {
