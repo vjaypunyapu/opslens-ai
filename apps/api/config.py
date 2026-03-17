@@ -85,6 +85,15 @@ class Settings(BaseSettings):
     AIRBYTE_USERNAME: str = "airbyte"
     AIRBYTE_PASSWORD: str = "password"
 
+
+    # ── Airbyte source definition IDs (override per deployment) ──────────────
+    AIRBYTE_SOURCE_DEF_ELASTICSEARCH: str = ""
+    AIRBYTE_SOURCE_DEF_DATADOG: str = ""
+    AIRBYTE_SOURCE_DEF_CLOUDWATCH: str = ""
+    AIRBYTE_SOURCE_DEF_SPLUNK: str = ""
+    AIRBYTE_SOURCE_DEF_AZURE_MONITOR: str = ""
+    AIRBYTE_SOURCE_DEF_GCP_LOGGING: str = ""
+
     # ── Chunking ──────────────────────────────────────────────────────────────
     CHUNK_TOKENS: int = 512
     CHUNK_OVERLAP_TOKENS: int = 50
