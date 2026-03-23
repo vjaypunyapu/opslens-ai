@@ -187,6 +187,17 @@ class Settings(BaseSettings):
             return [o.strip() for o in v.split(",") if o.strip()]
         return v
 
+    @field_validator("DATABASE_URL", mode="before")
+    @classmethod
+    def fix_database_url(cls, v: str) -> str:
+        # Railway injects postgres:// or postgresql:// — SQLAlchemy asyncpg needs postgresql+asyncpg://
+        if isinstance(v, str):
+            if v.startswith("postgres://"):
+                v = v.replace("postgres://", "postgresql+asyncpg://", 1)
+            elif v.startswith("postgresql://"):
+                v = v.replace("postgresql://", "postgresql+asyncpg://", 1)
+        return v
+
     @model_validator(mode="after")
     def validate_production_secrets(self) -> "Settings":
         if self.ENV == "production":
