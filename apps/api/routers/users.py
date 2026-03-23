@@ -33,7 +33,7 @@ class UserUpdateBody(BaseModel):
 
 @router.get("/me", response_model=UserOut)
 async def get_current_user(ctx: Annotated[TenantContext, Depends(require_viewer)], db=Depends(get_db)):
-    result = await db.execute(sa.select(User).where(User.external_id == ctx.user_id, User.tenant_id == ctx.tenant_id))
+    result = await db.execute(sa.select(User).where(User.external_id == ctx.user_id, User.tenant_id == ctx.tenant_uuid))
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="User not found.")
@@ -41,7 +41,7 @@ async def get_current_user(ctx: Annotated[TenantContext, Depends(require_viewer)
 
 @router.get("/tenant", response_model=TenantOut)
 async def get_tenant(ctx: Annotated[TenantContext, Depends(require_viewer)], db=Depends(get_db)):
-    result = await db.execute(sa.select(Tenant).where(Tenant.id == ctx.tenant_id))
+    result = await db.execute(sa.select(Tenant).where(Tenant.id == ctx.tenant_uuid))
     tenant = result.scalar_one_or_none()
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found.")
@@ -49,5 +49,5 @@ async def get_tenant(ctx: Annotated[TenantContext, Depends(require_viewer)], db=
 
 @router.get("/users", response_model=list[UserOut])
 async def list_users(ctx: Annotated[TenantContext, Depends(require_admin)], db=Depends(get_db)):
-    result = await db.execute(sa.select(User).where(User.tenant_id == ctx.tenant_id).order_by(User.email))
+    result = await db.execute(sa.select(User).where(User.tenant_id == ctx.tenant_uuid).order_by(User.email))
     return result.scalars().all()

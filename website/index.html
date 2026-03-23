@@ -1,0 +1,1056 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OpsLens AI — Operational Intelligence for Engineering Teams</title>
+  <meta name="description" content="OpsLens AI detects incidents, enriches alerts with context, and auto-generates RRT briefs — so your team spends less time on-call triage and more time shipping.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    /* ── Reset & Base ─────────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: 'Inter', system-ui, sans-serif;
+      background: #ffffff;
+      color: #1a2540;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── Colour tokens ────────────────────────────────────────────────────── */
+    :root {
+      --navy:      #0f1e3c;
+      --blue:      #1d4ed8;
+      --blue-mid:  #2563eb;
+      --blue-light:#3b82f6;
+      --blue-pale: #eff6ff;
+      --cyan:      #0ea5e9;
+      --indigo:    #4f46e5;
+      --text:      #1a2540;
+      --text-muted:#5a6a85;
+      --border:    #e2e8f0;
+      --surface:   #f8fafc;
+      --white:     #ffffff;
+      --green:     #10b981;
+      --orange:    #f59e0b;
+      --red:       #ef4444;
+    }
+
+    /* ── Utilities ────────────────────────────────────────────────────────── */
+    .container { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+    .section    { padding: 96px 0; }
+    .section-sm { padding: 64px 0; }
+
+    .badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 4px 12px; border-radius: 20px;
+      font-size: 12px; font-weight: 600; letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .badge-blue  { background: var(--blue-pale); color: var(--blue); border: 1px solid #bfdbfe; }
+    .badge-green { background: #d1fae5; color: #065f46; border: 1px solid #6ee7b7; }
+
+    h1, h2, h3, h4 { line-height: 1.2; letter-spacing: -0.02em; color: var(--navy); }
+
+    .btn {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 12px 24px; border-radius: 8px;
+      font-size: 15px; font-weight: 600; cursor: pointer;
+      text-decoration: none; border: none; transition: all 0.18s ease;
+      white-space: nowrap;
+    }
+    .btn-primary {
+      background: var(--blue); color: #fff;
+      box-shadow: 0 2px 8px rgba(29,78,216,0.35);
+    }
+    .btn-primary:hover { background: #1a44c8; box-shadow: 0 4px 16px rgba(29,78,216,0.45); transform: translateY(-1px); }
+    .btn-outline {
+      background: transparent; color: var(--navy);
+      border: 1.5px solid var(--border);
+    }
+    .btn-outline:hover { border-color: var(--blue-light); color: var(--blue); background: var(--blue-pale); }
+    .btn-lg { padding: 15px 32px; font-size: 16px; border-radius: 10px; }
+    .btn-sm { padding: 8px 16px; font-size: 13px; }
+
+    .tag {
+      display: inline-block; padding: 3px 10px; border-radius: 6px;
+      font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase;
+    }
+    .tag-blue   { background: var(--blue-pale); color: var(--blue-mid); }
+    .tag-green  { background: #d1fae5; color: #059669; }
+    .tag-orange { background: #fef3c7; color: #92400e; }
+    .tag-red    { background: #fee2e2; color: #b91c1c; }
+
+    code {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.88em; background: #f1f5f9;
+      padding: 2px 6px; border-radius: 4px; color: #1e40af;
+    }
+
+    /* ── Nav ──────────────────────────────────────────────────────────────── */
+    nav {
+      position: sticky; top: 0; z-index: 100;
+      background: rgba(255,255,255,0.92);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+    }
+    .nav-inner {
+      display: flex; align-items: center; justify-content: space-between;
+      height: 64px;
+    }
+    .nav-logo {
+      display: flex; align-items: center; gap: 10px;
+      text-decoration: none;
+    }
+    .nav-logo-icon {
+      width: 34px; height: 34px; border-radius: 8px;
+      background: linear-gradient(135deg, var(--blue) 0%, var(--indigo) 100%);
+      display: flex; align-items: center; justify-content: center;
+    }
+    .nav-logo-icon svg { width: 18px; height: 18px; fill: white; }
+    .nav-logo-text { font-size: 17px; font-weight: 700; color: var(--navy); letter-spacing: -0.02em; }
+    .nav-logo-text span { color: var(--blue); }
+    .nav-links { display: flex; align-items: center; gap: 32px; }
+    .nav-links a {
+      text-decoration: none; font-size: 14px; font-weight: 500;
+      color: var(--text-muted); transition: color 0.15s;
+    }
+    .nav-links a:hover { color: var(--navy); }
+    .nav-actions { display: flex; align-items: center; gap: 10px; }
+
+    /* ── Hero ─────────────────────────────────────────────────────────────── */
+    .hero {
+      padding: 88px 0 80px;
+      background: linear-gradient(180deg, #f0f6ff 0%, #ffffff 60%);
+      position: relative; overflow: hidden;
+    }
+    .hero::before {
+      content: '';
+      position: absolute; top: -100px; right: -200px;
+      width: 700px; height: 700px; border-radius: 50%;
+      background: radial-gradient(circle, rgba(59,130,246,0.08) 0%, transparent 70%);
+      pointer-events: none;
+    }
+    .hero-eyebrow { margin-bottom: 20px; }
+    .hero h1 {
+      font-size: clamp(38px, 5vw, 60px);
+      font-weight: 900; line-height: 1.1;
+      color: var(--navy); margin-bottom: 20px;
+    }
+    .hero h1 .gradient-text {
+      background: linear-gradient(90deg, var(--blue) 0%, var(--indigo) 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+    }
+    .hero-sub {
+      font-size: 18px; color: var(--text-muted); max-width: 560px;
+      line-height: 1.7; margin-bottom: 36px;
+    }
+    .hero-actions { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+    .hero-social-proof {
+      margin-top: 48px; display: flex; align-items: center; gap: 20px;
+      font-size: 13px; color: var(--text-muted);
+    }
+    .hero-social-proof .dot { width: 4px; height: 4px; border-radius: 50%; background: var(--border); }
+
+    /* Incident Timeline Preview Card */
+    .hero-visual {
+      background: var(--white);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      box-shadow: 0 4px 32px rgba(15,30,60,0.10), 0 1px 4px rgba(15,30,60,0.05);
+      overflow: hidden;
+      max-width: 540px;
+    }
+    .hero-visual-header {
+      background: var(--navy);
+      padding: 12px 16px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .dot-r { width:10px;height:10px;border-radius:50%;background:#ef4444;}
+    .dot-y { width:10px;height:10px;border-radius:50%;background:#f59e0b;}
+    .dot-g { width:10px;height:10px;border-radius:50%;background:#10b981;}
+    .hero-visual-title { font-size:12px;color:rgba(255,255,255,0.5);font-family:'JetBrains Mono',monospace;margin-left:8px;}
+    .incident-feed { padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+    .feed-item {
+      display: flex; gap: 12px; align-items: flex-start;
+      padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border);
+      background: var(--surface);
+    }
+    .feed-icon {
+      width: 28px; height: 28px; border-radius: 6px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 14px; flex-shrink: 0;
+    }
+    .feed-body { flex: 1; min-width: 0; }
+    .feed-title { font-size: 12px; font-weight: 600; color: var(--navy); margin-bottom: 2px; }
+    .feed-meta  { font-size: 11px; color: var(--text-muted); }
+    .feed-time  { font-size: 11px; color: var(--text-muted); white-space: nowrap; font-family: 'JetBrains Mono', monospace; }
+    .feed-item.alert  { border-color: #fecaca; background: #fff5f5; }
+    .feed-item.brief  { border-color: #bfdbfe; background: #eff6ff; }
+    .feed-item.resolved { border-color: #a7f3d0; background: #ecfdf5; }
+
+    /* ── Trust bar ────────────────────────────────────────────────────────── */
+    .trust-bar {
+      padding: 28px 0;
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+    }
+    .trust-bar-inner {
+      display: flex; align-items: center; justify-content: center; gap: 48px;
+      flex-wrap: wrap;
+    }
+    .trust-item {
+      display: flex; align-items: center; gap: 8px;
+      font-size: 13px; font-weight: 500; color: var(--text-muted);
+    }
+    .trust-item svg { width: 16px; height: 16px; flex-shrink: 0; }
+
+    /* ── Features grid ────────────────────────────────────────────────────── */
+    .section-header { text-align: center; margin-bottom: 60px; }
+    .section-header h2 { font-size: clamp(28px, 4vw, 40px); font-weight: 800; margin-bottom: 14px; }
+    .section-header p { font-size: 17px; color: var(--text-muted); max-width: 560px; margin: 0 auto; line-height: 1.7; }
+
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 24px;
+    }
+    .feature-card {
+      padding: 28px; border-radius: 14px;
+      border: 1px solid var(--border);
+      background: var(--white);
+      transition: box-shadow 0.2s, transform 0.2s;
+    }
+    .feature-card:hover {
+      box-shadow: 0 8px 32px rgba(29,78,216,0.10);
+      transform: translateY(-2px);
+    }
+    .feature-card-icon {
+      width: 48px; height: 48px; border-radius: 12px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 22px; margin-bottom: 16px;
+    }
+    .feature-card h3 { font-size: 17px; font-weight: 700; margin-bottom: 8px; }
+    .feature-card p  { font-size: 14px; color: var(--text-muted); line-height: 1.65; margin-bottom: 12px; }
+    .feature-card .feature-tags { display: flex; gap: 6px; flex-wrap: wrap; }
+
+    /* ── How it works ─────────────────────────────────────────────────────── */
+    .how-bg { background: var(--surface); }
+    .timeline-steps { display: flex; flex-direction: column; gap: 0; max-width: 760px; margin: 0 auto; }
+    .timeline-step {
+      display: grid; grid-template-columns: 72px 1fr;
+      gap: 0 24px;
+    }
+    .timeline-step-left {
+      display: flex; flex-direction: column; align-items: center;
+    }
+    .step-bubble {
+      width: 44px; height: 44px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 16px; font-weight: 800; flex-shrink: 0; z-index: 1;
+    }
+    .step-line { width: 2px; flex: 1; min-height: 32px; }
+    .timeline-step:last-child .step-line { display: none; }
+    .timeline-step-right { padding: 4px 0 36px; }
+    .step-time-badge {
+      display: inline-block; padding: 3px 10px; border-radius: 20px;
+      font-size: 11px; font-weight: 700; letter-spacing: 0.05em;
+      font-family: 'JetBrains Mono', monospace;
+      background: var(--blue-pale); color: var(--blue);
+      margin-bottom: 8px;
+    }
+    .timeline-step-right h3 { font-size: 16px; font-weight: 700; margin-bottom: 6px; }
+    .timeline-step-right p  { font-size: 14px; color: var(--text-muted); line-height: 1.6; }
+
+    /* ── Capabilities table ───────────────────────────────────────────────── */
+    .capabilities-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 16px;
+    }
+    .capability-item {
+      padding: 20px; border-radius: 10px;
+      border: 1px solid var(--border); background: var(--white);
+      display: flex; flex-direction: column; gap: 10px;
+    }
+    .capability-item .cap-icon { font-size: 24px; }
+    .capability-item h4 { font-size: 14px; font-weight: 700; }
+    .capability-item p  { font-size: 13px; color: var(--text-muted); line-height: 1.5; }
+
+    /* ── Providers ─────────────────────────────────────────────────────────── */
+    .providers-section { background: var(--navy); padding: 80px 0; }
+    .providers-section .section-header h2 { color: #fff; }
+    .providers-section .section-header p  { color: rgba(255,255,255,0.6); }
+    .providers-grid {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px;
+      max-width: 800px; margin: 0 auto;
+    }
+    .provider-card {
+      padding: 28px 24px; border-radius: 14px;
+      border: 1px solid rgba(255,255,255,0.1);
+      background: rgba(255,255,255,0.05);
+      text-align: center;
+    }
+    .provider-card .provider-icon { font-size: 36px; margin-bottom: 12px; }
+    .provider-card h3 { font-size: 17px; font-weight: 700; color: #fff; margin-bottom: 8px; }
+    .provider-card p  { font-size: 13px; color: rgba(255,255,255,0.55); line-height: 1.6; }
+    .provider-card .badge-white {
+      margin-top: 12px; display: inline-block;
+      padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 600;
+      background: rgba(255,255,255,0.1); color: rgba(255,255,255,0.7);
+    }
+
+    /* ── Pricing ──────────────────────────────────────────────────────────── */
+    .pricing-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 24px; max-width: 900px; margin: 0 auto; }
+    .pricing-card {
+      padding: 32px; border-radius: 16px; border: 1.5px solid var(--border);
+      background: var(--white); position: relative;
+    }
+    .pricing-card.featured {
+      border-color: var(--blue); background: var(--blue-pale);
+      box-shadow: 0 8px 40px rgba(29,78,216,0.18);
+    }
+    .pricing-badge-popular {
+      position: absolute; top: -12px; left: 50%; transform: translateX(-50%);
+      background: var(--blue); color: #fff;
+      padding: 4px 16px; border-radius: 20px; font-size: 11px; font-weight: 700;
+      letter-spacing: 0.04em; text-transform: uppercase; white-space: nowrap;
+    }
+    .pricing-card h3 { font-size: 15px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 8px; }
+    .pricing-price { font-size: 40px; font-weight: 900; color: var(--navy); line-height: 1; margin-bottom: 4px; }
+    .pricing-price span { font-size: 16px; font-weight: 500; color: var(--text-muted); }
+    .pricing-desc { font-size: 13px; color: var(--text-muted); margin-bottom: 24px; line-height: 1.5; }
+    .pricing-features { list-style: none; display: flex; flex-direction: column; gap: 10px; margin-bottom: 28px; }
+    .pricing-features li { display: flex; align-items: flex-start; gap: 10px; font-size: 14px; color: var(--text); }
+    .pricing-features li .check { color: var(--green); flex-shrink: 0; font-size: 15px; margin-top: 1px; }
+    .pricing-features li .x     { color: #94a3b8;   flex-shrink: 0; font-size: 15px; margin-top: 1px; }
+
+    /* ── FAQ ──────────────────────────────────────────────────────────────── */
+    .faq-list { max-width: 720px; margin: 0 auto; display: flex; flex-direction: column; gap: 0; }
+    .faq-item { border-bottom: 1px solid var(--border); }
+    .faq-question {
+      width: 100%; text-align: left; padding: 20px 0; background: none;
+      border: none; cursor: pointer; display: flex; justify-content: space-between;
+      align-items: center; gap: 16px;
+    }
+    .faq-question span { font-size: 15px; font-weight: 600; color: var(--navy); }
+    .faq-chevron { font-size: 18px; color: var(--text-muted); transition: transform 0.2s; flex-shrink: 0; }
+    .faq-answer { padding-bottom: 20px; display: none; }
+    .faq-answer p { font-size: 14px; color: var(--text-muted); line-height: 1.7; }
+    .faq-item.open .faq-chevron { transform: rotate(180deg); }
+    .faq-item.open .faq-answer  { display: block; }
+
+    /* ── CTA ──────────────────────────────────────────────────────────────── */
+    .cta-section {
+      background: linear-gradient(135deg, var(--navy) 0%, #1e3a8a 100%);
+      padding: 96px 0; text-align: center;
+    }
+    .cta-section h2 { font-size: clamp(28px,4vw,42px); font-weight: 900; color: #fff; margin-bottom: 16px; }
+    .cta-section p  { font-size: 17px; color: rgba(255,255,255,0.65); max-width: 500px; margin: 0 auto 36px; line-height: 1.7; }
+    .btn-white { background: #fff; color: var(--blue); }
+    .btn-white:hover { background: #f0f6ff; box-shadow: 0 4px 20px rgba(255,255,255,0.25); transform: translateY(-1px); }
+    .cta-sub { margin-top: 16px; font-size: 13px; color: rgba(255,255,255,0.45); }
+
+    /* ── Footer ───────────────────────────────────────────────────────────── */
+    footer {
+      background: var(--navy); padding: 48px 0 28px;
+      border-top: 1px solid rgba(255,255,255,0.06);
+    }
+    .footer-inner {
+      display: flex; justify-content: space-between; align-items: flex-start;
+      gap: 40px; flex-wrap: wrap; margin-bottom: 40px;
+    }
+    .footer-brand h3 { font-size: 17px; font-weight: 700; color: #fff; margin-bottom: 8px; }
+    .footer-brand p  { font-size: 13px; color: rgba(255,255,255,0.4); max-width: 260px; line-height: 1.6; }
+    .footer-links h4 { font-size: 12px; font-weight: 700; color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 14px; }
+    .footer-links ul { list-style: none; display: flex; flex-direction: column; gap: 8px; }
+    .footer-links li a { text-decoration: none; font-size: 14px; color: rgba(255,255,255,0.55); transition: color 0.15s; }
+    .footer-links li a:hover { color: rgba(255,255,255,0.9); }
+    .footer-bottom {
+      border-top: 1px solid rgba(255,255,255,0.08);
+      padding-top: 24px;
+      display: flex; justify-content: space-between; align-items: center;
+      flex-wrap: wrap; gap: 12px;
+    }
+    .footer-bottom p { font-size: 13px; color: rgba(255,255,255,0.35); }
+
+    /* ── Animations ───────────────────────────────────────────────────────── */
+    .fade-in { opacity: 0; transform: translateY(20px); transition: opacity 0.5s ease, transform 0.5s ease; }
+    .fade-in.visible { opacity: 1; transform: translateY(0); }
+
+    /* ── Responsive ───────────────────────────────────────────────────────── */
+    @media (max-width: 768px) {
+      .hero-layout { flex-direction: column; }
+      .hero-visual  { max-width: 100%; }
+      .nav-links    { display: none; }
+      .providers-grid { grid-template-columns: 1fr; }
+      .footer-inner { flex-direction: column; }
+      .footer-bottom { flex-direction: column; text-align: center; }
+    }
+    .hero-layout { display: flex; gap: 48px; align-items: center; }
+    .hero-copy { flex: 1; min-width: 0; }
+    .hero-right { flex: 1; min-width: 0; }
+  </style>
+</head>
+<body>
+
+<!-- ══ NAV ══════════════════════════════════════════════════════════════════ -->
+<nav>
+  <div class="container">
+    <div class="nav-inner">
+      <a href="#" class="nav-logo">
+        <div class="nav-logo-icon">
+          <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+          </svg>
+        </div>
+        <span class="nav-logo-text">OpsLens <span>AI</span></span>
+      </a>
+      <div class="nav-links">
+        <a href="#features">Features</a>
+        <a href="#how-it-works">How It Works</a>
+        <a href="#pricing">Pricing</a>
+        <a href="#faq">FAQ</a>
+      </div>
+      <div class="nav-actions">
+        <a href="#pricing" class="btn btn-outline btn-sm">View Pricing</a>
+        <a href="https://calendly.com/opslens-ai/demo" target="_blank" rel="noopener" class="btn btn-primary btn-sm">Book a Demo</a>
+      </div>
+    </div>
+  </div>
+</nav>
+
+<!-- ══ HERO ══════════════════════════════════════════════════════════════════ -->
+<section class="hero">
+  <div class="container">
+    <div class="hero-layout">
+      <div class="hero-copy fade-in">
+        <div class="hero-eyebrow">
+          <span class="badge badge-blue">
+            <span>✦</span> Now in Early Access
+          </span>
+        </div>
+        <h1>
+          Your AI-powered<br>
+          <span class="gradient-text">Incident Intelligence</span><br>
+          layer
+        </h1>
+        <p class="hero-sub">
+          OpsLens AI detects production exceptions, enriches alerts with
+          context from Jira, Slack, and GitHub, and auto-generates
+          stakeholder-ready incident briefs — in under 5 minutes.
+        </p>
+        <div class="hero-actions">
+          <a href="https://calendly.com/opslens-ai/demo" target="_blank" rel="noopener" class="btn btn-primary btn-lg">
+            📅 Book a Demo
+          </a>
+          <a href="#how-it-works" class="btn btn-outline btn-lg">
+            See How It Works →
+          </a>
+        </div>
+        <div class="hero-social-proof">
+          <span>⚡ &lt;2 min alert latency</span>
+          <div class="dot"></div>
+          <span>🔀 Works with OpenAI, Claude, Ollama</span>
+          <div class="dot"></div>
+          <span>🔒 Enterprise BAA available</span>
+        </div>
+      </div>
+      <div class="hero-right fade-in">
+        <div class="hero-visual">
+          <div class="hero-visual-header">
+            <div class="dot-r"></div><div class="dot-y"></div><div class="dot-g"></div>
+            <span class="hero-visual-title">opslens — incident feed</span>
+          </div>
+          <div class="incident-feed">
+            <div class="feed-item alert">
+              <div class="feed-icon" style="background:#fee2e2">🚨</div>
+              <div class="feed-body">
+                <div class="feed-title">Exception spike detected — checkout-worker</div>
+                <div class="feed-meta">TypeError: tenant_id · ×14 in 5 min · Payments Team alerted</div>
+              </div>
+              <div class="feed-time">T+2m</div>
+            </div>
+            <div class="feed-item" style="border-color:#e0e7ff;background:#f5f3ff">
+              <div class="feed-icon" style="background:#e0e7ff">🔀</div>
+              <div class="feed-body">
+                <div class="feed-title">PR #87 merged → main: Remove tenant_id default</div>
+                <div class="feed-meta">by dev-alice · checkout-service · +12 −4 · 35 min ago</div>
+              </div>
+              <div class="feed-time">T+0m</div>
+            </div>
+            <div class="feed-item brief">
+              <div class="feed-icon" style="background:#bfdbfe">📋</div>
+              <div class="feed-body">
+                <div class="feed-title">[OPEN] Incident Brief — Payment timeout spike after deploy</div>
+                <div class="feed-meta">Suspected: PR #87 removed tenant_id default · 3 next actions</div>
+              </div>
+              <div class="feed-time">T+4m</div>
+            </div>
+            <div class="feed-item resolved">
+              <div class="feed-icon" style="background:#a7f3d0">✅</div>
+              <div class="feed-body">
+                <div class="feed-title">Brief resolved — Reverted PR #87, deployed hotfix v2.3.1</div>
+                <div class="feed-meta">by eng-bob · total incident time: 23 min</div>
+              </div>
+              <div class="feed-time">T+23m</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══ TRUST BAR ════════════════════════════════════════════════════════════ -->
+<div class="trust-bar">
+  <div class="container">
+    <div class="trust-bar-inner">
+      <div class="trust-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+        Works with your existing Slack setup
+      </div>
+      <div class="trust-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+        Connects to Jira, GitHub, Docker
+      </div>
+      <div class="trust-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+        No agents to install on your servers
+      </div>
+      <div class="trust-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+        Enterprise BAA &amp; SAML SSO available
+      </div>
+      <div class="trust-item">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+        Fully air-gappable with Ollama
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ FEATURES ════════════════════════════════════════════════════════════ -->
+<section class="section" id="features">
+  <div class="container">
+    <div class="section-header fade-in">
+      <span class="badge badge-blue" style="margin-bottom:12px">Capabilities</span>
+      <h2>Everything your on-call team needs,<br>in one intelligence layer</h2>
+      <p>OpsLens connects your signals and surfaces answers, so your engineers stop digging and start fixing.</p>
+    </div>
+    <div class="features-grid">
+
+      <div class="feature-card fade-in">
+        <div class="feature-card-icon" style="background:#fef3c7">⚡</div>
+        <h3>Fast Alert — Under 2 Minutes</h3>
+        <p>The fast scanner runs every 5 minutes and fires a raw Slack alert the moment an exception spike is detected — no LLM delay, no waiting for a cron job.</p>
+        <div class="feature-tags">
+          <span class="tag tag-orange">5-min scan</span>
+          <span class="tag tag-blue">Slack</span>
+        </div>
+      </div>
+
+      <div class="feature-card fade-in">
+        <div class="feature-card-icon" style="background:#e0e7ff">🔎</div>
+        <h3>RAG-Powered Exception Enrichment</h3>
+        <p>When an exception fires, OpsLens searches your Jira tickets, Slack threads, and GitHub issues to surface related context automatically — no manual hunting.</p>
+        <div class="feature-tags">
+          <span class="tag tag-blue">Jira</span>
+          <span class="tag tag-blue">GitHub</span>
+          <span class="tag tag-blue">Slack</span>
+        </div>
+      </div>
+
+      <div class="feature-card fade-in">
+        <div class="feature-card-icon" style="background:#d1fae5">📋</div>
+        <h3>Auto-Generated RRT Briefs</h3>
+        <p>Every critical exception triggers an AI-written Rapid Response Team brief: title, what happened, business impact, suspected root cause, and numbered next actions.</p>
+        <div class="feature-tags">
+          <span class="tag tag-green">AI-written</span>
+          <span class="tag tag-blue">Slack delivery</span>
+        </div>
+      </div>
+
+      <div class="feature-card fade-in">
+        <div class="feature-card-icon" style="background:#ede9fe">🕐</div>
+        <h3>Delivery Risk Timeline</h3>
+        <p>Merges GitHub PRs, commit pushes, deployment runs, Jira transitions, and exception spikes onto one chronological feed. Instantly see what changed before the incident.</p>
+        <div class="feature-tags">
+          <span class="tag tag-blue">GitHub webhook</span>
+          <span class="tag tag-blue">Jira webhook</span>
+        </div>
+      </div>
+
+      <div class="feature-card fade-in">
+        <div class="feature-card-icon" style="background:#fce7f3">🔕</div>
+        <h3>Known Issue Suppression</h3>
+        <p>Stop alert fatigue. Suppress recurring exceptions by signature hash, regex pattern, or linked Jira ticket. Supports permanent suppression, timed snooze, or auto-unsuppress when a ticket closes.</p>
+        <div class="feature-tags">
+          <span class="tag tag-orange">Anti-noise</span>
+          <span class="tag tag-blue">Jira-linked</span>
+        </div>
+      </div>
+
+      <div class="feature-card fade-in">
+        <div class="feature-card-icon" style="background:#cffafe">📡</div>
+        <h3>Team-Based Alert Routing</h3>
+        <p>Route alerts to the right team's Slack channel based on error content, service name, or container. Fan-out to multiple teams, priority-ordered rules, and a dry-run test endpoint.</p>
+        <div class="feature-tags">
+          <span class="tag tag-blue">Multi-team</span>
+          <span class="tag tag-green">Fan-out</span>
+        </div>
+      </div>
+
+      <div class="feature-card fade-in">
+        <div class="feature-card-icon" style="background:#fee2e2">🔄</div>
+        <h3>Incident Lifecycle Management</h3>
+        <p>Every RRT brief has a tracked lifecycle: open → investigating → resolved. Update status, post Slack updates to the team, and store resolution notes — all via API or Slack thread.</p>
+        <div class="feature-tags">
+          <span class="tag tag-blue">Status tracking</span>
+          <span class="tag tag-green">Resolution notes</span>
+        </div>
+      </div>
+
+      <div class="feature-card fade-in">
+        <div class="feature-card-icon" style="background:#fef9c3">💬</div>
+        <h3>RAG Chat Assistant</h3>
+        <p>Ask natural language questions across all your connected sources. "Are there open tickets related to payment timeouts?" — OpsLens retrieves, ranks, and answers with citations.</p>
+        <div class="feature-tags">
+          <span class="tag tag-blue">Streaming</span>
+          <span class="tag tag-blue">Source citations</span>
+        </div>
+      </div>
+
+      <div class="feature-card fade-in">
+        <div class="feature-card-icon" style="background:#d1fae5">🤖</div>
+        <h3>Hourly LLM Digest</h3>
+        <p>Beyond real-time alerts, a second tier LLM digest runs every hour and sends a structured summary of all issues from the past hour — great for async engineering review.</p>
+        <div class="feature-tags">
+          <span class="tag tag-green">Async digest</span>
+          <span class="tag tag-blue">Email + Slack</span>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ══ HOW IT WORKS ═════════════════════════════════════════════════════════ -->
+<section class="section how-bg" id="how-it-works">
+  <div class="container">
+    <div class="section-header fade-in">
+      <span class="badge badge-blue" style="margin-bottom:12px">How It Works</span>
+      <h2>From exception to resolved brief<br>in under 5 minutes</h2>
+      <p>OpsLens handles the entire detection-to-brief pipeline automatically, with zero manual steps.</p>
+    </div>
+    <div class="timeline-steps">
+
+      <div class="timeline-step fade-in">
+        <div class="timeline-step-left">
+          <div class="step-bubble" style="background:#fee2e2;color:#b91c1c">1</div>
+          <div class="step-line" style="background:linear-gradient(#fecaca,#bfdbfe)"></div>
+        </div>
+        <div class="timeline-step-right">
+          <div class="step-time-badge">T + 0 min</div>
+          <h3>Exception fires in your infrastructure</h3>
+          <p>OpsLens monitors Docker container logs and log files. An ERROR, EXCEPTION, or CRITICAL line appears in your <code>checkout-worker</code> container.</p>
+        </div>
+      </div>
+
+      <div class="timeline-step fade-in">
+        <div class="timeline-step-left">
+          <div class="step-bubble" style="background:#fef3c7;color:#92400e">2</div>
+          <div class="step-line" style="background:linear-gradient(#bfdbfe,#c7d2fe)"></div>
+        </div>
+        <div class="timeline-step-right">
+          <div class="step-time-badge">T + 2 min</div>
+          <h3>Immediate Slack alert — no LLM delay</h3>
+          <p>The 5-minute fast scanner detects the spike, checks known issue suppression, resolves team routing rules, and fires a raw Slack alert to the Payments Team channel — before any LLM is invoked.</p>
+        </div>
+      </div>
+
+      <div class="timeline-step fade-in">
+        <div class="timeline-step-left">
+          <div class="step-bubble" style="background:#ede9fe;color:#4f46e5">3</div>
+          <div class="step-line" style="background:linear-gradient(#c7d2fe,#a7f3d0)"></div>
+        </div>
+        <div class="timeline-step-right">
+          <div class="step-time-badge">T + 3 min</div>
+          <h3>RAG enrichment from all connected sources</h3>
+          <p>The exception is embedded and matched against your Qdrant vector store. Related Jira tickets, Slack threads, and GitHub issues surface automatically. An AI diagnosis follows in a second Slack message.</p>
+        </div>
+      </div>
+
+      <div class="timeline-step fade-in">
+        <div class="timeline-step-left">
+          <div class="step-bubble" style="background:#dbeafe;color:#1d4ed8">4</div>
+          <div class="step-line" style="background:linear-gradient(#a7f3d0,#d1fae5)"></div>
+        </div>
+        <div class="timeline-step-right">
+          <div class="step-time-badge">T + 4 min</div>
+          <h3>Delivery Risk Timeline query — what changed?</h3>
+          <p>OpsLens queries the last 60 minutes of your Delivery Risk Timeline: PRs merged, deploys triggered, Jira status transitions. It finds that PR #87 merged to main 35 minutes before the spike.</p>
+        </div>
+      </div>
+
+      <div class="timeline-step fade-in">
+        <div class="timeline-step-left">
+          <div class="step-bubble" style="background:#d1fae5;color:#065f46">5</div>
+          <div class="step-line" style="background:linear-gradient(#d1fae5,#f0fdf4)"></div>
+        </div>
+        <div class="timeline-step-right">
+          <div class="step-time-badge">T + 4.5 min</div>
+          <h3>Full RRT Brief delivered to Slack</h3>
+          <p>A structured incident artifact lands in the channel: AI-written title, what happened, business impact, suspected root cause (citing PR #87), related context grouped by source, and numbered next actions. Stored in DB with open status.</p>
+        </div>
+      </div>
+
+      <div class="timeline-step fade-in">
+        <div class="timeline-step-left">
+          <div class="step-bubble" style="background:#ecfdf5;color:#10b981">6</div>
+          <div class="step-line" style="display:none"></div>
+        </div>
+        <div class="timeline-step-right">
+          <div class="step-time-badge">T + N min</div>
+          <h3>Engineer resolves and closes the brief</h3>
+          <p>One API call (or a Slack update) flips the brief to investigating, then resolved. Resolution notes are stored. The team gets a Slack notification. Incident history is preserved for post-mortems.</p>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ══ LLM PROVIDERS ════════════════════════════════════════════════════════ -->
+<section class="providers-section">
+  <div class="container">
+    <div class="section-header fade-in">
+      <h2>Your LLM, your choice</h2>
+      <p>OpsLens supports three AI providers — switch with one environment variable, no code changes required.</p>
+    </div>
+    <div class="providers-grid fade-in">
+      <div class="provider-card">
+        <div class="provider-icon">🟢</div>
+        <h3>OpenAI</h3>
+        <p>GPT-4o for analysis. <code style="background:rgba(255,255,255,0.1);color:#93c5fd">text-embedding-3-small</code> for retrieval. Best overall quality.</p>
+        <div class="badge-white">Default</div>
+      </div>
+      <div class="provider-card" style="border-color:rgba(99,102,241,0.5);background:rgba(99,102,241,0.1)">
+        <div class="provider-icon">🟣</div>
+        <h3>Claude (Anthropic)</h3>
+        <p>Claude Opus or Sonnet. 200k context window. Enterprise BAA support. Ideal for regulated industries.</p>
+        <div class="badge-white">Enterprise</div>
+      </div>
+      <div class="provider-card">
+        <div class="provider-icon">🦙</div>
+        <h3>Ollama (Self-hosted)</h3>
+        <p>Llama 3.1 + nomic-embed-text. Fully private, no data leaves your network. Air-gappable.</p>
+        <div class="badge-white">Air-gap ready</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══ INTEGRATIONS ═════════════════════════════════════════════════════════ -->
+<section class="section-sm" id="integrations">
+  <div class="container">
+    <div class="section-header fade-in">
+      <span class="badge badge-blue" style="margin-bottom:12px">Integrations</span>
+      <h2>Connects to your entire engineering stack</h2>
+    </div>
+    <div class="capabilities-grid fade-in">
+      <div class="capability-item">
+        <div class="cap-icon">🐙</div>
+        <h4>GitHub</h4>
+        <p>PRs, commits, deploys via webhook. Auto-written to the Delivery Risk Timeline.</p>
+      </div>
+      <div class="capability-item">
+        <div class="cap-icon">🎫</div>
+        <h4>Jira</h4>
+        <p>Issue status transitions via webhook. Ticket-linked suppression rules.</p>
+      </div>
+      <div class="capability-item">
+        <div class="cap-icon">💬</div>
+        <h4>Slack</h4>
+        <p>Incoming webhooks for alerts. Per-team channel routing. Thread-based status updates.</p>
+      </div>
+      <div class="capability-item">
+        <div class="cap-icon">🐳</div>
+        <h4>Docker</h4>
+        <p>Direct container log scanning. No log aggregator required — works out of the box.</p>
+      </div>
+      <div class="capability-item">
+        <div class="cap-icon">📁</div>
+        <h4>Log Files</h4>
+        <p>File-path based scanning for app logs, nginx, and system logs.</p>
+      </div>
+      <div class="capability-item">
+        <div class="cap-icon">📧</div>
+        <h4>Email (SendGrid)</h4>
+        <p>Hourly digest and alert emails to per-team recipient lists.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══ PRICING ══════════════════════════════════════════════════════════════ -->
+<section class="section" id="pricing" style="background:var(--surface)">
+  <div class="container">
+    <div class="section-header fade-in">
+      <span class="badge badge-blue" style="margin-bottom:12px">Pricing</span>
+      <h2>Simple, team-based pricing</h2>
+      <p>Start free, scale as your team grows. No per-seat fees for engineers who just receive alerts.</p>
+    </div>
+    <div class="pricing-grid">
+
+      <div class="pricing-card fade-in">
+        <h3>Starter</h3>
+        <div class="pricing-price">$0 <span>/month</span></div>
+        <p class="pricing-desc">For small teams getting started with intelligent alerting.</p>
+        <ul class="pricing-features">
+          <li><span class="check">✓</span> Up to 3 team members</li>
+          <li><span class="check">✓</span> Fast alert scanner (5-min)</li>
+          <li><span class="check">✓</span> RAG enrichment (100 queries/mo)</li>
+          <li><span class="check">✓</span> RRT brief generation (20/mo)</li>
+          <li><span class="check">✓</span> GitHub + Jira webhooks</li>
+          <li><span class="check">✓</span> 1 Slack routing rule</li>
+          <li><span class="x">✗</span> Multi-team routing</li>
+          <li><span class="x">✗</span> Known issue suppression</li>
+          <li><span class="x">✗</span> Custom LLM provider</li>
+        </ul>
+        <a href="https://calendly.com/opslens-ai/demo" target="_blank" rel="noopener" class="btn btn-outline" style="width:100%;justify-content:center">
+          Get Started Free
+        </a>
+      </div>
+
+      <div class="pricing-card featured fade-in">
+        <div class="pricing-badge-popular">Most Popular</div>
+        <h3>Growth</h3>
+        <div class="pricing-price">$299 <span>/month</span></div>
+        <p class="pricing-desc">For growing engineering teams with multiple services and teams.</p>
+        <ul class="pricing-features">
+          <li><span class="check">✓</span> Up to 25 team members</li>
+          <li><span class="check">✓</span> Everything in Starter</li>
+          <li><span class="check">✓</span> Unlimited RAG queries</li>
+          <li><span class="check">✓</span> Unlimited RRT briefs</li>
+          <li><span class="check">✓</span> Multi-team Slack routing</li>
+          <li><span class="check">✓</span> Known issue suppression</li>
+          <li><span class="check">✓</span> Hourly LLM digest</li>
+          <li><span class="check">✓</span> Delivery Risk Timeline</li>
+          <li><span class="x">✗</span> Custom LLM provider (Claude/Ollama)</li>
+        </ul>
+        <a href="https://calendly.com/opslens-ai/demo" target="_blank" rel="noopener" class="btn btn-primary" style="width:100%;justify-content:center">
+          📅 Book a Demo
+        </a>
+      </div>
+
+      <div class="pricing-card fade-in">
+        <h3>Enterprise</h3>
+        <div class="pricing-price" style="font-size:28px;margin-top:8px">Custom</div>
+        <p class="pricing-desc">For large engineering orgs with compliance, SSO, and private cloud requirements.</p>
+        <ul class="pricing-features">
+          <li><span class="check">✓</span> Unlimited members</li>
+          <li><span class="check">✓</span> Everything in Growth</li>
+          <li><span class="check">✓</span> Claude Enterprise / Ollama</li>
+          <li><span class="check">✓</span> SAML SSO + SCIM</li>
+          <li><span class="check">✓</span> Role-based access control</li>
+          <li><span class="check">✓</span> Audit log</li>
+          <li><span class="check">✓</span> Private cloud / on-prem</li>
+          <li><span class="check">✓</span> Enterprise BAA</li>
+          <li><span class="check">✓</span> Dedicated SLA + support</li>
+        </ul>
+        <a href="https://calendly.com/opslens-ai/demo" target="_blank" rel="noopener" class="btn btn-outline" style="width:100%;justify-content:center">
+          Talk to Sales
+        </a>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ══ FAQ ═══════════════════════════════════════════════════════════════════ -->
+<section class="section" id="faq">
+  <div class="container">
+    <div class="section-header fade-in">
+      <h2>Frequently asked questions</h2>
+    </div>
+    <div class="faq-list fade-in">
+
+      <div class="faq-item">
+        <button class="faq-question" onclick="toggleFaq(this)">
+          <span>How does OpsLens connect to our systems?</span>
+          <span class="faq-chevron">▾</span>
+        </button>
+        <div class="faq-answer">
+          <p>OpsLens uses webhooks (GitHub, Jira), OAuth integrations for Slack, and direct API connections for your vector data via Qdrant. For Docker log scanning, the worker runs alongside your containers and pulls logs directly — no agents or sidecars required. Setup typically takes under 30 minutes.</p>
+        </div>
+      </div>
+
+      <div class="faq-item">
+        <button class="faq-question" onclick="toggleFaq(this)">
+          <span>Does our code or log data leave our infrastructure?</span>
+          <span class="faq-chevron">▾</span>
+        </button>
+        <div class="faq-answer">
+          <p>It depends on your LLM provider choice. With OpenAI or Claude, exception snippets and related context are sent to their API. With Ollama (self-hosted LLM), all data stays within your network. Enterprise customers can also deploy OpsLens fully on-prem with their own Qdrant and Ollama instances.</p>
+        </div>
+      </div>
+
+      <div class="faq-item">
+        <button class="faq-question" onclick="toggleFaq(this)">
+          <span>What is an RRT Brief and who receives it?</span>
+          <span class="faq-chevron">▾</span>
+        </button>
+        <div class="faq-answer">
+          <p>An RRT (Rapid Response Team) Brief is a structured incident artifact generated automatically when a critical exception is detected. It includes an AI-written title, what happened, business impact, suspected root cause (referencing recent PRs and deploys), related Jira/GitHub/Slack context, and numbered next actions. It's delivered to each matched team's Slack channel and stored in the database with a full lifecycle (open → investigating → resolved).</p>
+        </div>
+      </div>
+
+      <div class="faq-item">
+        <button class="faq-question" onclick="toggleFaq(this)">
+          <span>How is this different from PagerDuty or OpsGenie?</span>
+          <span class="faq-chevron">▾</span>
+        </button>
+        <div class="faq-answer">
+          <p>PagerDuty and OpsGenie are excellent at alerting and on-call scheduling. OpsLens is an intelligence layer built on top — it enriches alerts with context from your existing tools, auto-generates structured briefs, and correlates incidents with code changes. Think of OpsLens as the AI co-pilot that tells you why an alert fired and what changed before it, rather than just who to page. PagerDuty integration (routing key) is already in the roadmap.</p>
+        </div>
+      </div>
+
+      <div class="faq-item">
+        <button class="faq-question" onclick="toggleFaq(this)">
+          <span>Can we use our existing Claude Enterprise subscription?</span>
+          <span class="faq-chevron">▾</span>
+        </button>
+        <div class="faq-answer">
+          <p>Yes. Set <code>LLM_PROVIDER=claude</code> and provide your <code>ANTHROPIC_API_KEY</code>. OpsLens will use Claude Opus or Sonnet for all AI analysis while using your existing enterprise agreement, including BAA coverage. Note: OpsLens uses OpenAI's embedding API alongside Claude since Anthropic does not offer an embeddings API — you can restrict this to embedding-only calls.</p>
+        </div>
+      </div>
+
+      <div class="faq-item">
+        <button class="faq-question" onclick="toggleFaq(this)">
+          <span>How do known issue suppression rules work?</span>
+          <span class="faq-chevron">▾</span>
+        </button>
+        <div class="faq-answer">
+          <p>You create a rule via the API or dashboard that matches an exception by signature hash (exact match on the normalised exception line), regex/keyword pattern, or Jira ticket key. Rules can be permanent, time-boxed (snooze until a date), or auto-expire when the linked Jira ticket moves to Done. Hit counts are tracked so you can see how many times a suppressed issue has fired.</p>
+        </div>
+      </div>
+
+      <div class="faq-item">
+        <button class="faq-question" onclick="toggleFaq(this)">
+          <span>Do you offer a free trial?</span>
+          <span class="faq-chevron">▾</span>
+        </button>
+        <div class="faq-answer">
+          <p>Yes — the Starter plan is free with no time limit. For Growth and Enterprise features, we offer a 14-day full-feature trial. Book a demo and we'll set you up with a trial environment connected to your actual Jira, GitHub, and Slack in under an hour.</p>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ══ CTA ════════════════════════════════════════════════════════════════════ -->
+<section class="cta-section">
+  <div class="container">
+    <div class="fade-in">
+      <h2>Ready to cut your incident response time in half?</h2>
+      <p>See OpsLens detect a real exception, enrich it, and generate a stakeholder-ready brief — live, in your environment.</p>
+      <a href="https://calendly.com/opslens-ai/demo" target="_blank" rel="noopener" class="btn btn-white btn-lg">
+        📅 Book a 30-Minute Demo
+      </a>
+      <p class="cta-sub">No commitment. We'll connect to your Jira and GitHub live during the call.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ══ FOOTER ════════════════════════════════════════════════════════════════ -->
+<footer>
+  <div class="container">
+    <div class="footer-inner">
+      <div class="footer-brand">
+        <h3>OpsLens AI</h3>
+        <p>Operational intelligence for engineering teams. Detect, enrich, respond.</p>
+      </div>
+      <div class="footer-links">
+        <h4>Product</h4>
+        <ul>
+          <li><a href="#features">Features</a></li>
+          <li><a href="#how-it-works">How It Works</a></li>
+          <li><a href="#pricing">Pricing</a></li>
+          <li><a href="#integrations">Integrations</a></li>
+        </ul>
+      </div>
+      <div class="footer-links">
+        <h4>Company</h4>
+        <ul>
+          <li><a href="#">About</a></li>
+          <li><a href="#">Blog</a></li>
+          <li><a href="#">Changelog</a></li>
+          <li><a href="#">Careers</a></li>
+        </ul>
+      </div>
+      <div class="footer-links">
+        <h4>Resources</h4>
+        <ul>
+          <li><a href="#">Documentation</a></li>
+          <li><a href="#">API Reference</a></li>
+          <li><a href="#">Status Page</a></li>
+          <li><a href="https://calendly.com/opslens-ai/demo" target="_blank" rel="noopener">Book a Demo</a></li>
+        </ul>
+      </div>
+      <div class="footer-links">
+        <h4>Legal</h4>
+        <ul>
+          <li><a href="#">Privacy Policy</a></li>
+          <li><a href="#">Terms of Service</a></li>
+          <li><a href="#">Security</a></li>
+          <li><a href="#">BAA Request</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <p>© 2026 OpsLens AI. All rights reserved.</p>
+      <p>Built for engineering teams who ship fast and sleep well.</p>
+    </div>
+  </div>
+</footer>
+
+<!-- ══ JS ════════════════════════════════════════════════════════════════════ -->
+<script>
+  // FAQ accordion
+  function toggleFaq(btn) {
+    const item = btn.closest('.faq-item');
+    const wasOpen = item.classList.contains('open');
+    document.querySelectorAll('.faq-item.open').forEach(i => i.classList.remove('open'));
+    if (!wasOpen) item.classList.add('open');
+  }
+
+  // Scroll-triggered fade-in
+  const observer = new IntersectionObserver(entries => {
+    entries.forEach(e => {
+      if (e.isIntersecting) {
+        e.target.classList.add('visible');
+        observer.unobserve(e.target);
+      }
+    });
+  }, { threshold: 0.12 });
+  document.querySelectorAll('.fade-in').forEach(el => observer.observe(el));
+
+  // Smooth anchor nav offset (sticky nav is 64px)
+  document.querySelectorAll('a[href^="#"]').forEach(a => {
+    a.addEventListener('click', e => {
+      const target = document.querySelector(a.getAttribute('href'));
+      if (!target) return;
+      e.preventDefault();
+      const top = target.getBoundingClientRect().top + window.scrollY - 72;
+      window.scrollTo({ top, behavior: 'smooth' });
+    });
+  });
+</script>
+</body>
+</html>

@@ -58,8 +58,10 @@ class Settings(BaseSettings):
     QDRANT_COLLECTION_PREFIX: str = "opslens_"
 
     # ── LLM Provider ─────────────────────────────────────────────────────────
-    # Set LLM_PROVIDER=ollama to keep all data on-premises (no OpenAI calls).
-    LLM_PROVIDER: Literal["openai", "ollama"] = "openai"
+    # "openai"     → GPT-4o + text-embedding-3-small (best quality, data leaves org)
+    # "ollama"     → Llama 3.1 + nomic-embed-text (fully private, on-prem, no API cost)
+    # "claude"     → Claude (Anthropic) + OpenAI embeddings (enterprise BAA, 200k context)
+    LLM_PROVIDER: Literal["openai", "ollama", "claude"] = "openai"
 
     # ── OpenAI ────────────────────────────────────────────────────────────────
     OPENAI_API_KEY: str = ""
@@ -67,6 +69,13 @@ class Settings(BaseSettings):
     OPENAI_CHAT_MODEL: str = "gpt-4o"
     OPENAI_MAX_TOKENS: int = 2048
     OPENAI_TEMPERATURE: float = 0.0
+
+    # ── Anthropic / Claude ────────────────────────────────────────────────────
+    # Used when LLM_PROVIDER=claude.
+    # Embeddings still use OpenAI (Anthropic has no embeddings API).
+    # Get your key at: https://console.anthropic.com/
+    ANTHROPIC_API_KEY: str = ""
+    ANTHROPIC_CHAT_MODEL: str = "claude-opus-4-6"   # or claude-sonnet-4-6 for lower cost
 
     # ── Ollama (on-prem / private LLM) ────────────────────────────────────────
     OLLAMA_URL: str = "http://ollama:11434"
@@ -103,6 +112,66 @@ class Settings(BaseSettings):
     SENDGRID_API_KEY: str | None = None
     ALERT_FROM_EMAIL: str = "alerts@opslens.ai"
 
+    # ── Log Scanner (hourly LLM digest) ──────────────────────────────────────
+    # Runs once per hour, uses LLM to summarise all issues, sends to team.
+    LOG_SCAN_ENABLED: bool = True
+    LOG_SCAN_WINDOW_MINUTES: int = 60          # how far back to look each run
+    LOG_SCAN_MAX_LINES: int = 2000             # max lines to pull per source
+    LOG_SCAN_CRON_MINUTES: int = 60            # run every N minutes (Beat schedule)
+    LOG_SCAN_MIN_ISSUES: int = 1               # suppress report if fewer issues found
+    LOG_SCAN_DOCKER_CONTAINERS: str = "opslens-api,opslens-worker"  # comma-separated
+    LOG_SCAN_FILE_PATH: str | None = None      # optional: /var/log/opslens/app.log
+    LOG_SCAN_SLACK_WEBHOOK: str | None = None  # webhook for hourly digest
+    LOG_SCAN_EMAIL_RECIPIENTS: str | None = None  # comma-separated email list
+
+    # ── Fast Alert + Exception Enricher ──────────────────────────────────────
+    # Runs every 5 min. On new exception: fires Slack immediately (no LLM),
+    # then queries Qdrant (Jira/Slack/GitHub) for related context + LLM diagnosis.
+    LOG_FAST_ALERT_ENABLED: bool = True
+    LOG_FAST_ALERT_CRON_MINUTES: int = 5       # how often to run the fast scan
+    LOG_FAST_ALERT_WINDOW_MINUTES: int = 5     # look-back window per run
+    LOG_FAST_ALERT_THRESHOLD: int = 3          # min error occurrences to fire
+    LOG_FAST_ALERT_COOLDOWN_MINUTES: int = 10  # suppress duplicate per error sig
+    LOG_FAST_ALERT_ENRICH: bool = True         # query Jira/Slack/GitHub for context
+    LOG_FAST_ALERT_ENRICH_TOP_K: int = 5       # max related docs to surface
+    LOG_FAST_ALERT_SLACK_WEBHOOK: str | None = None  # webhook (falls back to LOG_SCAN_SLACK_WEBHOOK)
+
+    # ── Delivery Risk Timeline ────────────────────────────────────────────────
+    # GitHub webhook integration
+    GITHUB_WEBHOOK_SECRET: str = ""        # GitHub webhook secret (from repo/org settings)
+    GITHUB_ORG: str = ""                   # Restrict to a specific GitHub org (optional)
+
+    # Jira webhook integration
+    JIRA_WEBHOOK_TOKEN: str = ""           # Secret token set in Jira webhook config
+    JIRA_HOST: str = ""                    # e.g. "yourcompany.atlassian.net"
+
+    # Multi-tenant: default tenant for single-tenant installs or dev mode
+    DEFAULT_TENANT_ID: str = "default"
+
+    # ── Notification Provider ─────────────────────────────────────────────────
+    # "slack"  → Slack Block Kit (default)
+    # "teams"  → Microsoft Teams (MessageCard or AdaptiveCard)
+    NOTIFICATION_PROVIDER: Literal["slack", "teams"] = "slack"
+
+    # Teams webhook format (only used when NOTIFICATION_PROVIDER=teams):
+    # "connector" → Office 365 Incoming Webhook / MessageCard (most common, legacy)
+    # "workflow"  → Power Automate Workflow / AdaptiveCard (modern)
+    TEAMS_WEBHOOK_TYPE: Literal["connector", "workflow"] = "connector"
+
+    # ── PagerDuty ─────────────────────────────────────────────────────────────
+    # Global fallback key — per-team keys are stored on AlertRoutingRule.pagerduty_key
+    PAGERDUTY_ROUTING_KEY: str = ""
+
+    # ── SAML SSO (per-tenant config is stored in DB; these are SP-level defaults) ─
+    SAML_SP_ENTITY_ID: str = "https://app.opslens.ai"
+    SAML_SP_BASE_URL: str = "https://app.opslens.ai"   # used to build ACS / SLO URLs
+
+    # ── S3 Archive (optional — used by RetentionPolicy when archive_to_s3=true) ──
+    AWS_ACCESS_KEY_ID: str | None = None
+    AWS_SECRET_ACCESS_KEY: str | None = None
+    AWS_DEFAULT_REGION: str = "us-east-1"
+    RETENTION_ARCHIVE_BUCKET: str | None = None
+
     # ── LangSmith (optional) ──────────────────────────────────────────────────
     LANGCHAIN_TRACING_V2: bool = False
     LANGCHAIN_API_KEY: str | None = None
@@ -121,7 +190,13 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def validate_production_secrets(self) -> "Settings":
         if self.ENV == "production":
-            assert self.OPENAI_API_KEY, "OPENAI_API_KEY must be set in production"
+            if self.LLM_PROVIDER == "claude":
+                assert self.ANTHROPIC_API_KEY, "ANTHROPIC_API_KEY must be set when LLM_PROVIDER=claude"
+                # Claude still uses OpenAI for embeddings
+                assert self.OPENAI_API_KEY, "OPENAI_API_KEY must be set for embeddings when LLM_PROVIDER=claude"
+            elif self.LLM_PROVIDER == "openai":
+                assert self.OPENAI_API_KEY, "OPENAI_API_KEY must be set in production"
+            # ollama needs no API keys
             assert self.JWT_PUBLIC_KEY, "JWT_PUBLIC_KEY must be set in production"
             assert "CHANGE_ME" not in self.SECRET_KEY, "Replace SECRET_KEY in production"
         return self

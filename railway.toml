@@ -1,0 +1,19 @@
+# railway.toml — OpsLens AI API service
+# Deploy this service first. Worker and Beat services share the same repo
+# but use different start commands (set in Railway dashboard per service).
+#
+# Service start commands:
+#   API:    uvicorn apps.api.main:app --host 0.0.0.0 --port $PORT
+#   Worker: celery -A apps.worker.celery_app worker --loglevel=info --concurrency=2 -Q ingestion,insights,alerts
+#   Beat:   celery -A apps.worker.celery_app beat --loglevel=info
+
+[build]
+builder = "dockerfile"
+dockerfilePath = "Dockerfile.api"
+
+[deploy]
+startCommand = "uvicorn apps.api.main:app --host 0.0.0.0 --port $PORT"
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3

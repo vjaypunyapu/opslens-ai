@@ -84,7 +84,7 @@ async def list_integrations(
     """List all configured data source integrations for this tenant."""
     result = await db.execute(
         sa.select(Integration)
-        .where(Integration.tenant_id == ctx.tenant_id)
+        .where(Integration.tenant_id == ctx.tenant_uuid)
         .order_by(Integration.created_at)
     )
     return [_integration_to_out(i) for i in result.scalars().all()]
@@ -117,7 +117,7 @@ async def connect_integration(
     # Check for existing integration
     existing = await db.execute(
         sa.select(Integration).where(
-            Integration.tenant_id == ctx.tenant_id,
+            Integration.tenant_id == ctx.tenant_uuid,
             Integration.source_type == body.source_type,
         )
     )
@@ -135,7 +135,7 @@ async def connect_integration(
 
     integration = Integration(
         id=str(uuid.uuid4()),
-        tenant_id=ctx.tenant_id,
+        tenant_id=ctx.tenant_uuid,
         source_type=body.source_type,
         airbyte_connection_id=airbyte_connection_id,
         status="active",
@@ -152,8 +152,8 @@ async def connect_integration(
         background_tasks.add_task(_trigger_airbyte_sync, airbyte_connection_id, str(integration.id))
     else:
         # No Airbyte (dev mode) — sync directly from the source API
-        background_tasks.add_task(run_direct_sync, str(integration.id), str(ctx.tenant_id))
-    logger.info("Integration %s created for tenant %s", body.source_type, ctx.tenant_id)
+        background_tasks.add_task(run_direct_sync, str(integration.id), str(ctx.tenant_uuid))
+    logger.info("Integration %s created for tenant %s", body.source_type, ctx.tenant_uuid)
 
     return _integration_to_out(integration)
 
@@ -166,7 +166,7 @@ async def disconnect_integration(
     db=Depends(get_db),
 ):
     """Disconnect an integration and delete its Airbyte connection."""
-    integration = await _get_integration_or_404(db, integration_id, ctx.tenant_id)
+    integration = await _get_integration_or_404(db, integration_id, ctx.tenant_uuid)
 
     if integration.airbyte_connection_id:
         await _delete_airbyte_connection(integration.airbyte_connection_id)
@@ -189,7 +189,7 @@ async def trigger_sync(
     - If Airbyte is configured: delegates to Airbyte.
     - If no Airbyte connection (local dev): runs a direct API sync using stored credentials.
     """
-    integration = await _get_integration_or_404(db, integration_id, ctx.tenant_id)
+    integration = await _get_integration_or_404(db, integration_id, ctx.tenant_uuid)
 
     if integration.airbyte_connection_id:
         background_tasks.add_task(
@@ -198,7 +198,7 @@ async def trigger_sync(
         return {"message": "Sync triggered via Airbyte", "integration_id": integration_id}
 
     # No Airbyte — fall back to direct API sync
-    background_tasks.add_task(run_direct_sync, integration_id, str(ctx.tenant_id))
+    background_tasks.add_task(run_direct_sync, integration_id, str(ctx.tenant_uuid))
     return {"message": "Sync triggered (direct)", "integration_id": integration_id}
 
 
@@ -209,7 +209,7 @@ async def get_sync_status(
     ctx: Annotated[TenantContext, Depends(require_admin)],
     db=Depends(get_db),
 ):
-    integration = await _get_integration_or_404(db, integration_id, ctx.tenant_id)
+    integration = await _get_integration_or_404(db, integration_id, ctx.tenant_uuid)
     return SyncStatusOut(
         integration_id=str(integration.id),
         source_type=integration.source_type,

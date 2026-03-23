@@ -18,7 +18,6 @@ import json
 from datetime import datetime, timezone
 
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
 from ..config import settings
 from ..db.models import Incident
@@ -27,11 +26,38 @@ from ..utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-_embeddings = OpenAIEmbeddings(
-    model="text-embedding-3-small",
-    api_key=settings.OPENAI_API_KEY,
-)
-_llm = ChatOpenAI(model="gpt-4o", temperature=0.1, api_key=settings.OPENAI_API_KEY)
+# ── LLM + embeddings: respects LLM_PROVIDER setting ──────────────────────────
+if settings.LLM_PROVIDER == "ollama":
+    from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+    _llm = ChatOpenAI(
+        model=settings.OLLAMA_CHAT_MODEL,
+        base_url=f"{settings.OLLAMA_URL}/v1",
+        api_key="ollama",
+        temperature=0.1,
+        timeout=300,
+    )
+    _embeddings = OpenAIEmbeddings(
+        model=settings.OLLAMA_EMBED_MODEL,
+        base_url=f"{settings.OLLAMA_URL}/v1",
+        api_key="ollama",
+        check_embedding_ctx_length=False,
+    )
+elif settings.LLM_PROVIDER == "claude":
+    from langchain_anthropic import ChatAnthropic
+    from langchain_openai import OpenAIEmbeddings
+    _llm = ChatAnthropic(
+        model=settings.ANTHROPIC_CHAT_MODEL,
+        anthropic_api_key=settings.ANTHROPIC_API_KEY,
+        temperature=0.1,
+    )
+    _embeddings = OpenAIEmbeddings(
+        model=settings.OPENAI_EMBED_MODEL,
+        api_key=settings.OPENAI_API_KEY,
+    )
+else:
+    from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+    _llm = ChatOpenAI(model=settings.OPENAI_CHAT_MODEL, temperature=0.1, api_key=settings.OPENAI_API_KEY)
+    _embeddings = OpenAIEmbeddings(model=settings.OPENAI_EMBED_MODEL, api_key=settings.OPENAI_API_KEY)
 
 _RCA_PROMPT = ChatPromptTemplate.from_messages([
     ("system", """\

@@ -31,11 +31,20 @@ class TenantContext:
     """
     Structured tenant + user context extracted from the validated JWT.
     Injected into every endpoint handler that uses a require_* dependency.
+
+    tenant_id is stored as a str (UUID string) so it is compatible with both
+    String-column models (newer) and UUID-column models (older db/models.py).
+    Use .tenant_uuid when a real uuid.UUID object is required (UUID columns).
     """
-    tenant_id:    _uuid.UUID  # always a valid uuid.UUID — safe to pass to asyncpg columns
-    user_id:      str          # Clerk sub (string) — never used as a DB FK
+    tenant_id:    str   # UUID string — works with String AND UUID columns via cast
+    user_id:      str   # Clerk sub (string) — never used as a DB FK
     role:         str
     company_name: str
+
+    @property
+    def tenant_uuid(self) -> _uuid.UUID:
+        """Return tenant_id as a uuid.UUID for UUID-typed DB columns."""
+        return _uuid.UUID(self.tenant_id)
 
 
 # Role hierarchy (higher index = more permissive)
@@ -179,7 +188,7 @@ async def _build_ctx(request: Request, db, min_role: str) -> TenantContext:
         )
 
     return TenantContext(
-        tenant_id=_uuid.UUID(tenant_uuid),
+        tenant_id=tenant_uuid,   # str — compatible with String + UUID columns
         user_id=user_id,
         role=role,
         company_name=getattr(request.state, "company_name", "your company"),

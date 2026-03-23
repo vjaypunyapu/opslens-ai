@@ -33,7 +33,7 @@ async def get_dashboard(
     week_ago = now - timedelta(days=7)
     day_ago  = now - timedelta(days=1)
 
-    tid = ctx.tenant_id
+    tid = ctx.tenant_uuid
 
     # ── Insights ──────────────────────────────────────────────────────────────
     ins_rows = (await db.execute(

@@ -1,0 +1,11 @@
+# railway.beat.toml — OpsLens AI Celery Beat scheduler service
+# In Railway dashboard: set "Config file path" to railway.beat.toml for the beat service
+
+[build]
+builder = "dockerfile"
+dockerfilePath = "Dockerfile.worker"
+
+[deploy]
+startCommand = "celery -A apps.worker.celery_app beat --loglevel=info"
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3

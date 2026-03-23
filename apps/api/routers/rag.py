@@ -78,7 +78,7 @@ async def create_session(
 ):
     """Create a new chat session for the authenticated user."""
     session = ChatSession(
-        tenant_id=ctx.tenant_id,
+        tenant_id=ctx.tenant_uuid,
         # user_id is a UUID FK — ctx.user_id is the Clerk string ID, not an internal UUID.
         # Leave it null; tenant_id provides sufficient isolation for now.
         user_id=None,
@@ -86,7 +86,7 @@ async def create_session(
     db.add(session)
     await db.commit()
     await db.refresh(session)
-    logger.info("Created chat session %s for tenant %s", session.id, ctx.tenant_id)
+    logger.info("Created chat session %s for tenant %s", session.id, ctx.tenant_uuid)
     return _session_to_out(session, 0)
 
 
@@ -102,7 +102,7 @@ async def list_sessions(
     result = await db.execute(
         sa.select(ChatSession)
         .where(
-            ChatSession.tenant_id == ctx.tenant_id,
+            ChatSession.tenant_id == ctx.tenant_uuid,
         )
         .order_by(ChatSession.updated_at.desc())
         .limit(limit)
@@ -130,7 +130,7 @@ async def get_session(
     db=Depends(get_db),
 ):
     """Get a session and its full message history."""
-    session = await _get_session_or_404(db, session_id, ctx.tenant_id)
+    session = await _get_session_or_404(db, session_id, ctx.tenant_uuid)
     msgs_result = await db.execute(
         sa.select(ChatMessage)
         .where(ChatMessage.session_id == session.id)
@@ -159,7 +159,7 @@ async def query_session(
     - `{"type": "error",   "message": "<description>"}`
     """
     import time
-    session = await _get_session_or_404(db, session_id, ctx.tenant_id)
+    session = await _get_session_or_404(db, session_id, ctx.tenant_uuid)
 
     # Load recent history (last 5 turns = 10 messages)
     hist_result = await db.execute(
@@ -186,7 +186,7 @@ async def query_session(
         session.title = body.content[:60] + ("…" if len(body.content) > 60 else "")
 
     await db.commit()
-    logger.info("Query submitted to session %s | tenant=%s", session_id, ctx.tenant_id)
+    logger.info("Query submitted to session %s | tenant=%s", session_id, ctx.tenant_uuid)
 
     source_types = body.filters.source_types if body.filters else None
     start = time.monotonic()
@@ -195,7 +195,7 @@ async def query_session(
         tokens: list[str] = []
         try:
             async for event in rag.stream(
-                tenant_id=str(ctx.tenant_id),
+                tenant_id=str(ctx.tenant_uuid),
                 company_name=ctx.company_name,
                 question=body.content,
                 history=history,
@@ -241,7 +241,7 @@ async def delete_session(
     ctx: Annotated[TenantContext, Depends(require_member)],
     db=Depends(get_db),
 ):
-    session = await _get_session_or_404(db, session_id, ctx.tenant_id)
+    session = await _get_session_or_404(db, session_id, ctx.tenant_uuid)
     await db.delete(session)
     await db.commit()
 
@@ -259,7 +259,7 @@ async def submit_feedback(
         .join(ChatSession, ChatMessage.session_id == ChatSession.id)
         .where(
             ChatMessage.id == body.message_id,
-            ChatSession.tenant_id == ctx.tenant_id,
+            ChatSession.tenant_id == ctx.tenant_uuid,
             ChatMessage.role == "assistant",
         )
     )

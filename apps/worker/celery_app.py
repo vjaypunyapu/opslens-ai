@@ -14,7 +14,12 @@ app = Celery(
         "apps.worker.tasks.ingestion",
         "apps.worker.tasks.insight_runner",
         "apps.worker.tasks.alert_runner",
-        "apps.worker.tasks.master",      # fan-out tasks used by Beat schedule
+        "apps.worker.tasks.log_scanner",    # hourly LLM digest
+        "apps.worker.tasks.log_fast_alert", # 5-min fast alert + RAG enrichment
+        "apps.worker.tasks.rrt_briefing",   # structured RRT incident brief generation
+        "apps.worker.tasks.master",         # fan-out tasks used by Beat schedule
+        "apps.worker.tasks.retention",      # daily data retention cleanup
+        "apps.worker.tasks.pagerduty",      # PagerDuty Events API v2 helpers
     ],
 )
 
@@ -51,5 +56,25 @@ app.conf.beat_schedule = {
     "staging-processor": {
         "task": "ingestion.process_all_staging",
         "schedule": crontab(minute="*/5"),
+    },
+    # Hourly LLM digest — summarises all issues from the past hour
+    "log-scanner": {
+        "task": "logs.scan_and_report",
+        "schedule": crontab(minute=f"*/{settings.LOG_SCAN_CRON_MINUTES}"),
+        "kwargs": {"tenant_id": None},
+    },
+    # Fast alert — runs every 5 min, fires immediately on new exceptions,
+    # then dispatches RAG enrichment to find related Jira/Slack/GitHub context
+    "log-fast-alert": {
+        "task": "logs.fast_scan",
+        "schedule": crontab(minute=f"*/{settings.LOG_FAST_ALERT_CRON_MINUTES}"),
+        "kwargs": {"tenant_id": None},
+    },
+    # Data retention cleanup — daily at 02:00 UTC
+    # Deletes rows older than each tenant's RetentionPolicy thresholds
+    "retention-cleanup": {
+        "task": "retention.run_cleanup",
+        "schedule": crontab(hour=2, minute=0),
+        "kwargs": {"tenant_id": None},   # None = run for all tenants
     },
 }

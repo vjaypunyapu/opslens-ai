@@ -86,7 +86,7 @@ async def list_insights(
     cutoff -= timedelta(days=days)
 
     conditions = [
-        Insight.tenant_id == ctx.tenant_id,
+        Insight.tenant_id == ctx.tenant_uuid,
         Insight.generated_at >= cutoff,
     ]
 
@@ -132,14 +132,14 @@ async def get_summary(
 
     status_result = await db.execute(
         sa.select(Insight.status, sa.func.count(Insight.id).label("count"))
-        .where(Insight.tenant_id == ctx.tenant_id, Insight.generated_at >= cutoff)
+        .where(Insight.tenant_id == ctx.tenant_uuid, Insight.generated_at >= cutoff)
         .group_by(Insight.status)
     )
     by_status: dict[str, int] = {row.status: row.count for row in status_result.fetchall()}
 
     type_result = await db.execute(
         sa.select(Insight.insight_type, sa.func.count(Insight.id).label("count"))
-        .where(Insight.tenant_id == ctx.tenant_id, Insight.status == "active",
+        .where(Insight.tenant_id == ctx.tenant_uuid, Insight.status == "active",
                Insight.generated_at >= cutoff)
         .group_by(Insight.insight_type)
     )
@@ -147,7 +147,7 @@ async def get_summary(
 
     mag_result = await db.execute(
         sa.select(Insight.magnitude, sa.func.count(Insight.id).label("count"))
-        .where(Insight.tenant_id == ctx.tenant_id, Insight.status == "active",
+        .where(Insight.tenant_id == ctx.tenant_uuid, Insight.status == "active",
                Insight.generated_at >= cutoff)
         .group_by(Insight.magnitude)
     )
@@ -169,7 +169,7 @@ async def get_insight(
     ctx: Annotated[TenantContext, Depends(require_viewer)],
     db=Depends(get_db),
 ):
-    insight = await _get_insight_or_404(db, insight_id, ctx.tenant_id)
+    insight = await _get_insight_or_404(db, insight_id, ctx.tenant_uuid)
     return _insight_to_out(insight)
 
 
@@ -188,12 +188,12 @@ async def trigger_generation(
     if insight_type and insight_type not in VALID_INSIGHT_TYPES:
         raise HTTPException(400, f"Invalid insight_type: {insight_type}")
 
-    run_all_insights_for_tenant.delay(str(ctx.tenant_id), only_type=insight_type)
+    run_all_insights_for_tenant.delay(str(ctx.tenant_uuid), only_type=insight_type)
     logger.info("On-demand insight generation triggered by %s for tenant %s",
-                ctx.user_id, ctx.tenant_id)
+                ctx.user_id, ctx.tenant_uuid)
     return {
         "message": "Insight generation dispatched",
-        "tenant_id": str(ctx.tenant_id),
+        "tenant_id": str(ctx.tenant_uuid),
         "insight_type": insight_type or "all",
     }
 
@@ -212,7 +212,7 @@ async def update_insight_status(
     Snoozed insights are suppressed until `snooze_hours` have elapsed.
     They automatically return to 'active' after the snooze period.
     """
-    insight = await _get_insight_or_404(db, insight_id, ctx.tenant_id)
+    insight = await _get_insight_or_404(db, insight_id, ctx.tenant_uuid)
     now = datetime.now(tz=timezone.utc)
 
     insight.status = body.status

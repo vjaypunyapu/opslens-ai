@@ -1,0 +1,1314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>OpsLens AI — Setup Wizard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: 'Inter', sans-serif;
+      background: #f0f4f9;
+      color: #1a2540;
+      min-height: 100vh;
+      -webkit-font-smoothing: antialiased;
+    }
+    :root {
+      --navy:   #0f1e3c;
+      --blue:   #1d4ed8;
+      --blue-m: #2563eb;
+      --blue-l: #3b82f6;
+      --indigo: #4f46e5;
+      --pale:   #eff6ff;
+      --green:  #10b981;
+      --orange: #f59e0b;
+      --red:    #ef4444;
+      --border: #e2e8f0;
+      --muted:  #64748b;
+      --surface:#f8fafc;
+    }
+
+    /* ── Layout ──────────────────────────────────────────────────── */
+    .app { display: flex; flex-direction: column; min-height: 100vh; }
+
+    /* ── Topbar ──────────────────────────────────────────────────── */
+    .topbar {
+      background: var(--navy);
+      padding: 0 32px;
+      height: 56px;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .topbar-logo { display: flex; align-items: center; gap: 10px; text-decoration: none; }
+    .topbar-logo-icon {
+      width: 30px; height: 30px; border-radius: 7px;
+      background: linear-gradient(135deg, var(--blue) 0%, var(--indigo) 100%);
+      display: flex; align-items: center; justify-content: center; font-size: 14px;
+    }
+    .topbar-logo-text { font-size: 16px; font-weight: 700; color: #fff; }
+    .topbar-logo-text span { color: #60a5fa; }
+    .topbar-step-label { font-size: 13px; color: rgba(255,255,255,0.45); }
+
+    /* ── Progress bar ────────────────────────────────────────────── */
+    .progress-bar-wrap { background: #fff; border-bottom: 1px solid var(--border); padding: 20px 32px; }
+    .progress-steps { display: flex; gap: 0; max-width: 900px; margin: 0 auto; }
+    .progress-step {
+      flex: 1; display: flex; flex-direction: column; align-items: center;
+      position: relative; cursor: pointer;
+    }
+    .progress-step:not(:last-child)::after {
+      content: '';
+      position: absolute; top: 15px; left: calc(50% + 18px);
+      right: calc(-50% + 18px); height: 2px;
+      background: var(--border); z-index: 0;
+      transition: background 0.3s;
+    }
+    .progress-step.done:not(:last-child)::after { background: var(--blue-l); }
+    .step-dot {
+      width: 32px; height: 32px; border-radius: 50%;
+      border: 2px solid var(--border);
+      background: #fff;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 12px; font-weight: 700; color: var(--muted);
+      z-index: 1; position: relative; transition: all 0.2s;
+    }
+    .progress-step.active .step-dot  { border-color: var(--blue); background: var(--blue); color: #fff; }
+    .progress-step.done   .step-dot  { border-color: var(--blue-l); background: var(--blue-l); color: #fff; }
+    .step-label { font-size: 11px; font-weight: 500; color: var(--muted); margin-top: 6px; text-align: center; white-space: nowrap; }
+    .progress-step.active .step-label { color: var(--blue); font-weight: 600; }
+    .progress-step.done   .step-label { color: var(--blue-l); }
+
+    /* ── Main content ────────────────────────────────────────────── */
+    .main { flex: 1; padding: 36px 32px; }
+    .step-panel { display: none; max-width: 760px; margin: 0 auto; animation: fadeUp 0.3s ease; }
+    .step-panel.active { display: block; }
+    @keyframes fadeUp { from { opacity:0; transform: translateY(12px); } to { opacity:1; transform: translateY(0); } }
+
+    .step-header { margin-bottom: 32px; }
+    .step-header h2 { font-size: 24px; font-weight: 800; color: var(--navy); margin-bottom: 6px; }
+    .step-header p  { font-size: 14px; color: var(--muted); line-height: 1.6; }
+
+    /* ── Cards ───────────────────────────────────────────────────── */
+    .card {
+      background: #fff; border: 1px solid var(--border);
+      border-radius: 14px; padding: 24px;
+      margin-bottom: 20px;
+    }
+    .card h3 { font-size: 14px; font-weight: 700; color: var(--navy); margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
+    .card h3 .card-icon { font-size: 18px; }
+
+    /* ── Provider selector ───────────────────────────────────────── */
+    .provider-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+    .provider-option {
+      border: 2px solid var(--border); border-radius: 12px;
+      padding: 20px 16px; cursor: pointer; text-align: center;
+      transition: all 0.18s; background: #fff;
+    }
+    .provider-option:hover { border-color: #93c5fd; background: var(--pale); }
+    .provider-option.selected { border-color: var(--blue); background: var(--pale); box-shadow: 0 0 0 3px rgba(29,78,216,0.12); }
+    .provider-option .p-icon  { font-size: 32px; margin-bottom: 10px; }
+    .provider-option .p-name  { font-size: 14px; font-weight: 700; color: var(--navy); margin-bottom: 4px; }
+    .provider-option .p-desc  { font-size: 12px; color: var(--muted); line-height: 1.5; }
+    .provider-option .p-badge {
+      display: inline-block; margin-top: 8px; padding: 2px 8px;
+      border-radius: 10px; font-size: 10px; font-weight: 600;
+      background: var(--pale); color: var(--blue);
+    }
+    .provider-option.selected .p-badge { background: var(--blue); color: #fff; }
+
+    /* ── Form fields ─────────────────────────────────────────────── */
+    .field-group { display: flex; flex-direction: column; gap: 16px; }
+    .field { display: flex; flex-direction: column; gap: 6px; }
+    .field label { font-size: 13px; font-weight: 600; color: var(--navy); }
+    .field .field-hint { font-size: 12px; color: var(--muted); margin-top: -2px; }
+    .field input, .field select, .field textarea {
+      padding: 10px 14px; border-radius: 8px;
+      border: 1.5px solid var(--border); font-size: 14px;
+      font-family: inherit; color: var(--navy); background: #fff;
+      transition: border-color 0.15s;
+      outline: none;
+    }
+    .field input:focus, .field select:focus, .field textarea:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(29,78,216,0.08); }
+    .field input.mono, .field textarea.mono { font-family: 'JetBrains Mono', monospace; font-size: 13px; }
+    .field textarea { resize: vertical; min-height: 70px; }
+    .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+
+    .field .generate-btn {
+      align-self: flex-start; margin-top: 2px;
+      padding: 6px 14px; border-radius: 6px;
+      border: 1.5px solid var(--border); background: var(--surface);
+      font-size: 12px; font-weight: 600; cursor: pointer; color: var(--blue);
+      transition: all 0.15s;
+    }
+    .field .generate-btn:hover { border-color: var(--blue); background: var(--pale); }
+
+    /* ── Toggle ──────────────────────────────────────────────────── */
+    .toggle-row { display: flex; align-items: center; justify-content: space-between; padding: 4px 0; }
+    .toggle-row .toggle-label { display: flex; flex-direction: column; }
+    .toggle-row .toggle-label span:first-child { font-size: 13px; font-weight: 600; color: var(--navy); }
+    .toggle-row .toggle-label span:last-child  { font-size: 12px; color: var(--muted); }
+    .toggle {
+      position: relative; width: 44px; height: 24px;
+      cursor: pointer; flex-shrink: 0;
+    }
+    .toggle input { opacity: 0; width: 0; height: 0; }
+    .toggle-slider {
+      position: absolute; inset: 0; border-radius: 12px;
+      background: var(--border); transition: 0.2s;
+    }
+    .toggle-slider::before {
+      content: ''; position: absolute;
+      height: 18px; width: 18px; border-radius: 50%;
+      left: 3px; bottom: 3px; background: #fff;
+      transition: 0.2s; box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+    }
+    .toggle input:checked + .toggle-slider { background: var(--blue); }
+    .toggle input:checked + .toggle-slider::before { transform: translateX(20px); }
+
+    /* ── Teams builder ───────────────────────────────────────────── */
+    .teams-list { display: flex; flex-direction: column; gap: 12px; margin-bottom: 12px; }
+    .team-item {
+      border: 1px solid var(--border); border-radius: 10px;
+      padding: 16px; background: var(--surface);
+    }
+    .team-item-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; cursor: pointer; }
+    .team-item-title { font-size: 14px; font-weight: 700; color: var(--navy); display: flex; align-items: center; gap: 8px; }
+    .team-item-actions { display: flex; gap: 6px; }
+    .btn-icon { background: none; border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; cursor: pointer; font-size: 13px; color: var(--muted); transition: all 0.15s; }
+    .btn-icon:hover { border-color: var(--red); color: var(--red); }
+    .team-item-body { display: flex; flex-direction: column; gap: 12px; }
+
+    .add-team-btn {
+      display: flex; align-items: center; justify-content: center; gap: 8px;
+      width: 100%; padding: 12px; border-radius: 10px;
+      border: 2px dashed var(--border); background: none; cursor: pointer;
+      font-size: 14px; font-weight: 600; color: var(--blue);
+      transition: all 0.15s;
+    }
+    .add-team-btn:hover { border-color: var(--blue); background: var(--pale); }
+
+    /* ── Tag input ───────────────────────────────────────────────── */
+    .tag-input-wrap {
+      min-height: 44px; padding: 6px 10px;
+      border: 1.5px solid var(--border); border-radius: 8px;
+      display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+      cursor: text; background: #fff; transition: border-color 0.15s;
+    }
+    .tag-input-wrap:focus-within { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(29,78,216,0.08); }
+    .tag-chip {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 3px 8px; border-radius: 6px;
+      background: var(--pale); color: var(--blue);
+      font-size: 12px; font-weight: 500;
+    }
+    .tag-chip button { background: none; border: none; cursor: pointer; color: var(--blue); font-size: 14px; line-height: 1; padding: 0; }
+    .tag-input-wrap input {
+      border: none; outline: none; font-size: 13px; font-family: inherit;
+      min-width: 120px; flex: 1; padding: 2px 4px; color: var(--navy);
+    }
+
+    /* ── Review / Output ─────────────────────────────────────────── */
+    .output-tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); margin-bottom: 20px; }
+    .output-tab {
+      padding: 10px 20px; font-size: 13px; font-weight: 600;
+      color: var(--muted); border-bottom: 2px solid transparent;
+      cursor: pointer; transition: all 0.15s;
+    }
+    .output-tab.active { color: var(--blue); border-bottom-color: var(--blue); }
+
+    .output-panel { display: none; }
+    .output-panel.active { display: block; }
+
+    .code-output {
+      position: relative; background: var(--navy); border-radius: 12px;
+      padding: 20px 20px 20px 20px; font-family: 'JetBrains Mono', monospace;
+      font-size: 12.5px; line-height: 1.7; color: #e2e8f0;
+      max-height: 480px; overflow-y: auto;
+      white-space: pre;
+    }
+    .code-output .comment { color: #64748b; }
+    .code-output .key     { color: #93c5fd; }
+    .code-output .val     { color: #86efac; }
+    .code-output .section-h { color: #fbbf24; font-weight: 700; }
+
+    .copy-btn {
+      position: absolute; top: 12px; right: 12px;
+      padding: 6px 14px; border-radius: 6px;
+      background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15);
+      color: rgba(255,255,255,0.7); font-size: 12px; font-weight: 600;
+      cursor: pointer; transition: all 0.15s; font-family: inherit;
+    }
+    .copy-btn:hover { background: rgba(255,255,255,0.15); }
+    .copy-btn.copied { background: rgba(16,185,129,0.2); color: #6ee7b7; border-color: #6ee7b7; }
+
+    .checklist { display: flex; flex-direction: column; gap: 12px; }
+    .checklist-item {
+      display: flex; gap: 12px; align-items: flex-start;
+      padding: 14px 16px; border-radius: 10px;
+      border: 1px solid var(--border); background: #fff;
+    }
+    .checklist-item .ci-num {
+      width: 26px; height: 26px; border-radius: 50%;
+      background: var(--pale); color: var(--blue);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 12px; font-weight: 700; flex-shrink: 0;
+    }
+    .checklist-item .ci-body h4 { font-size: 13px; font-weight: 700; color: var(--navy); margin-bottom: 2px; }
+    .checklist-item .ci-body p  { font-size: 12px; color: var(--muted); line-height: 1.5; }
+    .checklist-item .ci-body code { font-family: 'JetBrains Mono', monospace; font-size: 11px; background: var(--surface); padding: 2px 5px; border-radius: 4px; color: var(--blue); }
+
+    .summary-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 20px; }
+    .summary-item { padding: 12px 16px; border-radius: 10px; border: 1px solid var(--border); background: #fff; }
+    .summary-item .s-label { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
+    .summary-item .s-value { font-size: 14px; font-weight: 700; color: var(--navy); display: flex; align-items: center; gap: 6px; }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; }
+    .status-dot.green { background: var(--green); }
+    .status-dot.blue  { background: var(--blue); }
+
+    /* ── Nav buttons ─────────────────────────────────────────────── */
+    .step-nav {
+      max-width: 760px; margin: 0 auto;
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 24px 0;
+    }
+    .btn {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 11px 24px; border-radius: 8px; font-size: 14px;
+      font-weight: 600; cursor: pointer; border: none; transition: all 0.18s;
+      font-family: inherit;
+    }
+    .btn-primary { background: var(--blue); color: #fff; box-shadow: 0 2px 8px rgba(29,78,216,0.3); }
+    .btn-primary:hover { background: #1a44c8; transform: translateY(-1px); }
+    .btn-ghost { background: none; border: 1.5px solid var(--border); color: var(--muted); }
+    .btn-ghost:hover { border-color: var(--blue-l); color: var(--navy); }
+    .btn-success { background: var(--green); color: #fff; }
+    .btn-success:hover { background: #059669; transform: translateY(-1px); }
+
+    /* ── Info box ────────────────────────────────────────────────── */
+    .info-box {
+      display: flex; gap: 10px; padding: 12px 14px;
+      border-radius: 8px; background: #eff6ff; border: 1px solid #bfdbfe;
+      font-size: 13px; color: #1e40af; line-height: 1.5; margin-top: 4px;
+    }
+    .info-box .info-icon { flex-shrink: 0; font-size: 15px; margin-top: 1px; }
+    .warn-box {
+      display: flex; gap: 10px; padding: 12px 14px;
+      border-radius: 8px; background: #fffbeb; border: 1px solid #fde68a;
+      font-size: 13px; color: #92400e; line-height: 1.5;
+    }
+    .warn-box .warn-icon { flex-shrink: 0; font-size: 15px; margin-top: 1px; }
+
+    .divider { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
+
+    /* ── Responsive ──────────────────────────────────────────────── */
+    @media(max-width: 600px) {
+      .provider-grid { grid-template-columns: 1fr; }
+      .field-row     { grid-template-columns: 1fr; }
+      .summary-grid  { grid-template-columns: 1fr; }
+      .progress-steps .step-label { display: none; }
+    }
+  </style>
+</head>
+<body>
+<div class="app">
+
+  <!-- Topbar -->
+  <div class="topbar">
+    <a href="index.html" class="topbar-logo">
+      <div class="topbar-logo-icon">🔍</div>
+      <span class="topbar-logo-text">OpsLens <span>AI</span></span>
+    </a>
+    <span class="topbar-step-label" id="topbarStepLabel">Setup Wizard</span>
+  </div>
+
+  <!-- Progress -->
+  <div class="progress-bar-wrap">
+    <div class="progress-steps" id="progressSteps">
+      <!-- filled by JS -->
+    </div>
+  </div>
+
+  <!-- Main -->
+  <div class="main">
+
+    <!-- ── STEP 1: LLM Provider ──────────────────────────────────── -->
+    <div class="step-panel" id="step-1">
+      <div class="step-header">
+        <h2>Choose your AI provider</h2>
+        <p>OpsLens uses an LLM to generate incident briefs, diagnose exceptions, and power RAG chat. Pick the provider that matches your setup.</p>
+      </div>
+      <div class="card">
+        <h3><span class="card-icon">🤖</span> LLM Provider</h3>
+        <div class="provider-grid">
+          <div class="provider-option" onclick="selectProvider('openai')" id="prov-openai">
+            <div class="p-icon">🟢</div>
+            <div class="p-name">OpenAI</div>
+            <div class="p-desc">GPT-4o + text-embedding-3-small. Best overall quality.</div>
+            <div class="p-badge">Default</div>
+          </div>
+          <div class="provider-option" onclick="selectProvider('claude')" id="prov-claude">
+            <div class="p-icon">🟣</div>
+            <div class="p-name">Claude (Anthropic)</div>
+            <div class="p-desc">Claude Opus or Sonnet. 200k context. Enterprise BAA.</div>
+            <div class="p-badge">Enterprise</div>
+          </div>
+          <div class="provider-option" onclick="selectProvider('ollama')" id="prov-ollama">
+            <div class="p-icon">🦙</div>
+            <div class="p-name">Ollama (Self-hosted)</div>
+            <div class="p-desc">Llama 3.1 + nomic-embed-text. Fully private, air-gappable.</div>
+            <div class="p-badge">Air-gap</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- OpenAI fields -->
+      <div class="card" id="fields-openai">
+        <h3><span class="card-icon">🔑</span> OpenAI Credentials</h3>
+        <div class="field-group">
+          <div class="field">
+            <label>OpenAI API Key *</label>
+            <span class="field-hint">Get your key at platform.openai.com → API Keys</span>
+            <input type="password" class="mono" id="openai_api_key" placeholder="sk-proj-..." oninput="saveField('OPENAI_API_KEY', this.value)"/>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label>Chat Model</label>
+              <select id="openai_chat_model" onchange="saveField('OPENAI_CHAT_MODEL', this.value)">
+                <option value="gpt-4o">gpt-4o (recommended)</option>
+                <option value="gpt-4o-mini">gpt-4o-mini (lower cost)</option>
+                <option value="gpt-4-turbo">gpt-4-turbo</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>Embedding Model</label>
+              <select id="openai_embed_model" onchange="saveField('OPENAI_EMBED_MODEL', this.value)">
+                <option value="text-embedding-3-small">text-embedding-3-small</option>
+                <option value="text-embedding-3-large">text-embedding-3-large</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Claude fields -->
+      <div class="card" id="fields-claude" style="display:none">
+        <h3><span class="card-icon">🔑</span> Anthropic / Claude Credentials</h3>
+        <div class="info-box" style="margin-bottom:14px">
+          <span class="info-icon">ℹ️</span>
+          <span>Claude uses OpenAI for embeddings (Anthropic has no embeddings API). Both API keys are required.</span>
+        </div>
+        <div class="field-group">
+          <div class="field">
+            <label>Anthropic API Key *</label>
+            <span class="field-hint">Get your key at console.anthropic.com</span>
+            <input type="password" class="mono" id="anthropic_api_key" placeholder="sk-ant-..." oninput="saveField('ANTHROPIC_API_KEY', this.value)"/>
+          </div>
+          <div class="field">
+            <label>Claude Model</label>
+            <select id="anthropic_model" onchange="saveField('ANTHROPIC_CHAT_MODEL', this.value)">
+              <option value="claude-opus-4-6">claude-opus-4-6 (most capable)</option>
+              <option value="claude-sonnet-4-6">claude-sonnet-4-6 (balanced)</option>
+              <option value="claude-haiku-4-5-20251001">claude-haiku-4-5 (fastest)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>OpenAI API Key * <span style="font-weight:400;color:var(--muted)">(for embeddings only)</span></label>
+            <input type="password" class="mono" id="openai_api_key_claude" placeholder="sk-proj-..." oninput="saveField('OPENAI_API_KEY', this.value)"/>
+          </div>
+        </div>
+      </div>
+
+      <!-- Ollama fields -->
+      <div class="card" id="fields-ollama" style="display:none">
+        <h3><span class="card-icon">🦙</span> Ollama Configuration</h3>
+        <div class="field-group">
+          <div class="field">
+            <label>Ollama Server URL *</label>
+            <span class="field-hint">The URL where your Ollama instance is running</span>
+            <input type="text" class="mono" id="ollama_url" value="http://ollama:11434" oninput="saveField('OLLAMA_URL', this.value)"/>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label>Chat Model</label>
+              <select id="ollama_chat_model" onchange="saveField('OLLAMA_CHAT_MODEL', this.value)">
+                <option value="llama3.1">llama3.1 (recommended)</option>
+                <option value="llama3.2">llama3.2</option>
+                <option value="mistral">mistral</option>
+                <option value="qwen2.5">qwen2.5</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>Embedding Model</label>
+              <select id="ollama_embed_model" onchange="saveField('OLLAMA_EMBED_MODEL', this.value)">
+                <option value="nomic-embed-text">nomic-embed-text (recommended)</option>
+                <option value="mxbai-embed-large">mxbai-embed-large</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── STEP 2: Infrastructure ────────────────────────────────── -->
+    <div class="step-panel" id="step-2">
+      <div class="step-header">
+        <h2>Infrastructure</h2>
+        <p>OpsLens needs a PostgreSQL database, Redis cache, and Qdrant vector store. These can be cloud-hosted or self-managed.</p>
+      </div>
+      <div class="card">
+        <h3><span class="card-icon">🗄️</span> Database (PostgreSQL)</h3>
+        <div class="field-group">
+          <div class="field">
+            <label>Database URL *</label>
+            <span class="field-hint">asyncpg format — e.g. postgresql+asyncpg://user:pass@host:5432/dbname</span>
+            <input type="text" class="mono" id="database_url" placeholder="postgresql+asyncpg://opslens:password@localhost:5432/opslens" oninput="saveField('DATABASE_URL', this.value)"/>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <h3><span class="card-icon">⚡</span> Redis (Celery Broker)</h3>
+        <div class="field-group">
+          <div class="field">
+            <label>Redis URL *</label>
+            <input type="text" class="mono" id="redis_url" placeholder="redis://localhost:6379/0" oninput="saveField('REDIS_URL', this.value)"/>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <h3><span class="card-icon">🔮</span> Qdrant (Vector Store)</h3>
+        <div class="field-group">
+          <div class="field-row">
+            <div class="field">
+              <label>Qdrant URL *</label>
+              <input type="text" class="mono" id="qdrant_url" placeholder="http://localhost:6333" oninput="saveField('QDRANT_URL', this.value)"/>
+            </div>
+            <div class="field">
+              <label>Qdrant API Key <span style="font-weight:400;color:var(--muted)">(cloud only)</span></label>
+              <input type="password" class="mono" id="qdrant_api_key" placeholder="Leave blank for local" oninput="saveField('QDRANT_API_KEY', this.value)"/>
+            </div>
+          </div>
+        </div>
+        <div class="info-box" style="margin-top:12px">
+          <span class="info-icon">ℹ️</span>
+          <span>New to Qdrant? Use <strong>Qdrant Cloud</strong> (free tier available at cloud.qdrant.io) or run locally with: <code style="font-family:monospace;background:rgba(29,78,216,0.1);padding:1px 4px;border-radius:3px">docker run -p 6333:6333 qdrant/qdrant</code></span>
+        </div>
+      </div>
+      <div class="card">
+        <h3><span class="card-icon">🔐</span> Auth &amp; Security</h3>
+        <div class="field-group">
+          <div class="field">
+            <label>JWT Public Key URL (JWKS)</label>
+            <span class="field-hint">Your Clerk or Auth0 JWKS endpoint (e.g. https://your-domain.clerk.accounts.dev/.well-known/jwks.json)</span>
+            <input type="text" class="mono" id="jwt_url" placeholder="https://your-app.clerk.accounts.dev/.well-known/jwks.json" oninput="saveField('JWT_PUBLIC_KEY_URL', this.value)"/>
+          </div>
+          <div class="field">
+            <label>Default Tenant ID</label>
+            <span class="field-hint">Used in single-tenant or dev installs. Use your org slug.</span>
+            <input type="text" id="default_tenant_id" placeholder="your-company" value="default" oninput="saveField('DEFAULT_TENANT_ID', this.value)"/>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── STEP 3: Slack ──────────────────────────────────────────── -->
+    <div class="step-panel" id="step-3">
+      <div class="step-header">
+        <h2>Connect Slack</h2>
+        <p>OpsLens sends all alerts and RRT briefs to Slack. You'll set up per-team webhooks in Step 5 — this is the fallback for alerts that don't match a routing rule.</p>
+      </div>
+      <div class="card">
+        <h3><span class="card-icon">💬</span> Slack Webhooks</h3>
+        <div class="field-group">
+          <div class="field">
+            <label>Fallback Slack Webhook URL</label>
+            <span class="field-hint">Used when no team routing rule matches. Create at api.slack.com/apps → Incoming Webhooks.</span>
+            <input type="text" class="mono" id="slack_webhook" placeholder="https://hooks.slack.com/services/T.../B.../..." oninput="saveField('LOG_FAST_ALERT_SLACK_WEBHOOK', this.value)"/>
+          </div>
+          <div class="field">
+            <label>Hourly Digest Webhook (optional)</label>
+            <span class="field-hint">Can be the same as above or a separate #ops-digest channel.</span>
+            <input type="text" class="mono" id="slack_digest_webhook" placeholder="https://hooks.slack.com/services/..." oninput="saveField('LOG_SCAN_SLACK_WEBHOOK', this.value)"/>
+          </div>
+          <div class="field">
+            <label>Alert Email Recipients (optional)</label>
+            <span class="field-hint">Comma-separated. Requires SendGrid API key.</span>
+            <input type="text" id="email_recipients" placeholder="oncall@yourcompany.com, eng@yourcompany.com" oninput="saveField('LOG_SCAN_EMAIL_RECIPIENTS', this.value)"/>
+          </div>
+          <div class="field">
+            <label>SendGrid API Key (optional)</label>
+            <input type="password" class="mono" id="sendgrid_key" placeholder="SG...." oninput="saveField('SENDGRID_API_KEY', this.value)"/>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <h3><span class="card-icon">⚙️</span> Alert Settings</h3>
+        <div class="field-group">
+          <div class="toggle-row">
+            <div class="toggle-label">
+              <span>Fast Alert (5-min scanner)</span>
+              <span>Fire Slack alerts immediately when exceptions spike</span>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="fast_alert_enabled" checked onchange="saveField('LOG_FAST_ALERT_ENABLED', this.checked)"/>
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+          <div class="toggle-row">
+            <div class="toggle-label">
+              <span>Hourly LLM Digest</span>
+              <span>AI-written summary of all issues from the past hour</span>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="digest_enabled" checked onchange="saveField('LOG_SCAN_ENABLED', this.checked)"/>
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+          <div class="toggle-row">
+            <div class="toggle-label">
+              <span>RAG Enrichment</span>
+              <span>Search Jira/Slack/GitHub for related context on each alert</span>
+            </div>
+            <label class="toggle">
+              <input type="checkbox" id="enrich_enabled" checked onchange="saveField('LOG_FAST_ALERT_ENRICH', this.checked)"/>
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+          <div class="field-row" style="margin-top:4px">
+            <div class="field">
+              <label>Alert Threshold (min occurrences)</label>
+              <input type="number" id="alert_threshold" value="3" min="1" max="50" oninput="saveField('LOG_FAST_ALERT_THRESHOLD', this.value)"/>
+            </div>
+            <div class="field">
+              <label>Cooldown (minutes between same alert)</label>
+              <input type="number" id="alert_cooldown" value="10" min="1" max="60" oninput="saveField('LOG_FAST_ALERT_COOLDOWN_MINUTES', this.value)"/>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── STEP 4: GitHub + Jira ─────────────────────────────────── -->
+    <div class="step-panel" id="step-4">
+      <div class="step-header">
+        <h2>GitHub &amp; Jira webhooks</h2>
+        <p>These webhooks power the Delivery Risk Timeline — the "what changed before this incident?" view. PRs, deploys, and Jira transitions are recorded automatically.</p>
+      </div>
+      <div class="card">
+        <h3><span class="card-icon">🐙</span> GitHub</h3>
+        <div class="field-group">
+          <div class="field">
+            <label>GitHub Organisation</label>
+            <span class="field-hint">Your GitHub org slug (e.g. "acme-corp"). Leave blank to accept webhooks from any repo.</span>
+            <input type="text" id="github_org" placeholder="your-org" oninput="saveField('GITHUB_ORG', this.value)"/>
+          </div>
+          <div class="field">
+            <label>Webhook Secret</label>
+            <span class="field-hint">A random secret — used to verify GitHub webhook payloads. Generate one below.</span>
+            <div style="display:flex;gap:8px">
+              <input type="text" class="mono" id="github_secret" placeholder="click Generate →" style="flex:1" oninput="saveField('GITHUB_WEBHOOK_SECRET', this.value)"/>
+              <button class="generate-btn" onclick="generateSecret('github_secret', 'GITHUB_WEBHOOK_SECRET')" style="padding:8px 14px;border-radius:8px;border:1.5px solid var(--border);background:var(--surface);font-size:12px;font-weight:600;cursor:pointer;color:var(--blue);white-space:nowrap;transition:all 0.15s">⚡ Generate</button>
+            </div>
+          </div>
+          <div class="info-box">
+            <span class="info-icon">📋</span>
+            <div>After setup, go to <strong>GitHub → repo Settings → Webhooks → Add webhook</strong><br/>
+            Payload URL: <code id="github-webhook-url">https://your-domain.com/api/v1/timeline/webhooks/github</code><br/>
+            Events: Pull requests, Pushes, Workflow runs</div>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <h3><span class="card-icon">🎫</span> Jira</h3>
+        <div class="field-group">
+          <div class="field">
+            <label>Jira Host</label>
+            <span class="field-hint">Your Atlassian domain (without https://)</span>
+            <input type="text" id="jira_host" placeholder="yourcompany.atlassian.net" oninput="saveField('JIRA_HOST', this.value)"/>
+          </div>
+          <div class="field">
+            <label>Webhook Token</label>
+            <span class="field-hint">A secret token — Jira sends this in the X-Jira-Webhook-Token header.</span>
+            <div style="display:flex;gap:8px">
+              <input type="text" class="mono" id="jira_token" placeholder="click Generate →" style="flex:1" oninput="saveField('JIRA_WEBHOOK_TOKEN', this.value)"/>
+              <button class="generate-btn" onclick="generateSecret('jira_token', 'JIRA_WEBHOOK_TOKEN')" style="padding:8px 14px;border-radius:8px;border:1.5px solid var(--border);background:var(--surface);font-size:12px;font-weight:600;cursor:pointer;color:var(--blue);white-space:nowrap;transition:all 0.15s">⚡ Generate</button>
+            </div>
+          </div>
+          <div class="info-box">
+            <span class="info-icon">📋</span>
+            <div>After setup, go to <strong>Jira Settings → System → Webhooks → Create</strong><br/>
+            URL: <code id="jira-webhook-url">https://your-domain.com/api/v1/timeline/webhooks/jira</code><br/>
+            Events: Issue Created, Issue Updated</div>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <h3><span class="card-icon">🌐</span> Your OpsLens Domain</h3>
+        <div class="field">
+          <label>Production URL</label>
+          <span class="field-hint">Used to generate webhook URLs in the checklist above.</span>
+          <input type="text" id="app_domain" placeholder="https://opslens.yourcompany.com" oninput="updateWebhookUrls(this.value)"/>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── STEP 5: Log Sources ───────────────────────────────────── -->
+    <div class="step-panel" id="step-5">
+      <div class="step-header">
+        <h2>Log sources</h2>
+        <p>Tell OpsLens where to find your logs. It scans these every 5 minutes for ERROR, EXCEPTION, and CRITICAL lines.</p>
+      </div>
+      <div class="card">
+        <h3><span class="card-icon">🐳</span> Docker Containers</h3>
+        <div class="field-group">
+          <div class="field">
+            <label>Container names to scan</label>
+            <span class="field-hint">Type a name and press Enter or comma to add. These must be the exact Docker container names.</span>
+            <div class="tag-input-wrap" id="containers-wrap" onclick="document.getElementById('containers-input').focus()">
+              <input type="text" id="containers-input" placeholder="e.g. api-server" onkeydown="handleTagInput(event, 'containers')"/>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <h3><span class="card-icon">📁</span> Log File (optional)</h3>
+        <div class="field">
+          <label>Log file path</label>
+          <span class="field-hint">Absolute path on the worker host. Useful for apps that write to a shared log file.</span>
+          <input type="text" class="mono" id="log_file_path" placeholder="/var/log/myapp/app.log" oninput="saveField('LOG_SCAN_FILE_PATH', this.value)"/>
+        </div>
+      </div>
+      <div class="card">
+        <h3><span class="card-icon">🔍</span> Scan Settings</h3>
+        <div class="field-group">
+          <div class="field-row">
+            <div class="field">
+              <label>Max lines per scan</label>
+              <input type="number" id="max_lines" value="2000" oninput="saveField('LOG_SCAN_MAX_LINES', this.value)"/>
+            </div>
+            <div class="field">
+              <label>Min issues to send digest</label>
+              <input type="number" id="min_issues" value="1" oninput="saveField('LOG_SCAN_MIN_ISSUES', this.value)"/>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── STEP 6: Team Routing ──────────────────────────────────── -->
+    <div class="step-panel" id="step-6">
+      <div class="step-header">
+        <h2>Team alert routing</h2>
+        <p>Route alerts to the right team's Slack channel based on what's in the error. Rules are evaluated in priority order. Add one team per service area.</p>
+      </div>
+
+      <div class="teams-list" id="teams-list">
+        <!-- Populated by JS -->
+      </div>
+      <button class="add-team-btn" onclick="addTeam()">+ Add Team</button>
+
+      <div class="info-box" style="margin-top:16px">
+        <span class="info-icon">💡</span>
+        <span>Add a <strong>catch-all team</strong> (e.g. "Eng On-Call") with service pattern <code>.*</code> at priority 999 to ensure no alert is ever missed.</span>
+      </div>
+    </div>
+
+    <!-- ── STEP 7: Review & Download ─────────────────────────────── -->
+    <div class="step-panel" id="step-7">
+      <div class="step-header">
+        <h2>Review &amp; download your config</h2>
+        <p>Your configuration is ready. Download the files below and follow the setup checklist to go live.</p>
+      </div>
+
+      <div class="summary-grid" id="summary-grid">
+        <!-- Populated by JS -->
+      </div>
+
+      <div class="output-tabs">
+        <div class="output-tab active" onclick="switchTab(this, 'tab-env')">.env file</div>
+        <div class="output-tab" onclick="switchTab(this, 'tab-compose')">docker-compose.yml</div>
+        <div class="output-tab" onclick="switchTab(this, 'tab-routing')">Routing Rules (curl)</div>
+        <div class="output-tab" onclick="switchTab(this, 'tab-checklist')">Setup Checklist</div>
+      </div>
+
+      <div class="output-panel active" id="tab-env">
+        <div class="code-output" id="env-output" style="position:relative">
+          <button class="copy-btn" onclick="copyOutput('env-output', this)">Copy</button>
+          <span id="env-content"></span>
+        </div>
+        <div style="display:flex;gap:10px;margin-top:12px">
+          <button class="btn btn-primary" onclick="downloadFile('env-output', '.env')">⬇ Download .env</button>
+        </div>
+      </div>
+
+      <div class="output-panel" id="tab-compose">
+        <div class="code-output" id="compose-output" style="position:relative">
+          <button class="copy-btn" onclick="copyOutput('compose-output', this)">Copy</button>
+          <span id="compose-content"></span>
+        </div>
+        <div style="display:flex;gap:10px;margin-top:12px">
+          <button class="btn btn-primary" onclick="downloadFile('compose-output', 'docker-compose.yml')">⬇ Download docker-compose.yml</button>
+        </div>
+      </div>
+
+      <div class="output-panel" id="tab-routing">
+        <div class="code-output" id="routing-output" style="position:relative">
+          <button class="copy-btn" onclick="copyOutput('routing-output', this)">Copy</button>
+          <span id="routing-content"></span>
+        </div>
+        <div class="warn-box" style="margin-top:12px">
+          <span class="warn-icon">⚠️</span>
+          <span>Run these curl commands <strong>after</strong> OpsLens is running and you have a valid JWT token. Replace <code>$AUTH_TOKEN</code> with your token.</span>
+        </div>
+      </div>
+
+      <div class="output-panel" id="tab-checklist">
+        <div class="checklist" id="checklist-content">
+          <!-- Populated by JS -->
+        </div>
+      </div>
+    </div>
+
+    <!-- Nav buttons -->
+    <div class="step-nav">
+      <button class="btn btn-ghost" id="btn-back" onclick="prevStep()" style="display:none">← Back</button>
+      <div style="flex:1"></div>
+      <button class="btn btn-primary" id="btn-next" onclick="nextStep()">Continue →</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────────
+const STATE = {
+  currentStep: 1,
+  totalSteps: 7,
+  env: {
+    ENV: 'production',
+    APP_NAME: 'OpsLens AI',
+    SECRET_KEY: generateRandomHex(32),
+    LLM_PROVIDER: 'openai',
+    OPENAI_API_KEY: '',
+    OPENAI_CHAT_MODEL: 'gpt-4o',
+    OPENAI_EMBED_MODEL: 'text-embedding-3-small',
+    ANTHROPIC_API_KEY: '',
+    ANTHROPIC_CHAT_MODEL: 'claude-opus-4-6',
+    OLLAMA_URL: 'http://ollama:11434',
+    OLLAMA_CHAT_MODEL: 'llama3.1',
+    OLLAMA_EMBED_MODEL: 'nomic-embed-text',
+    DATABASE_URL: '',
+    REDIS_URL: '',
+    CELERY_BROKER_URL: '',
+    CELERY_RESULT_BACKEND: '',
+    QDRANT_URL: '',
+    QDRANT_API_KEY: '',
+    JWT_PUBLIC_KEY_URL: '',
+    DEFAULT_TENANT_ID: 'default',
+    LOG_FAST_ALERT_ENABLED: true,
+    LOG_FAST_ALERT_THRESHOLD: 3,
+    LOG_FAST_ALERT_COOLDOWN_MINUTES: 10,
+    LOG_FAST_ALERT_ENRICH: true,
+    LOG_FAST_ALERT_ENRICH_TOP_K: 5,
+    LOG_FAST_ALERT_SLACK_WEBHOOK: '',
+    LOG_SCAN_ENABLED: true,
+    LOG_SCAN_SLACK_WEBHOOK: '',
+    LOG_SCAN_EMAIL_RECIPIENTS: '',
+    LOG_SCAN_DOCKER_CONTAINERS: '',
+    LOG_SCAN_FILE_PATH: '',
+    LOG_SCAN_MAX_LINES: 2000,
+    LOG_SCAN_MIN_ISSUES: 1,
+    SENDGRID_API_KEY: '',
+    GITHUB_ORG: '',
+    GITHUB_WEBHOOK_SECRET: '',
+    JIRA_HOST: '',
+    JIRA_WEBHOOK_TOKEN: '',
+  },
+  teams: [],
+  containers: [],
+};
+
+const STEPS = [
+  { label: 'AI Provider' },
+  { label: 'Infrastructure' },
+  { label: 'Slack' },
+  { label: 'GitHub & Jira' },
+  { label: 'Log Sources' },
+  { label: 'Team Routing' },
+  { label: 'Download' },
+];
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
+function generateRandomHex(bytes) {
+  const arr = new Uint8Array(bytes);
+  crypto.getRandomValues(arr);
+  return Array.from(arr, b => b.toString(16).padStart(2,'0')).join('');
+}
+
+function saveField(key, val) {
+  STATE.env[key] = val;
+  if (key === 'REDIS_URL') {
+    const base = val.replace(/\/\d+$/, '');
+    STATE.env.CELERY_BROKER_URL  = base + '/1';
+    STATE.env.CELERY_RESULT_BACKEND = base + '/2';
+  }
+}
+
+function generateSecret(inputId, stateKey) {
+  const secret = generateRandomHex(24);
+  document.getElementById(inputId).value = secret;
+  saveField(stateKey, secret);
+}
+
+function updateWebhookUrls(domain) {
+  const d = domain.replace(/\/$/, '');
+  document.getElementById('github-webhook-url').textContent = d + '/api/v1/timeline/webhooks/github';
+  document.getElementById('jira-webhook-url').textContent   = d + '/api/v1/timeline/webhooks/jira';
+}
+
+// ── Provider selection ─────────────────────────────────────────────────────────
+function selectProvider(prov) {
+  ['openai','claude','ollama'].forEach(p => {
+    document.getElementById('prov-'+p).classList.toggle('selected', p === prov);
+    document.getElementById('fields-'+p).style.display = (p === prov) ? 'block' : 'none';
+  });
+  STATE.env.LLM_PROVIDER = prov;
+}
+selectProvider('openai'); // default
+
+// ── Tag input (containers) ─────────────────────────────────────────────────────
+function handleTagInput(e, listName) {
+  const input = e.target;
+  const val = input.value.trim().replace(/,$/, '');
+  if ((e.key === 'Enter' || e.key === ',') && val) {
+    e.preventDefault();
+    STATE.containers.push(val);
+    input.value = '';
+    renderContainers();
+    STATE.env.LOG_SCAN_DOCKER_CONTAINERS = STATE.containers.join(',');
+  } else if (e.key === 'Backspace' && !input.value && STATE.containers.length) {
+    STATE.containers.pop();
+    renderContainers();
+    STATE.env.LOG_SCAN_DOCKER_CONTAINERS = STATE.containers.join(',');
+  }
+}
+function renderContainers() {
+  const wrap = document.getElementById('containers-wrap');
+  const input = document.getElementById('containers-input');
+  wrap.querySelectorAll('.tag-chip').forEach(el => el.remove());
+  STATE.containers.forEach((c, i) => {
+    const chip = document.createElement('div');
+    chip.className = 'tag-chip';
+    chip.innerHTML = `${c} <button onclick="removeContainer(${i})">×</button>`;
+    wrap.insertBefore(chip, input);
+  });
+}
+function removeContainer(i) {
+  STATE.containers.splice(i, 1);
+  renderContainers();
+  STATE.env.LOG_SCAN_DOCKER_CONTAINERS = STATE.containers.join(',');
+}
+
+// ── Team routing ───────────────────────────────────────────────────────────────
+let teamCounter = 0;
+
+function addTeam(presetName) {
+  const id = ++teamCounter;
+  STATE.teams.push({ id, name: presetName || '', patterns: [], containers: [], webhook: '', emails: [], priority: STATE.teams.length * 10 + 10 });
+  renderTeams();
+}
+
+function removeTeam(id) {
+  STATE.teams = STATE.teams.filter(t => t.id !== id);
+  renderTeams();
+}
+
+function renderTeams() {
+  const list = document.getElementById('teams-list');
+  list.innerHTML = '';
+  STATE.teams.forEach(team => {
+    const patternsHtml = team.patterns.map((p,i) => `<div class="tag-chip">${p} <button onclick="removePattern(${team.id},${i})">×</button></div>`).join('');
+    const div = document.createElement('div');
+    div.className = 'team-item';
+    div.innerHTML = `
+      <div class="team-item-header">
+        <div class="team-item-title">👥 <span>${team.name || 'New Team'}</span></div>
+        <div class="team-item-actions">
+          <button class="btn-icon" onclick="removeTeam(${team.id})" title="Remove">🗑</button>
+        </div>
+      </div>
+      <div class="team-item-body">
+        <div class="field-row">
+          <div class="field">
+            <label>Team Name</label>
+            <input type="text" value="${team.name}" placeholder="e.g. Payments Team" oninput="updateTeam(${team.id},'name',this.value)"/>
+          </div>
+          <div class="field">
+            <label>Priority (lower = first)</label>
+            <input type="number" value="${team.priority}" min="1" oninput="updateTeam(${team.id},'priority',parseInt(this.value))"/>
+          </div>
+        </div>
+        <div class="field">
+          <label>Service / Error Patterns</label>
+          <span class="field-hint">Keywords or regex that match this team's errors. Press Enter to add.</span>
+          <div class="tag-input-wrap" onclick="this.querySelector('input').focus()">
+            ${patternsHtml}
+            <input type="text" placeholder="e.g. payment, stripe, checkout" onkeydown="handlePatternInput(event, ${team.id})"/>
+          </div>
+        </div>
+        <div class="field">
+          <label>Team Slack Webhook</label>
+          <input type="text" class="mono" value="${team.webhook}" placeholder="https://hooks.slack.com/services/..." oninput="updateTeam(${team.id},'webhook',this.value)"/>
+        </div>
+        <div class="field">
+          <label>Email Recipients (optional, comma-separated)</label>
+          <input type="text" value="${team.emails.join(', ')}" placeholder="payments@company.com" oninput="updateTeam(${team.id},'emails',this.value.split(',').map(s=>s.trim()).filter(Boolean))"/>
+        </div>
+      </div>
+    `;
+    list.appendChild(div);
+  });
+}
+
+function updateTeam(id, key, val) {
+  const team = STATE.teams.find(t => t.id === id);
+  if (team) { team[key] = val; if (key === 'name') renderTeams(); }
+}
+
+function handlePatternInput(e, teamId) {
+  const input = e.target;
+  const val = input.value.trim().replace(/,$/, '');
+  if ((e.key === 'Enter' || e.key === ',') && val) {
+    e.preventDefault();
+    const team = STATE.teams.find(t => t.id === teamId);
+    if (team) { team.patterns.push(val); input.value = ''; renderTeams(); }
+  } else if (e.key === 'Backspace' && !input.value) {
+    const team = STATE.teams.find(t => t.id === teamId);
+    if (team && team.patterns.length) { team.patterns.pop(); renderTeams(); }
+  }
+}
+
+function removePattern(teamId, idx) {
+  const team = STATE.teams.find(t => t.id === teamId);
+  if (team) { team.patterns.splice(idx, 1); renderTeams(); }
+}
+
+// ── Progress bar ───────────────────────────────────────────────────────────────
+function renderProgress() {
+  const wrap = document.getElementById('progressSteps');
+  wrap.innerHTML = STEPS.map((s, i) => {
+    const n = i + 1;
+    const cls = n < STATE.currentStep ? 'done' : n === STATE.currentStep ? 'active' : '';
+    const inner = n < STATE.currentStep ? '✓' : n;
+    return `<div class="progress-step ${cls}" onclick="jumpToStep(${n})"><div class="step-dot">${inner}</div><div class="step-label">${s.label}</div></div>`;
+  }).join('');
+  document.getElementById('topbarStepLabel').textContent = `Step ${STATE.currentStep} of ${STATE.totalSteps}: ${STEPS[STATE.currentStep-1].label}`;
+  document.getElementById('btn-back').style.display = STATE.currentStep > 1 ? 'inline-flex' : 'none';
+  const nextBtn = document.getElementById('btn-next');
+  if (STATE.currentStep === STATE.totalSteps) {
+    nextBtn.textContent = '✓ Done';
+    nextBtn.className = 'btn btn-success';
+    nextBtn.onclick = () => alert('Setup complete! Follow the checklist in the Download tab to go live.');
+  } else {
+    nextBtn.innerHTML = STATE.currentStep === STATE.totalSteps - 1 ? '🚀 Generate Config' : 'Continue →';
+    nextBtn.className = 'btn btn-primary';
+    nextBtn.onclick = nextStep;
+  }
+}
+
+function showStep(n) {
+  document.querySelectorAll('.step-panel').forEach(p => p.classList.remove('active'));
+  const panel = document.getElementById('step-' + n);
+  if (panel) panel.classList.add('active');
+  if (n === STATE.totalSteps) buildOutputs();
+  renderProgress();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function nextStep() { if (STATE.currentStep < STATE.totalSteps) { STATE.currentStep++; showStep(STATE.currentStep); } }
+function prevStep() { if (STATE.currentStep > 1) { STATE.currentStep--; showStep(STATE.currentStep); } }
+function jumpToStep(n) { if (n <= STATE.currentStep) { STATE.currentStep = n; showStep(n); } }
+
+// ── Output generators ──────────────────────────────────────────────────────────
+function buildOutputs() {
+  buildSummary();
+  buildEnv();
+  buildCompose();
+  buildRouting();
+  buildChecklist();
+}
+
+function buildSummary() {
+  const e = STATE.env;
+  const grid = document.getElementById('summary-grid');
+  const items = [
+    { label: 'AI Provider',   value: e.LLM_PROVIDER.toUpperCase(),       dot: 'green' },
+    { label: 'Teams Configured', value: STATE.teams.length + ' team(s)',  dot: 'blue' },
+    { label: 'Docker Containers', value: STATE.containers.length > 0 ? STATE.containers.join(', ') : 'None yet', dot: STATE.containers.length > 0 ? 'green' : 'blue' },
+    { label: 'GitHub Integration', value: e.GITHUB_ORG ? e.GITHUB_ORG : 'Any org', dot: e.GITHUB_WEBHOOK_SECRET ? 'green' : 'blue' },
+    { label: 'Jira Integration', value: e.JIRA_HOST || 'Not configured', dot: e.JIRA_HOST ? 'green' : 'blue' },
+    { label: 'Alert Threshold', value: `${e.LOG_FAST_ALERT_THRESHOLD} errors / 5 min`, dot: 'green' },
+  ];
+  grid.innerHTML = items.map(i => `
+    <div class="summary-item">
+      <div class="s-label">${i.label}</div>
+      <div class="s-value"><div class="status-dot ${i.dot}"></div>${i.value}</div>
+    </div>`).join('');
+}
+
+function esc(v) {
+  if (v === null || v === undefined) return '';
+  const s = String(v);
+  return s.includes(' ') || s.includes('#') ? `"${s}"` : s;
+}
+
+function buildEnv() {
+  const e = STATE.env;
+  const prov = e.LLM_PROVIDER;
+  let lines = [];
+  const h = s => `\n# ${s}`;
+  const row = (k, v, comment) => {
+    const c = comment ? `  # ${comment}` : '';
+    return `${k}=${esc(v)}${c}`;
+  };
+
+  lines.push(h('─── Application ──────────────────────────────────────────────────'));
+  lines.push(row('ENV', 'production'));
+  lines.push(row('APP_NAME', e.APP_NAME));
+  lines.push(row('SECRET_KEY', e.SECRET_KEY, 'Keep this secret!'));
+
+  lines.push(h('─── Database ─────────────────────────────────────────────────────'));
+  lines.push(row('DATABASE_URL', e.DATABASE_URL || 'postgresql+asyncpg://user:pass@host:5432/opslens'));
+
+  lines.push(h('─── Redis ────────────────────────────────────────────────────────'));
+  lines.push(row('REDIS_URL', e.REDIS_URL || 'redis://localhost:6379/0'));
+  lines.push(row('CELERY_BROKER_URL', e.CELERY_BROKER_URL || 'redis://localhost:6379/1'));
+  lines.push(row('CELERY_RESULT_BACKEND', e.CELERY_RESULT_BACKEND || 'redis://localhost:6379/2'));
+
+  lines.push(h('─── Qdrant ───────────────────────────────────────────────────────'));
+  lines.push(row('QDRANT_URL', e.QDRANT_URL || 'http://qdrant:6333'));
+  lines.push(row('QDRANT_API_KEY', e.QDRANT_API_KEY || '', 'Leave blank for local Qdrant'));
+
+  lines.push(h('─── LLM Provider ─────────────────────────────────────────────────'));
+  lines.push(row('LLM_PROVIDER', prov, 'openai | claude | ollama'));
+  if (prov === 'openai' || prov === 'claude') {
+    lines.push(row('OPENAI_API_KEY', e.OPENAI_API_KEY, prov === 'claude' ? 'Required for embeddings even with Claude' : ''));
+    lines.push(row('OPENAI_CHAT_MODEL', e.OPENAI_CHAT_MODEL));
+    lines.push(row('OPENAI_EMBED_MODEL', e.OPENAI_EMBED_MODEL));
+  }
+  if (prov === 'claude') {
+    lines.push(row('ANTHROPIC_API_KEY', e.ANTHROPIC_API_KEY));
+    lines.push(row('ANTHROPIC_CHAT_MODEL', e.ANTHROPIC_CHAT_MODEL));
+  }
+  if (prov === 'ollama') {
+    lines.push(row('OLLAMA_URL', e.OLLAMA_URL));
+    lines.push(row('OLLAMA_CHAT_MODEL', e.OLLAMA_CHAT_MODEL));
+    lines.push(row('OLLAMA_EMBED_MODEL', e.OLLAMA_EMBED_MODEL));
+  }
+
+  lines.push(h('─── Auth ─────────────────────────────────────────────────────────'));
+  lines.push(row('JWT_PUBLIC_KEY_URL', e.JWT_PUBLIC_KEY_URL || ''));
+
+  lines.push(h('─── Notifications ────────────────────────────────────────────────'));
+  lines.push(row('LOG_FAST_ALERT_SLACK_WEBHOOK', e.LOG_FAST_ALERT_SLACK_WEBHOOK));
+  lines.push(row('LOG_SCAN_SLACK_WEBHOOK', e.LOG_SCAN_SLACK_WEBHOOK));
+  lines.push(row('LOG_SCAN_EMAIL_RECIPIENTS', e.LOG_SCAN_EMAIL_RECIPIENTS));
+  if (e.SENDGRID_API_KEY) lines.push(row('SENDGRID_API_KEY', e.SENDGRID_API_KEY));
+
+  lines.push(h('─── Fast Alert ───────────────────────────────────────────────────'));
+  lines.push(row('LOG_FAST_ALERT_ENABLED', e.LOG_FAST_ALERT_ENABLED ? 'true' : 'false'));
+  lines.push(row('LOG_FAST_ALERT_THRESHOLD', e.LOG_FAST_ALERT_THRESHOLD));
+  lines.push(row('LOG_FAST_ALERT_COOLDOWN_MINUTES', e.LOG_FAST_ALERT_COOLDOWN_MINUTES));
+  lines.push(row('LOG_FAST_ALERT_ENRICH', e.LOG_FAST_ALERT_ENRICH ? 'true' : 'false'));
+  lines.push(row('LOG_FAST_ALERT_ENRICH_TOP_K', 5));
+
+  lines.push(h('─── Hourly Digest ────────────────────────────────────────────────'));
+  lines.push(row('LOG_SCAN_ENABLED', e.LOG_SCAN_ENABLED ? 'true' : 'false'));
+  lines.push(row('LOG_SCAN_DOCKER_CONTAINERS', STATE.containers.join(',') || 'api,worker'));
+  lines.push(row('LOG_SCAN_FILE_PATH', e.LOG_SCAN_FILE_PATH || ''));
+  lines.push(row('LOG_SCAN_MAX_LINES', e.LOG_SCAN_MAX_LINES));
+  lines.push(row('LOG_SCAN_MIN_ISSUES', e.LOG_SCAN_MIN_ISSUES));
+
+  lines.push(h('─── Delivery Risk Timeline ───────────────────────────────────────'));
+  lines.push(row('GITHUB_ORG', e.GITHUB_ORG));
+  lines.push(row('GITHUB_WEBHOOK_SECRET', e.GITHUB_WEBHOOK_SECRET));
+  lines.push(row('JIRA_HOST', e.JIRA_HOST));
+  lines.push(row('JIRA_WEBHOOK_TOKEN', e.JIRA_WEBHOOK_TOKEN));
+  lines.push(row('DEFAULT_TENANT_ID', e.DEFAULT_TENANT_ID || 'default'));
+
+  document.getElementById('env-content').textContent = lines.join('\n');
+}
+
+function buildCompose() {
+  const prov = STATE.env.LLM_PROVIDER;
+  const containers = STATE.containers.length > 0 ? STATE.containers.join(',') : 'api,worker';
+  const compose = `version: "3.9"
+
+services:
+  api:
+    image: opslens/api:latest
+    ports: ["8080:8080"]
+    env_file: .env
+    depends_on: [postgres, redis, qdrant]
+    networks: [opslens]
+
+  worker:
+    image: opslens/worker:latest
+    env_file: .env
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock  # for log scanning
+    depends_on: [postgres, redis, qdrant]
+    networks: [opslens]
+
+  beat:
+    image: opslens/worker:latest
+    command: celery -A apps.worker.celery_app beat --loglevel=info
+    env_file: .env
+    depends_on: [redis]
+    networks: [opslens]
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: opslens
+      POSTGRES_PASSWORD: opslens_secret
+      POSTGRES_DB: opslens
+    volumes: [postgres_data:/var/lib/postgresql/data]
+    networks: [opslens]
+
+  redis:
+    image: redis:7-alpine
+    networks: [opslens]
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports: ["6333:6333"]
+    volumes: [qdrant_data:/qdrant/storage]
+    networks: [opslens]
+${prov === 'ollama' ? `
+  ollama:
+    image: ollama/ollama:latest
+    ports: ["11434:11434"]
+    volumes: [ollama_data:/root/.ollama]
+    networks: [opslens]
+` : ''}
+volumes:
+  postgres_data:
+  qdrant_data:
+${prov === 'ollama' ? '  ollama_data:\n' : ''}
+networks:
+  opslens:
+    driver: bridge`;
+
+  document.getElementById('compose-content').textContent = compose;
+}
+
+function buildRouting() {
+  if (!STATE.teams.length) {
+    document.getElementById('routing-content').textContent = '# No teams configured.\n# Add teams in Step 6 and re-generate.';
+    return;
+  }
+  const lines = ['# Run these commands after OpsLens is live and you have a JWT token\n',
+                 'export AUTH_TOKEN="your-jwt-token-here"\n',
+                 'export BASE_URL="' + (document.getElementById('app_domain')?.value || 'https://your-opslens-domain.com') + '"\n'];
+  STATE.teams.forEach((team, i) => {
+    lines.push(`\n# Team ${i+1}: ${team.name || 'Unnamed Team'}`);
+    const body = {
+      team_name: team.name || 'Team ' + team.id,
+      service_patterns: team.patterns,
+      error_patterns: [],
+      source_containers: [],
+      slack_webhook: team.webhook || '',
+      email_recipients: team.emails || [],
+      priority: team.priority,
+      stop_on_match: false,
+      is_active: true,
+    };
+    lines.push(`curl -X POST "$BASE_URL/api/v1/log-ops/routing-rules" \\`);
+    lines.push(`  -H "Authorization: Bearer $AUTH_TOKEN" \\`);
+    lines.push(`  -H "Content-Type: application/json" \\`);
+    lines.push(`  -d '${JSON.stringify(body, null, 2)}'`);
+  });
+  document.getElementById('routing-content').textContent = lines.join('\n');
+}
+
+function buildChecklist() {
+  const e = STATE.env;
+  const domain = document.getElementById('app_domain')?.value || 'https://your-opslens-domain.com';
+  const items = [
+    {
+      title: 'Start all services',
+      body: `Run <code>docker compose up -d</code> — this starts the API, worker, Beat scheduler, PostgreSQL, Redis, and Qdrant. Check logs with <code>docker compose logs -f api</code>.`
+    },
+    {
+      title: 'Verify the API is running',
+      body: `Open <code>${domain}/health</code> in your browser. You should see <code>{"status":"ok"}</code>.`
+    },
+    {
+      title: 'Set up GitHub webhook',
+      body: `Go to GitHub → your repo → Settings → Webhooks → Add webhook.<br/>
+Payload URL: <code>${domain}/api/v1/timeline/webhooks/github</code><br/>
+Secret: (from your .env GITHUB_WEBHOOK_SECRET)<br/>
+Events: Pull requests, Pushes, Workflow runs.`
+    },
+    {
+      title: 'Set up Jira webhook',
+      body: `Go to Jira Settings → System → Webhooks → Create.<br/>
+URL: <code>${domain}/api/v1/timeline/webhooks/jira</code><br/>
+Token: (from your .env JIRA_WEBHOOK_TOKEN)<br/>
+Events: Issue Created, Issue Updated.`
+    },
+    {
+      title: 'Create team routing rules',
+      body: `Copy the curl commands from the "Routing Rules (curl)" tab and run them once your API is up. Verify with <code>GET ${domain}/api/v1/log-ops/routing-rules</code>.`
+    },
+    {
+      title: 'Trigger a test log scan',
+      body: `Call <code>POST ${domain}/api/v1/alerts/logs/scan</code> with your auth token to run the scanner immediately. Check your Slack channel for the result.`
+    },
+    {
+      title: 'Ingest your first data source',
+      body: `Connect Jira or GitHub in the integrations settings so OpsLens can build its RAG knowledge base. This powers the exception enrichment in alerts.`
+    },
+  ];
+  const checklist = document.getElementById('checklist-content');
+  checklist.innerHTML = items.map((item, i) => `
+    <div class="checklist-item">
+      <div class="ci-num">${i+1}</div>
+      <div class="ci-body">
+        <h4>${item.title}</h4>
+        <p>${item.body}</p>
+      </div>
+    </div>`).join('');
+}
+
+// ── Copy / download ────────────────────────────────────────────────────────────
+function copyOutput(panelId, btn) {
+  const text = document.getElementById(panelId).querySelector('span, pre')?.textContent || '';
+  navigator.clipboard.writeText(text).then(() => {
+    btn.textContent = '✓ Copied!'; btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 2000);
+  });
+}
+
+function downloadFile(panelId, filename) {
+  const text = document.getElementById(panelId).querySelector('span, pre')?.textContent || '';
+  const blob = new Blob([text], { type: 'text/plain' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = filename; a.click();
+}
+
+function switchTab(tabEl, panelId) {
+  tabEl.closest('.output-tabs').querySelectorAll('.output-tab').forEach(t => t.classList.remove('active'));
+  tabEl.classList.add('active');
+  tabEl.closest('.step-panel').querySelectorAll('.output-panel').forEach(p => p.classList.remove('active'));
+  document.getElementById(panelId).classList.add('active');
+}
+
+// ── Init ───────────────────────────────────────────────────────────────────────
+renderProgress();
+showStep(1);
+addTeam(); // start with one blank team in step 6
+</script>
+</body>
+</html>

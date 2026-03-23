@@ -1,0 +1,11 @@
+# railway.worker.toml — OpsLens AI Celery Worker service
+# In Railway dashboard: set "Config file path" to railway.worker.toml for the worker service
+
+[build]
+builder = "dockerfile"
+dockerfilePath = "Dockerfile.worker"
+
+[deploy]
+startCommand = "celery -A apps.worker.celery_app worker --loglevel=info --concurrency=2 -Q ingestion,insights,alerts"
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3

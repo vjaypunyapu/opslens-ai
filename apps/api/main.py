@@ -21,7 +21,11 @@ from fastapi.responses import JSONResponse
 from .auth.middleware import JWTAuthMiddleware
 from .config import settings
 from .db.session import engine, Base
-from .routers import alerts, dashboard, incidents, ingestion, insights, rag, settings as settings_router, users
+from .routers import (
+    alerts, dashboard, enterprise, incidents, ingestion, insights,
+    log_ops, manager_dashboard, rag, retention, rrt_briefs,
+    settings as settings_router, timeline, users,
+)
 from .utils.logging import configure_logging, get_logger
 
 logger = get_logger(__name__)
@@ -334,6 +338,37 @@ def create_app() -> FastAPI:
         prefix="/api/v1/incidents",
         tags=["Incidents"],
     )
+    app.include_router(
+        log_ops.router,
+        prefix="/api/v1/log-ops",
+        tags=["Log Ops — Known Issues & Team Routing"],
+    )
+    app.include_router(
+        rrt_briefs.router,
+        prefix="/api/v1/rrt-briefs",
+        tags=["RRT Briefs — Incident Artifacts"],
+    )
+    app.include_router(
+        timeline.router,
+        prefix="/api/v1/timeline",
+        tags=["Delivery Risk Timeline"],
+    )
+    app.include_router(
+        manager_dashboard.router,
+        prefix="/api/v1/manager",
+        tags=["Manager Dashboard"],
+    )
+    app.include_router(
+        enterprise.router,
+        prefix="/api/v1",
+        tags=["Enterprise — SAML SSO", "Enterprise — SCIM",
+              "Enterprise — RBAC", "Enterprise — Audit Log"],
+    )
+    app.include_router(
+        retention.router,
+        prefix="/api/v1/retention",
+        tags=["Retention Controls"],
+    )
 
     # ── Global exception handlers ─────────────────────────────────────────────
     @app.exception_handler(Exception)
@@ -359,7 +394,118 @@ def create_app() -> FastAPI:
     # ── Utility endpoints ─────────────────────────────────────────────────────
     @app.get("/health", tags=["Ops"], include_in_schema=False)
     async def health_check():
-        return {"status": "ok", "version": "1.0.0", "env": settings.ENV}
+        """
+        Deep dependency health check. Returns 200 if all critical services are reachable,
+        503 if Postgres or Redis is down.
+
+        Critical:  postgres, redis
+        Degraded:  qdrant (RAG unavailable), celery_broker (background tasks down)
+        """
+        import time
+        import httpx as _httpx
+
+        checks: dict[str, dict] = {}
+        overall_ok = True
+
+        # ── PostgreSQL ────────────────────────────────────────────────────────
+        t0 = time.monotonic()
+        try:
+            from .db.session import AsyncSessionFactory
+            async with AsyncSessionFactory() as db:
+                await db.execute(sa.text("SELECT 1"))
+            checks["postgres"] = {
+                "status": "ok",
+                "latency_ms": round((time.monotonic() - t0) * 1000, 1),
+            }
+        except Exception as exc:
+            checks["postgres"] = {"status": "error", "detail": str(exc)[:120]}
+            overall_ok = False
+
+        # ── Redis ─────────────────────────────────────────────────────────────
+        t0 = time.monotonic()
+        try:
+            import redis.asyncio as aioredis
+            r = aioredis.from_url(settings.REDIS_URL, socket_connect_timeout=3)
+            await r.ping()
+            await r.aclose()
+            checks["redis"] = {
+                "status": "ok",
+                "latency_ms": round((time.monotonic() - t0) * 1000, 1),
+            }
+        except Exception as exc:
+            checks["redis"] = {"status": "error", "detail": str(exc)[:120]}
+            overall_ok = False
+
+        # ── Qdrant ────────────────────────────────────────────────────────────
+        t0 = time.monotonic()
+        try:
+            resp = _httpx.get(f"{settings.QDRANT_URL}/healthz", timeout=3)
+            checks["qdrant"] = {
+                "status": "ok" if resp.status_code == 200 else "degraded",
+                "latency_ms": round((time.monotonic() - t0) * 1000, 1),
+            }
+        except Exception as exc:
+            checks["qdrant"] = {
+                "status": "degraded",
+                "detail": str(exc)[:120],
+                "note": "RAG enrichment unavailable — alert detection still works",
+            }
+
+        # ── Celery broker ─────────────────────────────────────────────────────
+        t0 = time.monotonic()
+        try:
+            import redis.asyncio as aioredis
+            rb = aioredis.from_url(settings.CELERY_BROKER_URL, socket_connect_timeout=3)
+            await rb.ping()
+            await rb.aclose()
+            checks["celery_broker"] = {
+                "status": "ok",
+                "latency_ms": round((time.monotonic() - t0) * 1000, 1),
+            }
+        except Exception as exc:
+            checks["celery_broker"] = {
+                "status": "degraded",
+                "detail": str(exc)[:120],
+                "note": "Background tasks unavailable — fast alerts and RRT briefs will not fire",
+            }
+
+        # ── LLM provider ──────────────────────────────────────────────────────
+        if settings.LLM_PROVIDER == "ollama":
+            t0 = time.monotonic()
+            try:
+                resp = _httpx.get(f"{settings.OLLAMA_URL}/api/version", timeout=3)
+                checks["llm"] = {
+                    "provider": "ollama",
+                    "status": "ok" if resp.status_code == 200 else "degraded",
+                    "latency_ms": round((time.monotonic() - t0) * 1000, 1),
+                }
+            except Exception as exc:
+                checks["llm"] = {"provider": "ollama", "status": "degraded", "detail": str(exc)[:80]}
+        elif settings.LLM_PROVIDER == "openai":
+            checks["llm"] = {
+                "provider": "openai",
+                "status": "ok" if settings.OPENAI_API_KEY else "misconfigured",
+                "key_configured": bool(settings.OPENAI_API_KEY),
+            }
+        elif settings.LLM_PROVIDER == "claude":
+            checks["llm"] = {
+                "provider": "claude",
+                "status": "ok" if settings.ANTHROPIC_API_KEY else "misconfigured",
+                "key_configured": bool(settings.ANTHROPIC_API_KEY),
+            }
+
+        http_status = 200 if overall_ok else 503
+        return JSONResponse(
+            status_code=http_status,
+            content={
+                "status": "ok" if overall_ok else "degraded",
+                "version": "1.0.0",
+                "env": settings.ENV,
+                "notification_provider": settings.NOTIFICATION_PROVIDER,
+                "llm_provider": settings.LLM_PROVIDER,
+                "checks": checks,
+            },
+        )
 
     @app.get("/api/v1/ping", tags=["Ops"])
     async def ping():

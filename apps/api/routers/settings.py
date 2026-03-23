@@ -77,7 +77,7 @@ async def get_tenant_settings(
     ctx: Annotated[TenantContext, Depends(require_viewer)],
     db=Depends(get_db),
 ):
-    tenant = await _get_tenant(db, ctx.tenant_id)
+    tenant = await _get_tenant(db, ctx.tenant_uuid)
     return tenant
 
 
@@ -87,14 +87,14 @@ async def update_tenant_settings(
     ctx: Annotated[TenantContext, Depends(require_admin)],
     db=Depends(get_db),
 ):
-    tenant = await _get_tenant(db, ctx.tenant_id)
+    tenant = await _get_tenant(db, ctx.tenant_uuid)
     if body.name is not None:
         tenant.name = body.name
     if body.settings is not None:
         tenant.settings = {**tenant.settings, **body.settings}
     await db.commit()
     await db.refresh(tenant)
-    logger.info("Tenant %s settings updated by %s", ctx.tenant_id, ctx.user_id)
+    logger.info("Tenant %s settings updated by %s", ctx.tenant_uuid, ctx.user_id)
     return tenant
 
 
@@ -107,7 +107,7 @@ async def list_members(
 ):
     result = await db.execute(
         sa.select(User)
-        .where(User.tenant_id == ctx.tenant_id)
+        .where(User.tenant_id == ctx.tenant_uuid)
         .order_by(User.email)
     )
     return result.scalars().all()
@@ -122,7 +122,7 @@ async def invite_member(
     """Create or update a team member record (no actual email send — that's handled by Clerk)."""
     existing = (await db.execute(
         sa.select(User).where(
-            User.tenant_id == ctx.tenant_id,
+            User.tenant_id == ctx.tenant_uuid,
             User.email == body.email,
         )
     )).scalar_one_or_none()
@@ -136,7 +136,7 @@ async def invite_member(
         return existing
 
     user = User(
-        tenant_id=ctx.tenant_id,
+        tenant_id=ctx.tenant_uuid,
         external_id=f"pending_{uuid.uuid4().hex[:12]}",  # placeholder until they sign in
         email=body.email,
         name=body.name,
@@ -145,7 +145,7 @@ async def invite_member(
     db.add(user)
     await db.commit()
     await db.refresh(user)
-    logger.info("Member %s invited to tenant %s", body.email, ctx.tenant_id)
+    logger.info("Member %s invited to tenant %s", body.email, ctx.tenant_uuid)
     return user
 
 
@@ -156,7 +156,7 @@ async def update_member(
     ctx: Annotated[TenantContext, Depends(require_admin)],
     db=Depends(get_db),
 ):
-    member = await _get_member(db, member_id, ctx.tenant_id)
+    member = await _get_member(db, member_id, ctx.tenant_uuid)
     member.role = body.role
     await db.commit()
     await db.refresh(member)
@@ -169,7 +169,7 @@ async def remove_member(
     ctx: Annotated[TenantContext, Depends(require_admin)],
     db=Depends(get_db),
 ):
-    member = await _get_member(db, member_id, ctx.tenant_id)
+    member = await _get_member(db, member_id, ctx.tenant_uuid)
     # Don't allow removing yourself
     if member.external_id == ctx.user_id:
         raise HTTPException(status_code=400, detail="Cannot remove yourself.")
@@ -187,7 +187,7 @@ async def get_profile(
     result = await db.execute(
         sa.select(User).where(
             User.external_id == ctx.user_id,
-            User.tenant_id == ctx.tenant_id,
+            User.tenant_id == ctx.tenant_uuid,
         )
     )
     user = result.scalar_one_or_none()
@@ -205,7 +205,7 @@ async def update_profile(
     result = await db.execute(
         sa.select(User).where(
             User.external_id == ctx.user_id,
-            User.tenant_id == ctx.tenant_id,
+            User.tenant_id == ctx.tenant_uuid,
         )
     )
     user = result.scalar_one_or_none()

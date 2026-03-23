@@ -35,8 +35,6 @@ import sqlalchemy as sa
 from celery import shared_task
 from celery.utils.log import get_task_logger
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_openai import ChatOpenAI
-
 from ...api.config import settings
 from ...api.db import AsyncSession
 from ...api.models.document import CanonicalDocument
@@ -44,13 +42,31 @@ from ...api.models.insight import Insight
 
 logger = get_task_logger(__name__)
 
-# ── LLM singleton ─────────────────────────────────────────────────────────────
-_llm = ChatOpenAI(
-    model=settings.OPENAI_CHAT_MODEL,
-    temperature=0.1,
-    max_tokens=800,
-    openai_api_key=settings.OPENAI_API_KEY,
-)
+# ── LLM singleton: respects LLM_PROVIDER setting ──────────────────────────────
+if settings.LLM_PROVIDER == "ollama":
+    from langchain_openai import ChatOpenAI
+    _llm = ChatOpenAI(
+        model=settings.OLLAMA_CHAT_MODEL,
+        base_url=f"{settings.OLLAMA_URL}/v1",
+        api_key="ollama",
+        temperature=0.1,
+        timeout=300,
+    )
+elif settings.LLM_PROVIDER == "claude":
+    from langchain_anthropic import ChatAnthropic
+    _llm = ChatAnthropic(
+        model=settings.ANTHROPIC_CHAT_MODEL,
+        anthropic_api_key=settings.ANTHROPIC_API_KEY,
+        temperature=0.1,
+    )
+else:
+    from langchain_openai import ChatOpenAI
+    _llm = ChatOpenAI(
+        model=settings.OPENAI_CHAT_MODEL,
+        temperature=0.1,
+        max_tokens=800,
+        openai_api_key=settings.OPENAI_API_KEY,
+    )
 
 
 # ── Shared structured-output prompt ──────────────────────────────────────────

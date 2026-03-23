@@ -1,16 +1,19 @@
 """
 OpsLens AI — Alerts Router
 ===========================
-Manages alert rule configuration and alert history.
+Manages alert rule configuration, alert history, and log scan reports.
 
 Endpoints:
-    GET    /api/v1/alerts/rules          — List rules
-    POST   /api/v1/alerts/rules          — Create rule
-    GET    /api/v1/alerts/rules/{id}     — Get rule
-    PATCH  /api/v1/alerts/rules/{id}     — Update rule
-    DELETE /api/v1/alerts/rules/{id}     — Delete rule
-    POST   /api/v1/alerts/test/{rule_id} — Test-fire a rule
-    GET    /api/v1/alerts/history        — List fired alerts
+    GET    /api/v1/alerts/rules             — List rules
+    POST   /api/v1/alerts/rules             — Create rule
+    GET    /api/v1/alerts/rules/{id}        — Get rule
+    PATCH  /api/v1/alerts/rules/{id}        — Update rule
+    DELETE /api/v1/alerts/rules/{id}        — Delete rule
+    POST   /api/v1/alerts/test/{rule_id}    — Test-fire a rule
+    GET    /api/v1/alerts/history           — List fired alerts
+
+    POST   /api/v1/alerts/logs/scan         — Trigger a log scan immediately
+    GET    /api/v1/alerts/logs/history      — List past log scan reports
 """
 from __future__ import annotations
 
@@ -122,7 +125,7 @@ async def list_rules(
 ):
     result = await db.execute(
         sa.select(AlertRule)
-        .where(AlertRule.tenant_id == ctx.tenant_id)
+        .where(AlertRule.tenant_id == ctx.tenant_uuid)
         .order_by(AlertRule.created_at)
     )
     return [_rule_to_out(r) for r in result.scalars().all()]
@@ -136,7 +139,7 @@ async def create_rule(
     db=Depends(get_db),
 ):
     rule = AlertRule(
-        tenant_id=ctx.tenant_id,
+        tenant_id=ctx.tenant_uuid,
         name=body.name,
         description=body.description,
         conditions=[c.model_dump() for c in body.conditions],
@@ -158,7 +161,7 @@ async def get_rule(
     ctx: Annotated[TenantContext, Depends(require_viewer)],
     db=Depends(get_db),
 ):
-    return _rule_to_out(await _get_rule_or_404(db, rule_id, ctx.tenant_id))
+    return _rule_to_out(await _get_rule_or_404(db, rule_id, ctx.tenant_uuid))
 
 
 # ── Update rule ────────────────────────────────────────────────────────────────
@@ -169,7 +172,7 @@ async def update_rule(
     ctx: Annotated[TenantContext, Depends(require_admin)],
     db=Depends(get_db),
 ):
-    rule = await _get_rule_or_404(db, rule_id, ctx.tenant_id)
+    rule = await _get_rule_or_404(db, rule_id, ctx.tenant_uuid)
 
     if body.name             is not None: rule.name             = body.name
     if body.description      is not None: rule.description      = body.description
@@ -190,7 +193,7 @@ async def delete_rule(
     ctx: Annotated[TenantContext, Depends(require_admin)],
     db=Depends(get_db),
 ):
-    rule = await _get_rule_or_404(db, rule_id, ctx.tenant_id)
+    rule = await _get_rule_or_404(db, rule_id, ctx.tenant_uuid)
     await db.delete(rule)
     await db.commit()
     logger.info("Alert rule %s deleted by %s", rule_id, ctx.user_id)
@@ -204,7 +207,7 @@ async def test_rule(
     db=Depends(get_db),
 ):
     """Send a test notification via all channels on this rule."""
-    rule = await _get_rule_or_404(db, rule_id, ctx.tenant_id)
+    rule = await _get_rule_or_404(db, rule_id, ctx.tenant_uuid)
     logger.info("Test-fire alert rule %s by %s", rule_id, ctx.user_id)
     # AlertService is optional — return a safe no-op if not available
     try:
@@ -231,7 +234,7 @@ async def get_alert_history(
         sa.select(AlertHistory, AlertRule.name.label("rule_name"))
         .outerjoin(AlertRule, AlertHistory.rule_id == AlertRule.id)
         .where(
-            AlertHistory.tenant_id == ctx.tenant_id,
+            AlertHistory.tenant_id == ctx.tenant_uuid,
             AlertHistory.triggered_at >= cutoff,
         )
         .order_by(AlertHistory.triggered_at.desc())
@@ -248,6 +251,74 @@ async def get_alert_history(
             triggered_at=h.triggered_at.isoformat(),
         )
         for h, rule_name in rows
+    ]
+
+
+# ── Log scan — trigger on demand ──────────────────────────────────────────────
+@router.post("/logs/scan", status_code=status.HTTP_202_ACCEPTED)
+async def trigger_log_scan(
+    ctx: Annotated[TenantContext, Depends(require_admin)],
+):
+    """
+    Immediately enqueue a log scan task.
+    The scan runs asynchronously; check /logs/history for results.
+    """
+    try:
+        from apps.worker.tasks.log_scanner import scan_logs_and_report
+        task = scan_logs_and_report.delay(tenant_id=ctx.tenant_uuid)
+        logger.info("Manual log scan triggered by %s (task_id=%s)", ctx.user_id, task.id)
+        return {"message": "Log scan enqueued", "task_id": task.id}
+    except Exception as exc:
+        logger.error("Failed to enqueue log scan: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Failed to enqueue log scan: {exc}")
+
+
+# ── Log scan — history ─────────────────────────────────────────────────────────
+class LogScanReportOut(BaseModel):
+    id:             str
+    scanned_at:     str
+    window_minutes: int
+    issue_count:    int
+    summary:        str | None
+    channels_sent:  list[str]
+
+
+@router.get("/logs/history", response_model=list[LogScanReportOut])
+async def get_log_scan_history(
+    ctx: Annotated[TenantContext, Depends(require_viewer)],
+    db=Depends(get_db),
+    days: int = Query(default=7, ge=1, le=90),
+    limit: int = Query(default=20, ge=1, le=100),
+):
+    """Return recent log scan reports for this tenant."""
+    from datetime import datetime, timedelta, timezone
+
+    try:
+        from ..models.log_scan import LogScanHistory
+    except ImportError:
+        return []
+
+    cutoff = datetime.now(tz=timezone.utc) - timedelta(days=days)
+    result = await db.execute(
+        sa.select(LogScanHistory)
+        .where(
+            LogScanHistory.tenant_id.in_([ctx.tenant_uuid, "system"]),
+            LogScanHistory.scanned_at >= cutoff,
+        )
+        .order_by(LogScanHistory.scanned_at.desc())
+        .limit(limit)
+    )
+    rows = result.scalars().all()
+    return [
+        LogScanReportOut(
+            id=str(r.id),
+            scanned_at=r.scanned_at.isoformat(),
+            window_minutes=r.window_minutes,
+            issue_count=r.issue_count,
+            summary=r.summary,
+            channels_sent=list(r.channels_sent or []),
+        )
+        for r in rows
     ]
 
 

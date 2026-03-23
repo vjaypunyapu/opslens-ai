@@ -48,18 +48,40 @@ _qdrant_client = QdrantClient(
 )
 
 if settings.LLM_PROVIDER == "ollama":
-    from langchain_ollama import ChatOllama, OllamaEmbeddings
-    _embeddings = OllamaEmbeddings(
+    # Use Ollama's OpenAI-compatible endpoint — no extra package needed
+    _embeddings = OpenAIEmbeddings(
         model=settings.OLLAMA_EMBED_MODEL,
-        base_url=settings.OLLAMA_URL,
+        base_url=f"{settings.OLLAMA_URL}/v1",
+        api_key="ollama",
+        check_embedding_ctx_length=False,
     )
-    _llm = ChatOllama(
+    _llm = ChatOpenAI(
         model=settings.OLLAMA_CHAT_MODEL,
-        base_url=settings.OLLAMA_URL,
+        base_url=f"{settings.OLLAMA_URL}/v1",
+        api_key="ollama",
         temperature=settings.OPENAI_TEMPERATURE,
+        timeout=300,
     )
     logger.info("LLM provider: Ollama (%s) @ %s", settings.OLLAMA_CHAT_MODEL, settings.OLLAMA_URL)
-else:
+
+elif settings.LLM_PROVIDER == "claude":
+    # Claude for chat (200k context, enterprise BAA)
+    # OpenAI for embeddings (Anthropic has no embeddings API)
+    from langchain_anthropic import ChatAnthropic
+    _embeddings = OpenAIEmbeddings(
+        model=settings.OPENAI_EMBED_MODEL,
+        openai_api_key=settings.OPENAI_API_KEY,
+    )
+    _llm = ChatAnthropic(
+        model=settings.ANTHROPIC_CHAT_MODEL,
+        anthropic_api_key=settings.ANTHROPIC_API_KEY,
+        temperature=settings.OPENAI_TEMPERATURE,
+        max_tokens=settings.OPENAI_MAX_TOKENS,
+        streaming=True,
+    )
+    logger.info("LLM provider: Claude (%s) + OpenAI embeddings", settings.ANTHROPIC_CHAT_MODEL)
+
+else:  # openai (default)
     _embeddings = OpenAIEmbeddings(
         model=settings.OPENAI_EMBED_MODEL,
         openai_api_key=settings.OPENAI_API_KEY,
