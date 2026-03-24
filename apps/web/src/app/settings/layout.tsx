@@ -1,9 +1,6 @@
-import { auth } from "@clerk/nextjs/server";
-import { redirect } from "next/navigation";
 import { AppShell } from "@/components/layout/AppShell";
+import { AuthGuard } from "@/components/auth/AuthGuard";
 
-export default async function SettingsLayout({ children }: { children: React.ReactNode }) {
-  const { userId } = await auth();
-  if (!userId) redirect("/sign-in");
-  return <AppShell>{children}</AppShell>;
+export default function SettingsLayout({ children }: { children: React.ReactNode }) {
+  return <AuthGuard><AppShell>{children}</AppShell></AuthGuard>;
 }
