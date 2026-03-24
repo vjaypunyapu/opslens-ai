@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     ENV: Literal["development", "staging", "production"] = "development"
     APP_NAME: str = "OpsLens AI"
     SECRET_KEY: str = "CHANGE_ME_IN_PRODUCTION_USE_32+_CHARS"
-    ALLOWED_ORIGINS: list[str] = ["http://localhost:3000"]
+    ALLOWED_ORIGINS: str = "http://localhost:3000"
     LOG_LEVEL: str = "INFO"
 
     # ── Database (PostgreSQL) ─────────────────────────────────────────────────
@@ -179,22 +179,6 @@ class Settings(BaseSettings):
 
     # ── Sentry (optional) ─────────────────────────────────────────────────────
     SENTRY_DSN: str | None = None
-
-    @field_validator("ALLOWED_ORIGINS", mode="before")
-    @classmethod
-    def parse_origins(cls, v: str | list) -> list[str]:
-        if isinstance(v, str):
-            v = v.strip()
-            # Handle JSON array: ["url1","url2"]
-            if v.startswith("["):
-                import json
-                try:
-                    return json.loads(v)
-                except json.JSONDecodeError:
-                    pass
-            # Handle comma-separated: url1,url2
-            return [o.strip() for o in v.split(",") if o.strip()]
-        return v
 
     @field_validator("DATABASE_URL", mode="before")
     @classmethod
