@@ -20,9 +20,18 @@ class Base(DeclarativeBase):
     pass
 
 
+def _async_db_url(url: str) -> str:
+    """Ensure asyncpg driver is used regardless of how Railway injects the URL."""
+    if url.startswith("postgres://"):
+        return url.replace("postgres://", "postgresql+asyncpg://", 1)
+    if url.startswith("postgresql://"):
+        return url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    return url
+
+
 # ── Engine ────────────────────────────────────────────────────────────────────
 engine: AsyncEngine = create_async_engine(
-    settings.DATABASE_URL,
+    _async_db_url(settings.DATABASE_URL),
     pool_size=settings.DB_POOL_SIZE,
     max_overflow=settings.DB_MAX_OVERFLOW,
     pool_timeout=settings.DB_POOL_TIMEOUT,
