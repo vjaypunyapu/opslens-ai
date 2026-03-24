@@ -6,7 +6,7 @@
 
 @layer base {
   :root { --sidebar-width: 260px; }
-  body { @apply bg-gray-50 text-gray-900 antialiased; font-family: 'Inter', system-ui, sans-serif; }
+  body { background: #0f172a; color: #f1f5f9; @apply antialiased; font-family: 'Inter', system-ui, sans-serif; }
   ::-webkit-scrollbar { width: 5px; height: 5px; }
   ::-webkit-scrollbar-track { @apply bg-transparent; }
   ::-webkit-scrollbar-thumb { @apply bg-gray-300 rounded-full; }
