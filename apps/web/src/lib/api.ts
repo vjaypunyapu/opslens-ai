@@ -1,0 +1,266 @@
+/**
+ * API client — thin wrapper around fetch that:
+ *  - Prefixes all requests with /api/v1
+ *  - Attaches the Clerk session token automatically
+ *  - Returns typed responses
+ *  - Throws ApiError on non-2xx responses
+ */
+import {
+  AlertHistoryEntry,
+  AlertRule,
+  ChatMessage,
+  ChatSession,
+  Insight,
+  InsightSummary,
+  Integration,
+} from "@/types";
+
+export class ApiError extends Error {
+  constructor(
+    public status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+async function request<T>(
+  path: string,
+  options: RequestInit & { token?: string } = {},
+): Promise<T> {
+  const { token, ...init } = options;
+  const res = await fetch(`/api/v1${path}`, {
+    ...init,
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...init.headers,
+    },
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new ApiError(res.status, body.detail ?? res.statusText);
+  }
+
+  if (res.status === 204) return undefined as unknown as T;
+  return res.json() as Promise<T>;
+}
+
+// ─── Dashboard ────────────────────────────────────────────────────────────────
+export const dashboardApi = {
+  get: (token: string) => request<DashboardData>("/dashboard", { token }),
+};
+
+export interface DashboardData {
+  insights: {
+    active: number; resolved: number; snoozed: number; new_7d: number;
+    recent: { id: string; title: string; insight_type: string; magnitude: string; status: string; generated_at: string }[];
+  };
+  documents: { total: number; indexed_7d: number; by_source: Record<string, number> };
+  integrations: {
+    total: number; active: number;
+    sources: { id: string; source_type: string; status: string; last_synced_at: string | null }[];
+  };
+  chat: {
+    total_sessions: number; sessions_7d: number;
+    recent_sessions: { id: string; title: string; updated_at: string }[];
+  };
+  alerts: { active_rules: number };
+  generated_at: string;
+}
+
+// ─── Chat ─────────────────────────────────────────────────────────────────────
+export const chatApi = {
+  listSessions: (token: string) =>
+    request<ChatSession[]>("/chat/sessions", { token }),
+
+  createSession: (token: string) =>
+    request<ChatSession>("/chat/sessions", { method: "POST", token }),
+
+  getMessages: (sessionId: string, token: string) =>
+    request<ChatMessage[]>(`/chat/sessions/${sessionId}/messages`, { token }),
+
+  /** Returns an EventSource-compatible ReadableStream for SSE. */
+  streamQuery: (
+    sessionId: string,
+    question: string,
+    sourceTypes: string[] | undefined,
+    token: string,
+  ): EventSource => {
+    // We use a custom SSE request via fetch + ReadableStream,
+    // but return a simple wrapper to keep component code clean.
+    // Components should use the useChat hook instead.
+    throw new Error("Use useChat hook — do not call streamQuery directly.");
+  },
+
+  sendFeedback: (
+    _sessionId: string,
+    messageId: string,
+    feedback: "thumbs_up" | "thumbs_down",
+    token: string,
+  ) =>
+    request<void>("/chat/feedback", {
+      method: "POST",
+      body: JSON.stringify({
+        message_id: messageId,
+        score: feedback === "thumbs_up" ? 1 : -1,
+      }),
+      token,
+    }),
+};
+
+// ─── Insights ─────────────────────────────────────────────────────────────────
+export const insightsApi = {
+  list: (
+    token: string,
+    params: { status?: string; type?: string; days?: number } = {},
+  ) => {
+    const qs = new URLSearchParams(
+      Object.fromEntries(
+        Object.entries(params)
+          .filter(([, v]) => v !== undefined)
+          .map(([k, v]) => [k, String(v)]),
+      ),
+    ).toString();
+    return request<Insight[]>(`/insights${qs ? `?${qs}` : ""}`, { token });
+  },
+
+  summary: (token: string) => request<InsightSummary>("/insights/summary", { token }),
+
+  updateStatus: (
+    id: string,
+    status: "active" | "resolved" | "snoozed",
+    snoozeHours?: number,
+    token?: string,
+  ) =>
+    request<Insight>(`/insights/${id}/status`, {
+      method: "PATCH",
+      body: JSON.stringify({ status, snooze_hours: snoozeHours }),
+      token,
+    }),
+
+  generate: (token: string) =>
+    request<{ task_id: string }>("/insights/generate", { method: "POST", token }),
+};
+
+// ─── Alerts ───────────────────────────────────────────────────────────────────
+export const alertsApi = {
+  listRules: (token: string) => request<AlertRule[]>("/alerts/rules", { token }),
+
+  createRule: (token: string, data: Omit<AlertRule, "id" | "created_at" | "updated_at" | "last_triggered_at">) =>
+    request<AlertRule>("/alerts/rules", {
+      method: "POST",
+      body: JSON.stringify(data),
+      token,
+    }),
+
+  updateRule: (id: string, data: Partial<AlertRule>, token: string) =>
+    request<AlertRule>(`/alerts/rules/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+      token,
+    }),
+
+  deleteRule: (id: string, token: string) =>
+    request<void>(`/alerts/rules/${id}`, { method: "DELETE", token }),
+
+  testRule: (id: string, token: string) =>
+    request<{ fired: boolean; message: string }>(`/alerts/test/${id}`, {
+      method: "POST",
+      token,
+    }),
+
+  listHistory: (token: string) =>
+    request<AlertHistoryEntry[]>("/alerts/history", { token }),
+};
+
+// ─── Incidents ────────────────────────────────────────────────────────────────
+export interface Incident {
+  id: string;
+  title: string;
+  description: string | null;
+  status: "open" | "investigating" | "analysing" | "resolved" | "closed";
+  severity: "p0" | "p1" | "p2" | "p3" | "p4";
+  service: string | null;
+  started_at: string | null;
+  resolved_at: string | null;
+  root_cause: string | null;
+  contributing_factors: string[];
+  recommendations: string[];
+  timeline: TimelineEvent[];
+  signals: Signal[];
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TimelineEvent {
+  timestamp: string;
+  source: string;
+  source_type: string;
+  event_type: string;
+  title: string;
+  detail: string;
+  url: string;
+  author: string;
+}
+
+export interface Signal {
+  source_type: string;
+  title: string;
+  detail: string;
+  url: string;
+  timestamp: string;
+  author: string;
+  score: number;
+}
+
+export const incidentsApi = {
+  list: (token: string, params: { status?: string; severity?: string } = {}) => {
+    const qs = new URLSearchParams(
+      Object.fromEntries(Object.entries(params).filter(([, v]) => v !== undefined).map(([k, v]) => [k, String(v)]))
+    ).toString();
+    return request<Incident[]>(`/incidents${qs ? `?${qs}` : ""}`, { token });
+  },
+
+  get: (id: string, token: string) => request<Incident>(`/incidents/${id}`, { token }),
+
+  create: (token: string, data: { title: string; description?: string; service?: string; severity?: string; started_at?: string }) =>
+    request<Incident>("/incidents", { method: "POST", body: JSON.stringify(data), token }),
+
+  update: (id: string, token: string, data: Partial<Pick<Incident, "title" | "description" | "status" | "severity" | "service" | "resolved_at">>) =>
+    request<Incident>(`/incidents/${id}`, { method: "PATCH", body: JSON.stringify(data), token }),
+
+  delete: (id: string, token: string) =>
+    request<void>(`/incidents/${id}`, { method: "DELETE", token }),
+
+  investigate: (id: string, token: string) =>
+    request<{ status: string; message: string }>(`/incidents/${id}/investigate`, { method: "POST", token }),
+};
+
+// ─── Integrations ─────────────────────────────────────────────────────────────
+export const integrationsApi = {
+  list: (token: string) => request<Integration[]>("/integrations", { token }),
+
+  connect: (
+    token: string,
+    sourceType: string,
+    credentials: Record<string, string>,
+  ) =>
+    request<Integration>("/integrations", {
+      method: "POST",
+      body: JSON.stringify({ source_type: sourceType, credentials }),
+      token,
+    }),
+
+  disconnect: (id: string, token: string) =>
+    request<void>(`/integrations/${id}`, { method: "DELETE", token }),
+
+  triggerSync: (id: string, token: string) =>
+    request<{ sync_id: string }>(`/integrations/${id}/sync`, {
+      method: "POST",
+      token,
+    }),
+};
