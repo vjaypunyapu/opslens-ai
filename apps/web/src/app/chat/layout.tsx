@@ -8,11 +8,16 @@ import { ChatSession } from "@/types";
 import { formatDistanceToNow } from "date-fns";
 
 export default function ChatLayout({ children }: { children: React.ReactNode }) {
-  const { getToken } = useAuth();
+  const { getToken, userId } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [creating, setCreating] = useState(false);
+
+  // Redirect unauthenticated users (replaces middleware auth guard)
+  useEffect(() => {
+    if (userId === null) router.replace("/sign-in");
+  }, [userId, router]);
 
   const refreshSessions = async () => {
     const token = await getToken();

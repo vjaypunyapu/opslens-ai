@@ -90,8 +90,8 @@ export function MessageBubble({ message, onFeedback }: Props) {
                   title="Good response"
                   style={{
                     padding: "0.25rem", borderRadius: "0.375rem", border: "none", cursor: "pointer",
-                    background: message.feedback === 1 ? "rgba(34,197,94,0.15)" : "none",
-                    color: message.feedback === 1 ? "#22c55e" : "#475569",
+                    background: message.feedback === "thumbs_up" ? "rgba(34,197,94,0.15)" : "none",
+                    color: message.feedback === "thumbs_up" ? "#22c55e" : "#475569",
                   }}
                 >
                   <ThumbsUp size={13} />
@@ -101,8 +101,8 @@ export function MessageBubble({ message, onFeedback }: Props) {
                   title="Bad response"
                   style={{
                     padding: "0.25rem", borderRadius: "0.375rem", border: "none", cursor: "pointer",
-                    background: message.feedback === -1 ? "rgba(239,68,68,0.15)" : "none",
-                    color: message.feedback === -1 ? "#ef4444" : "#475569",
+                    background: message.feedback === "thumbs_down" ? "rgba(239,68,68,0.15)" : "none",
+                    color: message.feedback === "thumbs_down" ? "#ef4444" : "#475569",
                   }}
                 >
                   <ThumbsDown size={13} />
