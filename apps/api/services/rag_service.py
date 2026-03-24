@@ -216,6 +216,9 @@ class RagService:
         """
         import time
         start = time.monotonic()
+        collection = f"opslens_{tenant_id}"
+        logger.error("RAG_DEBUG: stream called tenant=%s collection=%s question=%r",
+                     tenant_id, collection, question[:80])
 
         try:
             retriever = self.get_retriever(tenant_id, source_types)
@@ -225,8 +228,7 @@ class RagService:
             # If the Qdrant collection doesn't exist yet (no data synced), treat as empty.
             try:
                 docs = await retriever.ainvoke(question)
-                logger.info("RAG: retrieved %d docs for tenant=%s query_preview='%s'",
-                            len(docs), tenant_id, question[:80])
+                logger.error("RAG_DEBUG: retrieved %d docs collection=%s", len(docs), collection)
             except Exception as qdrant_exc:
                 msg = str(qdrant_exc).lower()
                 logger.error("RAG: Qdrant retrieval error for tenant=%s: %s", tenant_id, qdrant_exc, exc_info=True)
