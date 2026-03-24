@@ -43,12 +43,18 @@ from ..utils.logging import get_logger
 logger = get_logger(__name__)
 
 # ── Module-level singletons ─────────────────────────────────────────────────
-_q_parsed = _urlparse.urlparse(settings.QDRANT_URL)
+import os as _os
+_q_parsed  = _urlparse.urlparse(settings.QDRANT_URL)
+_qdrant_key = (
+    _os.environ.get("QDRANT_TOKEN", "")
+    or _os.environ.get("QDRANT_API_KEY", "")
+    or (settings.QDRANT_API_KEY or "")
+).strip() or None
 _qdrant_client = QdrantClient(
     host=_q_parsed.hostname,
     port=_q_parsed.port or 6333,
     https=(_q_parsed.scheme == "https"),
-    api_key=settings.QDRANT_API_KEY or None,
+    api_key=_qdrant_key,
     prefer_grpc=False,
     timeout=10,
 )
