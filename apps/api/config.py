@@ -184,6 +184,15 @@ class Settings(BaseSettings):
     @classmethod
     def parse_origins(cls, v: str | list) -> list[str]:
         if isinstance(v, str):
+            v = v.strip()
+            # Handle JSON array: ["url1","url2"]
+            if v.startswith("["):
+                import json
+                try:
+                    return json.loads(v)
+                except json.JSONDecodeError:
+                    pass
+            # Handle comma-separated: url1,url2
             return [o.strip() for o in v.split(",") if o.strip()]
         return v
 
