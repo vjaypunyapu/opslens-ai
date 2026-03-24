@@ -33,6 +33,7 @@ RUN pip install --no-cache /wheels/*
 # Copy application code
 COPY apps/ apps/
 COPY migrations/ migrations/
+COPY alembic.ini .
 
 # Non-root user
 RUN addgroup --system opslens && adduser --system --ingroup opslens opslens
