@@ -26,6 +26,7 @@ from ..db.models import CanonicalDocument, Integration
 from ..db.session import AsyncSessionFactory as async_session_factory
 from ..utils.crypto import decrypt_credentials
 from ..utils.logging import get_logger
+from .chunker import chunk_document, StructuredChunk
 
 logger = get_logger(__name__)
 
@@ -133,9 +134,13 @@ async def _upsert_qdrant_points(collection: str, points: list[dict]) -> None:
 
 
 # ── Embed + upsert to Qdrant ──────────────────────────────────────────────────
-async def _embed_and_upsert(doc: CanonicalDocument, chunks: list[str], tenant_id: str) -> None:
+async def _embed_and_upsert(
+    doc: CanonicalDocument,
+    structured_chunks: list[StructuredChunk],
+    tenant_id: str,
+) -> None:
     collection = f"opslens_{tenant_id}"
-    logger.info("embed_and_upsert: doc=%s chunks=%d collection=%s", doc.id, len(chunks), collection)
+    logger.info("embed_and_upsert: doc=%s chunks=%d collection=%s", doc.id, len(structured_chunks), collection)
 
     try:
         await _ensure_qdrant_collection(collection)
@@ -143,37 +148,55 @@ async def _embed_and_upsert(doc: CanonicalDocument, chunks: list[str], tenant_id
         logger.error("embed_and_upsert: FAILED to ensure collection: %s", exc, exc_info=True)
         raise
 
+    # Build text list — embed the content; if enriched also embed hypothetical questions
+    # by prepending them so the vector captures question-to-question similarity
+    def _embed_text(sc: StructuredChunk) -> str:
+        parts = [sc.content]
+        if sc.summary:
+            parts.append(f"Summary: {sc.summary}")
+        if sc.hypothetical_questions:
+            parts.append("Questions: " + " | ".join(sc.hypothetical_questions))
+        return " ".join(parts)
+
+    texts = [_embed_text(sc) for sc in structured_chunks]
+
     points: list[dict] = []
-    for batch_start in range(0, len(chunks), EMBED_BATCH):
-        batch = chunks[batch_start: batch_start + EMBED_BATCH]
+    for batch_start in range(0, len(texts), EMBED_BATCH):
+        batch_texts  = texts[batch_start: batch_start + EMBED_BATCH]
+        batch_chunks = structured_chunks[batch_start: batch_start + EMBED_BATCH]
 
         if settings.LLM_PROVIDER == "ollama":
             ollama_resp = await httpx.AsyncClient(timeout=60).post(
                 f"{settings.OLLAMA_URL}/api/embed",
-                json={"model": EMBED_MODEL, "input": batch},
+                json={"model": EMBED_MODEL, "input": batch_texts},
             )
             ollama_resp.raise_for_status()
             embeddings_list = ollama_resp.json()["embeddings"]
         else:
-            response = await _openai.embeddings.create(model=EMBED_MODEL, input=batch)
+            response = await _openai.embeddings.create(model=EMBED_MODEL, input=batch_texts)
             embeddings_list = [e.embedding for e in response.data]
 
         for i, vector in enumerate(embeddings_list):
             chunk_idx = batch_start + i
+            sc        = batch_chunks[i]
             points.append({
                 "id":     str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{doc.id}:{chunk_idx}")),
                 "vector": vector,
                 "payload": {
-                    "page_content": batch[i],
+                    "page_content": sc.content,
                     "metadata": {
-                        "tenant_id":   tenant_id,
-                        "document_id": str(doc.id),
-                        "chunk_index": chunk_idx,
-                        "source_type": doc.source_type,
-                        "title":       doc.title or "",
-                        "url":         doc.url or "",
-                        "author":      doc.author or "",
-                        "created_at":  doc.source_created_at.isoformat() if doc.source_created_at else None,
+                        "tenant_id":              tenant_id,
+                        "document_id":            str(doc.id),
+                        "chunk_index":            chunk_idx,
+                        "chunk_type":             sc.chunk_type,
+                        "source_type":            sc.source_type,
+                        "title":                  doc.title or "",
+                        "url":                    doc.url or "",
+                        "author":                 doc.author or "",
+                        "created_at":             doc.source_created_at.isoformat() if doc.source_created_at else None,
+                        "keywords":               sc.keywords,
+                        "summary":                sc.summary,
+                        "hypothetical_questions": sc.hypothetical_questions,
                     },
                 },
             })
@@ -227,12 +250,16 @@ async def _save_and_embed(record: RawRecord, tenant_id: str) -> None:
             await db.commit()
             await db.refresh(doc)
 
-        chunks = _chunk_text(record.content)
-        if chunks:
-            await _embed_and_upsert(doc, chunks, tenant_id)
+        structured_chunks = await chunk_document(
+            record.content,
+            record.source_type,
+            {**record.metadata, "title": record.title, "url": record.url},
+        )
+        if structured_chunks:
+            await _embed_and_upsert(doc, structured_chunks, tenant_id)
 
         doc.embedding_status = "done"
-        doc.chunk_count = len(chunks)
+        doc.chunk_count = len(structured_chunks)
         await db.commit()
 
 

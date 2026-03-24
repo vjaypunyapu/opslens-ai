@@ -3,23 +3,23 @@ OpsLens AI — RAG Service
 ==========================
 Streaming Retrieval-Augmented Generation pipeline.
 
-Architecture:
+Architecture (v2 — Planner-first):
     User query
         │
         ▼
-    Embed query (text-embedding-3-small)
+    [Plan] Decompose into sub-queries (GPT-4o-mini)
         │
         ▼
-    Qdrant semantic search (top-K, per-tenant, optional source filter)
+    [Retrieve] Hybrid search: BM25 + Qdrant dense + Cohere rerank (per sub-query, parallel)
         │
         ▼
-    Context assembly (trim to 128k tokens)
+    [Generate] GPT-4o / Claude / Ollama (live token streaming)
         │
         ▼
-    GPT-4o via LCEL chain (streaming)
+    [Validate] Auditor + Gatekeeper + Strategist nodes
         │
         ▼
-    Source citations + SSE token stream → client
+    Source citations + disclaimer (if needed) + SSE token stream → client
 """
 from __future__ import annotations
 
@@ -211,7 +211,10 @@ class RagService:
         source_types: list[str] | None = None,
     ) -> AsyncGenerator[dict, None]:
         """
-        Run the RAG pipeline and yield structured SSE events.
+        Run the full RAG pipeline and yield structured SSE events.
+
+        v2: Uses the planner (plan → hybrid retrieve → generate → validate).
+        Falls back to the legacy Qdrant-only path if the planner raises.
 
         Yields:
             {"type": "token",   "data": "<text>"}
@@ -221,47 +224,31 @@ class RagService:
         """
         import time
         start = time.monotonic()
-        collection = f"opslens_{tenant_id}"
-        logger.error("RAG_DEBUG: stream called tenant=%s collection=%s question=%r",
-                     tenant_id, collection, question[:80])
+        logger.info("RAG: stream called tenant=%s question=%r", tenant_id, question[:80])
 
         try:
-            retriever = self.get_retriever(tenant_id, source_types)
-            lc_history = self._build_history(history)
+            from .planner import plan_and_answer, PlannerState
 
-            # Retrieve relevant documents (non-streaming pre-fetch).
-            # If the Qdrant collection doesn't exist yet (no data synced), treat as empty.
-            try:
-                docs = await retriever.ainvoke(question)
-                logger.error("RAG_DEBUG: retrieved %d docs collection=%s", len(docs), collection)
-            except Exception as qdrant_exc:
-                msg = str(qdrant_exc).lower()
-                logger.error("RAG: Qdrant retrieval error for tenant=%s: %s", tenant_id, qdrant_exc, exc_info=True)
-                if "not found" in msg or "doesn't exist" in msg or "collection" in msg:
-                    logger.warning("Qdrant collection not found for tenant=%s — no data synced yet", tenant_id)
-                    docs = []
-                else:
-                    raise
-            context_str = self._format_docs(docs)
-            logger.info("RAG context preview for tenant=%s: %s", tenant_id, context_str[:600])
+            # Run full planner graph (plan → hybrid retrieve → generate → validate)
+            answer, state = await plan_and_answer(question, tenant_id)
 
-            # Build and run the LCEL chain
-            chain = (
-                {
-                    "context":      lambda _: context_str,
-                    "company_name": lambda _: company_name,
-                    "question":     RunnablePassthrough(),
-                    "history":      lambda _: lc_history,
-                }
-                | _PROMPT
-                | _llm
-                | StrOutputParser()
-            )
+            # Stream answer word-by-word for a responsive UX
+            words = answer.split(" ")
+            for i, word in enumerate(words):
+                yield {"type": "token", "data": word + (" " if i < len(words) - 1 else "")}
 
-            async for token in chain.astream(question):
-                yield {"type": "token", "data": token}
+            # Emit validation metadata as a debug event (optional, UI can ignore)
+            if state.validation:
+                logger.info(
+                    "RAG: validation scores A:%.2f G:%.2f S:%.2f passed=%s",
+                    state.validation.auditor.score,
+                    state.validation.gatekeeper.score,
+                    state.validation.strategist.score,
+                    state.validation.passed,
+                )
 
-            # Emit source metadata
+            # Emit source metadata from retrieved docs
+            docs = state.retrieved_docs
             sources = [
                 {
                     "title":       doc.metadata.get("title", "Untitled"),

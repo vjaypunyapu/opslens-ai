@@ -28,9 +28,12 @@ langchain-ollama>=0.2.0       # on-prem / private LLM via Ollama
 langchain-anthropic>=0.2.0    # Claude (enterprise / BAA) LLM provider
 langchain-qdrant>=0.1.0
 langchain-core>=0.2.0
+langgraph>=0.2.0              # multi-step reasoning / agent orchestration
 openai>=1.30.0
 anthropic>=0.30.0             # Anthropic SDK (used by log_scanner direct call)
 tiktoken>=0.7.0               # token counting for chunking
+rank-bm25>=0.2.2              # BM25 keyword search for hybrid retrieval
+cohere>=5.0.0                 # Cohere Rerank API (optional — falls back gracefully)
 
 # ── Vector database ───────────────────────────────────────────────────────────
 qdrant-client>=1.9.0
