@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+import urllib.parse as _urlparse
+
 import httpx
 import sqlalchemy as sa
 import tiktoken
@@ -44,7 +46,16 @@ else:
 
 _enc     = tiktoken.get_encoding("cl100k_base")
 _openai  = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
-_qdrant  = QdrantClient(url=settings.QDRANT_URL, api_key=settings.QDRANT_API_KEY or None)
+
+# Use explicit host/port/https params to avoid URL-parsing bugs in qdrant-client
+_q_parsed = _urlparse.urlparse(settings.QDRANT_URL)
+_qdrant   = QdrantClient(
+    host=_q_parsed.hostname,
+    port=_q_parsed.port or 6333,
+    https=(_q_parsed.scheme == "https"),
+    api_key=settings.QDRANT_API_KEY or None,
+    prefer_grpc=False,
+)
 
 
 # ── Normalised record ─────────────────────────────────────────────────────────

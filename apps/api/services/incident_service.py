@@ -108,10 +108,18 @@ async def investigate_incident(
     Full investigation pipeline.  Updates the Incident row in-place.
     Designed to run as a background task (called from the router or Celery).
     """
+    import urllib.parse as _urlparse
     from qdrant_client import QdrantClient
     from qdrant_client.models import Filter, FieldCondition, MatchValue
 
-    qdrant = QdrantClient(url=settings.QDRANT_URL, api_key=settings.QDRANT_API_KEY or None)
+    _q = _urlparse.urlparse(settings.QDRANT_URL)
+    qdrant = QdrantClient(
+        host=_q.hostname,
+        port=_q.port or 6333,
+        https=(_q.scheme == "https"),
+        api_key=settings.QDRANT_API_KEY or None,
+        prefer_grpc=False,
+    )
     collection = f"opslens_{tenant_id}"
 
     async with AsyncSessionFactory() as db:

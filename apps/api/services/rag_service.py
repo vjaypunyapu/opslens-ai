@@ -30,6 +30,8 @@ from langchain_core.messages import AIMessage, HumanMessage, BaseMessage
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnablePassthrough
+import urllib.parse as _urlparse
+
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
@@ -41,9 +43,13 @@ from ..utils.logging import get_logger
 logger = get_logger(__name__)
 
 # ── Module-level singletons ─────────────────────────────────────────────────
+_q_parsed = _urlparse.urlparse(settings.QDRANT_URL)
 _qdrant_client = QdrantClient(
-    url=settings.QDRANT_URL,
-    api_key=settings.QDRANT_API_KEY,
+    host=_q_parsed.hostname,
+    port=_q_parsed.port or 6333,
+    https=(_q_parsed.scheme == "https"),
+    api_key=settings.QDRANT_API_KEY or None,
+    prefer_grpc=False,
     timeout=10,
 )
 
