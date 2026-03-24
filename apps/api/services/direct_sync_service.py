@@ -77,11 +77,16 @@ def _chunk_text(text: str) -> list[str]:
 def _qdrant_headers() -> dict[str, str]:
     import os
     h = {"Content-Type": "application/json"}
-    settings_key = (settings.QDRANT_API_KEY or "").strip()
-    environ_key  = os.environ.get("QDRANT_API_KEY", "").strip()
-    key = environ_key or settings_key  # prefer os.environ directly
-    logger.info("qdrant_debug: url=%r settings_key_len=%d environ_key_len=%d using_len=%d",
-                settings.QDRANT_URL, len(settings_key), len(environ_key), len(key))
+    # Try multiple env var names — Railway sometimes fails to inject specific names
+    key = (
+        os.environ.get("QDRANT_TOKEN", "")
+        or os.environ.get("QDRANT_API_KEY", "")
+        or (settings.QDRANT_API_KEY or "")
+    ).strip()
+    logger.info("qdrant_debug: url=%r key_len=%d QDRANT_TOKEN=%d QDRANT_API_KEY=%d",
+                settings.QDRANT_URL, len(key),
+                len(os.environ.get("QDRANT_TOKEN", "")),
+                len(os.environ.get("QDRANT_API_KEY", "")))
     if key:
         h["api-key"] = key
     return h
