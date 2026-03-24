@@ -77,6 +77,8 @@ def _chunk_text(text: str) -> list[str]:
 def _qdrant_headers() -> dict[str, str]:
     h = {"Content-Type": "application/json"}
     key = (settings.QDRANT_API_KEY or "").strip()
+    logger.info("qdrant_debug: url=%r key_len=%d key_prefix=%r",
+                settings.QDRANT_URL, len(key), key[:12] if key else "")
     if key:
         h["api-key"] = key
     return h
