@@ -44,6 +44,11 @@ logger = get_logger(__name__)
 
 # ── Module-level singletons ─────────────────────────────────────────────────
 import os as _os
+_openai_key = (
+    _os.environ.get("OPENAI_TOKEN", "")
+    or _os.environ.get("OPENAI_API_KEY", "")
+    or (settings.OPENAI_API_KEY or "")
+).strip()
 _q_parsed  = _urlparse.urlparse(settings.QDRANT_URL)
 _qdrant_key = (
     _os.environ.get("QDRANT_TOKEN", "")
@@ -82,7 +87,7 @@ elif settings.LLM_PROVIDER == "claude":
     from langchain_anthropic import ChatAnthropic
     _embeddings = OpenAIEmbeddings(
         model=settings.OPENAI_EMBED_MODEL,
-        openai_api_key=settings.OPENAI_API_KEY,
+        openai_api_key=_openai_key,
     )
     _llm = ChatAnthropic(
         model=settings.ANTHROPIC_CHAT_MODEL,
@@ -96,14 +101,14 @@ elif settings.LLM_PROVIDER == "claude":
 else:  # openai (default)
     _embeddings = OpenAIEmbeddings(
         model=settings.OPENAI_EMBED_MODEL,
-        openai_api_key=settings.OPENAI_API_KEY,
+        openai_api_key=_openai_key,
     )
     _llm = ChatOpenAI(
         model=settings.OPENAI_CHAT_MODEL,
         temperature=settings.OPENAI_TEMPERATURE,
         max_tokens=settings.OPENAI_MAX_TOKENS,
         streaming=True,
-        openai_api_key=settings.OPENAI_API_KEY,
+        openai_api_key=_openai_key,
     )
     logger.info("LLM provider: OpenAI (%s)", settings.OPENAI_CHAT_MODEL)
 

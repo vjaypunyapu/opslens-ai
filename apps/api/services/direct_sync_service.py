@@ -42,8 +42,15 @@ else:
     EMBED_MODEL = settings.OPENAI_EMBED_MODEL   # "text-embedding-3-small"
     EMBED_DIMS  = 1536
 
-_enc    = tiktoken.get_encoding("cl100k_base")
-_openai = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+_enc = tiktoken.get_encoding("cl100k_base")
+
+import os as _os
+_openai_key = (
+    _os.environ.get("OPENAI_TOKEN", "")
+    or _os.environ.get("OPENAI_API_KEY", "")
+    or (settings.OPENAI_API_KEY or "")
+).strip()
+_openai = AsyncOpenAI(api_key=_openai_key)
 
 
 # ── Normalised record ─────────────────────────────────────────────────────────
