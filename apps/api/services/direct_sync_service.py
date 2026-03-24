@@ -20,8 +20,6 @@ import httpx
 import sqlalchemy as sa
 import tiktoken
 from openai import AsyncOpenAI
-from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, PointStruct, VectorParams
 
 from ..config import settings
 from ..db.models import CanonicalDocument, Integration
@@ -44,18 +42,8 @@ else:
     EMBED_MODEL = settings.OPENAI_EMBED_MODEL   # "text-embedding-3-small"
     EMBED_DIMS  = 1536
 
-_enc     = tiktoken.get_encoding("cl100k_base")
-_openai  = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
-
-# Use explicit host/port/https params to avoid URL-parsing bugs in qdrant-client
-_q_parsed = _urlparse.urlparse(settings.QDRANT_URL)
-_qdrant   = QdrantClient(
-    host=_q_parsed.hostname,
-    port=_q_parsed.port or 6333,
-    https=(_q_parsed.scheme == "https"),
-    api_key=settings.QDRANT_API_KEY or None,
-    prefer_grpc=False,
-)
+_enc    = tiktoken.get_encoding("cl100k_base")
+_openai = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 
 
 # ── Normalised record ─────────────────────────────────────────────────────────
@@ -85,33 +73,65 @@ def _chunk_text(text: str) -> list[str]:
     return chunks
 
 
+# ── Qdrant REST helpers (httpx direct — avoids qdrant-client auth bugs) ────────
+def _qdrant_headers() -> dict[str, str]:
+    h = {"Content-Type": "application/json"}
+    key = (settings.QDRANT_API_KEY or "").strip()
+    if key:
+        h["api-key"] = key
+    return h
+
+def _qdrant_base() -> str:
+    return settings.QDRANT_URL.rstrip("/")
+
+async def _ensure_qdrant_collection(collection: str) -> None:
+    base    = _qdrant_base()
+    headers = _qdrant_headers()
+    async with httpx.AsyncClient(headers=headers, timeout=30) as client:
+        resp = await client.get(f"{base}/collections/{collection}")
+        if resp.status_code == 200:
+            logger.info("qdrant: collection %s already exists", collection)
+            return
+        if resp.status_code == 404:
+            logger.info("qdrant: creating collection %s dims=%d", collection, EMBED_DIMS)
+            r = await client.put(
+                f"{base}/collections/{collection}",
+                json={"vectors": {"size": EMBED_DIMS, "distance": "Cosine"}},
+            )
+            r.raise_for_status()
+            logger.info("qdrant: collection %s created", collection)
+        else:
+            logger.error("qdrant: unexpected %s checking collection: %s", resp.status_code, resp.text)
+            resp.raise_for_status()
+
+async def _upsert_qdrant_points(collection: str, points: list[dict]) -> None:
+    base    = _qdrant_base()
+    headers = _qdrant_headers()
+    async with httpx.AsyncClient(headers=headers, timeout=60) as client:
+        resp = await client.put(
+            f"{base}/collections/{collection}/points?wait=true",
+            json={"points": points},
+        )
+        resp.raise_for_status()
+
+
 # ── Embed + upsert to Qdrant ──────────────────────────────────────────────────
 async def _embed_and_upsert(doc: CanonicalDocument, chunks: list[str], tenant_id: str) -> None:
     collection = f"opslens_{tenant_id}"
     logger.info("embed_and_upsert: doc=%s chunks=%d collection=%s", doc.id, len(chunks), collection)
 
-    # Ensure collection exists
     try:
-        existing = [c.name for c in _qdrant.get_collections().collections]
-        logger.info("embed_and_upsert: existing collections=%s", existing)
-        if collection not in existing:
-            logger.info("embed_and_upsert: creating collection %s", collection)
-            _qdrant.create_collection(
-                collection_name=collection,
-                vectors_config=VectorParams(size=EMBED_DIMS, distance=Distance.COSINE),
-            )
-            logger.info("embed_and_upsert: collection %s created", collection)
+        await _ensure_qdrant_collection(collection)
     except Exception as exc:
         logger.error("embed_and_upsert: FAILED to ensure collection: %s", exc, exc_info=True)
         raise
 
-    points: list[PointStruct] = []
+    points: list[dict] = []
     for batch_start in range(0, len(chunks), EMBED_BATCH):
         batch = chunks[batch_start: batch_start + EMBED_BATCH]
 
         if settings.LLM_PROVIDER == "ollama":
-            import httpx as _httpx
-            ollama_resp = await _httpx.AsyncClient(timeout=60).post(
+            ollama_resp = await httpx.AsyncClient(timeout=60).post(
                 f"{settings.OLLAMA_URL}/api/embed",
                 json={"model": EMBED_MODEL, "input": batch},
             )
@@ -123,11 +143,10 @@ async def _embed_and_upsert(doc: CanonicalDocument, chunks: list[str], tenant_id
 
         for i, vector in enumerate(embeddings_list):
             chunk_idx = batch_start + i
-            points.append(PointStruct(
-                id=str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{doc.id}:{chunk_idx}")),
-                vector=vector,
-                payload={
-                    # LangChain QdrantVectorStore expects these two top-level keys
+            points.append({
+                "id":     str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{doc.id}:{chunk_idx}")),
+                "vector": vector,
+                "payload": {
                     "page_content": batch[i],
                     "metadata": {
                         "tenant_id":   tenant_id,
@@ -140,12 +159,12 @@ async def _embed_and_upsert(doc: CanonicalDocument, chunks: list[str], tenant_id
                         "created_at":  doc.source_created_at.isoformat() if doc.source_created_at else None,
                     },
                 },
-            ))
+            })
 
     if points:
         try:
             logger.info("embed_and_upsert: upserting %d points to %s", len(points), collection)
-            _qdrant.upsert(collection_name=collection, points=points, wait=True)
+            await _upsert_qdrant_points(collection, points)
             logger.info("Upserted %d vectors to %s", len(points), collection)
         except Exception as exc:
             logger.error("embed_and_upsert: FAILED to upsert to Qdrant: %s", exc, exc_info=True)
