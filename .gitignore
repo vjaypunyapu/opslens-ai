@@ -79,3 +79,7 @@ dmypy.json
 
 # Ruff / Black
 .ruff_cache/
+.vercel
+.env.cloud
+PROJECT_STATE.md
+*.docx
