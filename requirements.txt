@@ -13,7 +13,7 @@ alembic>=1.13.0               # database migrations
 psycopg2-binary>=2.9.9        # sync driver (for Alembic autogenerate)
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-pydantic>=2.7.0
+pydantic[email]>=2.7.0        # [email] extra installs email-validator for EmailStr
 pydantic-settings>=2.3.0
 python-dotenv>=1.0.1
 
