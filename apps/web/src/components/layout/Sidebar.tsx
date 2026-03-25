@@ -2,12 +2,13 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { UserButton } from "@clerk/nextjs";
-import { MessageSquare, Lightbulb, Bell, Plug, BarChart2, Settings, AlertTriangle, Shield } from "lucide-react";
+import { MessageSquare, Lightbulb, Bell, Plug, BarChart2, Settings, AlertTriangle, Shield, FileText } from "lucide-react";
 
 const NAV = [
   { href: "/dashboard",    label: "Dashboard",    icon: BarChart2 },
   { href: "/chat",         label: "Chat",         icon: MessageSquare },
   { href: "/incidents",    label: "Incidents",    icon: AlertTriangle },
+  { href: "/rrt-briefs",   label: "RRT Briefs",   icon: FileText },
   { href: "/insights",     label: "Insights",     icon: Lightbulb },
   { href: "/alerts",       label: "Alerts",       icon: Bell },
   { href: "/integrations", label: "Integrations", icon: Plug },

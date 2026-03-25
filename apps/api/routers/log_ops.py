@@ -408,6 +408,189 @@ async def test_routing_rules(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# SIMULATE — demo / testing endpoint
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class SimulateAlertRequest(BaseModel):
+    service_name: str = Field(
+        ...,
+        min_length=1,
+        max_length=100,
+        description="Name of the service that is 'experiencing' the simulated error",
+        examples=["payment-service"],
+    )
+    error_message: str = Field(
+        ...,
+        min_length=5,
+        max_length=1000,
+        description="The error message / exception text to simulate",
+        examples=["PaymentError: Stripe API timeout after 30s — card_id=card_abc123"],
+    )
+    error_count: int = Field(
+        default=12,
+        ge=1,
+        le=999,
+        description="How many times the error 'occurred' in the simulated window",
+    )
+    severity: str = Field(
+        default="p1",
+        description="Severity label shown in the brief: p0 / p1 / p2 / p3",
+    )
+    webhook_url: str | None = Field(
+        None,
+        description="Override Slack webhook for this simulation. "
+                    "Falls back to LOG_FAST_ALERT_SLACK_WEBHOOK.",
+    )
+
+
+class SimulateAlertResponse(BaseModel):
+    status: str
+    message: str
+    enrich_task_id: str | None = None
+    rrt_task_id: str | None = None
+    error_signature: str
+    service_name: str
+
+
+@router.post(
+    "/simulate",
+    response_model=SimulateAlertResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Simulate a log alert (demo / testing)",
+)
+async def simulate_alert(
+    body: SimulateAlertRequest,
+    ctx: Annotated[TenantContext, Depends(require_admin)],
+    db=Depends(get_db),
+):
+    """
+    **Demo / testing endpoint** — injects a synthetic error through the full
+    Fast Alert → Enrichment → RRT Brief pipeline without requiring real log
+    sources or a running Celery Beat schedule.
+
+    Steps triggered:
+    1. Builds a synthetic `ErrorGroup` matching the format the Celery worker uses
+    2. Dispatches `logs.enrich_and_alert` — searches Qdrant for related
+       Jira / GitHub / Slack context and sends an enriched Slack notification
+    3. `enrich_and_alert` automatically dispatches `rrt.generate_brief` which
+       generates the structured RRT brief and delivers it to Slack
+
+    Returns immediately (HTTP 202) — the pipeline runs asynchronously.
+    Check `/api/v1/rrt-briefs` after ~15–30 seconds to see the generated brief.
+    """
+    import hashlib as _hashlib
+    from apps.api.config import settings as cfg
+
+    # ── Resolve webhook ───────────────────────────────────────────────────────
+    webhook = (
+        body.webhook_url
+        or cfg.LOG_FAST_ALERT_SLACK_WEBHOOK
+        or cfg.LOG_SCAN_SLACK_WEBHOOK
+    )
+    if not webhook:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "No Slack webhook configured. Provide webhook_url in the request body, "
+                "or set LOG_FAST_ALERT_SLACK_WEBHOOK in your environment."
+            ),
+        )
+
+    # ── Build synthetic ErrorGroup dict ──────────────────────────────────────
+    # Normalise + hash so it matches the format fast_scan produces
+    normalised = re.sub(r"\b[0-9a-f]{8,}\b", "<hex>", body.error_message)
+    normalised = re.sub(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}[.,\d]*", "<ts>", normalised)
+    signature = _hashlib.md5(normalised[:120].encode()).hexdigest()
+
+    # Simulate a realistic traceback sample
+    sample_lines = [
+        f"[SIMULATED] ERROR {body.service_name}: {body.error_message}",
+        f"    Traceback (most recent call last):",
+        f"      File \"{body.service_name}/main.py\", line 42, in handle_request",
+        f"    {body.error_message}",
+        f"    [Count in window: {body.error_count} occurrences]",
+    ]
+
+    error_group_dict = {
+        "signature": signature,
+        "first_line": f"[DEMO] {body.service_name}: {body.error_message}",
+        "count": body.error_count,
+        "sample_lines": sample_lines,
+    }
+
+    # ── Resolve routing targets (same logic as fast_scan) ────────────────────
+    routing_targets = []
+    try:
+        result = await db.execute(
+            sa.select(AlertRoutingRule)
+            .where(
+                AlertRoutingRule.tenant_id == ctx.tenant_id,
+                AlertRoutingRule.is_active == True,
+            )
+            .order_by(AlertRoutingRule.priority)
+        )
+        rules = result.scalars().all()
+        sample_error = f"{body.service_name} {body.error_message}"
+        for rr in rules:
+            if _rule_matches(rr, sample_error, body.service_name):
+                routing_targets.append({
+                    "team_name": rr.team_name,
+                    "slack_webhook": rr.slack_webhook or webhook,
+                    "email_recipients": list(rr.email_recipients or []),
+                })
+                if rr.stop_on_match:
+                    break
+    except Exception as exc:
+        logger.warning("Routing rule lookup failed during simulation: %s", exc)
+
+    if not routing_targets:
+        routing_targets = [
+            {"team_name": "Demo Team", "slack_webhook": webhook, "email_recipients": []}
+        ]
+
+    # ── Dispatch async pipeline ───────────────────────────────────────────────
+    enrich_task_id = None
+    rrt_task_id = None
+    try:
+        from apps.worker.tasks.log_fast_alert import enrich_and_alert
+        task = enrich_and_alert.delay(
+            tenant_id=str(ctx.tenant_id),
+            error_group_dict=error_group_dict,
+            webhook_url=routing_targets[0]["slack_webhook"],
+            routing_targets=routing_targets,
+            error_count=body.error_count,
+            window_minutes=5,
+        )
+        enrich_task_id = task.id
+        logger.info(
+            "Simulation dispatched for tenant=%s service=%s sig=%s task=%s",
+            ctx.tenant_id, body.service_name, signature, task.id,
+        )
+    except Exception as exc:
+        logger.error("Failed to dispatch simulation task: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Could not dispatch simulation — is the Celery worker running? ({exc})"
+            ),
+        )
+
+    return SimulateAlertResponse(
+        status="dispatched",
+        message=(
+            f"Simulation running for '{body.service_name}'. "
+            "Check your Slack channel in ~15 seconds for the fast alert, "
+            "then the enriched alert and RRT brief will follow. "
+            "Visit /api/v1/rrt-briefs to see the generated brief."
+        ),
+        enrich_task_id=enrich_task_id,
+        rrt_task_id=rrt_task_id,
+        error_signature=signature,
+        service_name=body.service_name,
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Shared matching logic (also used by log_fast_alert.py)
 # ═══════════════════════════════════════════════════════════════════════════════
 

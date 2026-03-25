@@ -6,7 +6,7 @@ import {
   Clock, CheckCircle, Loader2, Zap, GitBranch, MessageSquare,
   FileText, Activity, X, ExternalLink, Play
 } from "lucide-react";
-import { incidentsApi, Incident, TimelineEvent } from "@/lib/api";
+import { incidentsApi, logOpsApi, Incident, TimelineEvent } from "@/lib/api";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -529,6 +529,234 @@ function IncidentDetail({
   );
 }
 
+// ─── Simulate Alert Modal ────────────────────────────────────────────────────
+
+const DEMO_SCENARIOS = [
+  {
+    label: "Payment timeout",
+    service: "payment-service",
+    message: "PaymentError: Stripe API timeout after 30s — retries exhausted for card_id=card_abc123",
+    count: 47,
+  },
+  {
+    label: "Auth service 500s",
+    service: "auth-service",
+    message: "InternalServerError: JWT verification failed — database connection pool exhausted (pool_size=20)",
+    count: 23,
+  },
+  {
+    label: "Database OOM",
+    service: "postgres-primary",
+    message: "FATAL: out of memory (OOM) — shared_buffers exceeded, query killed: SELECT * FROM orders WHERE...",
+    count: 8,
+  },
+  {
+    label: "Webhook queue backed up",
+    service: "webhook-worker",
+    message: "QueueBacklogError: Webhook delivery queue depth > 10,000 — consumers stalled, backpressure detected",
+    count: 34,
+  },
+];
+
+function SimulateAlertModal({ onClose, onSimulate }: {
+  onClose: () => void;
+  onSimulate: (data: { service_name: string; error_message: string; error_count: number; severity: string }) => Promise<void>;
+}) {
+  const [form, setForm] = useState({
+    service_name: "payment-service",
+    error_message: "PaymentError: Stripe API timeout after 30s — retries exhausted for card_id=card_abc123",
+    error_count: 47,
+    severity: "p1",
+  });
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<{ message: string; signature: string } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  function applyScenario(s: typeof DEMO_SCENARIOS[0]) {
+    setForm(f => ({ ...f, service_name: s.service, error_message: s.message, error_count: s.count }));
+    setResult(null);
+    setErr(null);
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!form.service_name.trim() || !form.error_message.trim()) return;
+    setLoading(true);
+    setErr(null);
+    try {
+      await onSimulate(form);
+      setResult({
+        message: "Simulation dispatched! Check Slack in ~15 seconds for the fast alert, then the enriched alert and RRT brief will follow.",
+        signature: "",
+      });
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : "Simulation failed — check that the Celery worker is running and a Slack webhook is configured.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", zIndex: 100,
+      display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div style={{ background: "#1e293b", border: "1px solid rgba(255,255,255,0.1)",
+        borderRadius: "16px", padding: "28px", width: "560px", maxWidth: "95vw",
+        maxHeight: "90vh", overflowY: "auto" }}>
+
+        {/* Header */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+          <h2 style={{ color: "#f1f5f9", fontSize: "18px", fontWeight: 700, margin: 0, display: "flex", gap: "10px", alignItems: "center" }}>
+            <Zap size={18} color="#14b8a6" />
+            Simulate Alert
+          </h2>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "#64748b", cursor: "pointer", padding: "4px" }}>
+            <X size={18} />
+          </button>
+        </div>
+        <p style={{ fontSize: "13px", color: "#64748b", marginTop: "4px", marginBottom: "20px", lineHeight: 1.5 }}>
+          Injects a synthetic error through the full pipeline: Fast Alert → Enrichment (Jira/GitHub/Slack context) → RRT Brief sent to Slack.
+        </p>
+
+        {/* Quick scenarios */}
+        <div style={{ marginBottom: "20px" }}>
+          <div style={{ fontSize: "11px", fontWeight: 600, color: "#64748b", textTransform: "uppercase",
+            letterSpacing: "0.08em", marginBottom: "8px" }}>Quick Scenarios</div>
+          <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+            {DEMO_SCENARIOS.map(s => (
+              <button
+                key={s.label}
+                type="button"
+                onClick={() => applyScenario(s)}
+                style={{
+                  padding: "5px 12px", borderRadius: "6px", fontSize: "12px",
+                  background: form.service_name === s.service ? "rgba(20,184,166,0.2)" : "rgba(255,255,255,0.05)",
+                  border: form.service_name === s.service ? "1px solid rgba(20,184,166,0.4)" : "1px solid rgba(255,255,255,0.1)",
+                  color: form.service_name === s.service ? "#2dd4bf" : "#94a3b8",
+                  cursor: "pointer",
+                }}
+              >{s.label}</button>
+            ))}
+          </div>
+        </div>
+
+        <form onSubmit={handleSubmit}>
+          {/* Service name */}
+          <div style={{ marginBottom: "16px" }}>
+            <label style={{ display: "block", fontSize: "12px", color: "#94a3b8",
+              marginBottom: "6px", fontWeight: 600 }}>Service Name</label>
+            <input
+              value={form.service_name}
+              onChange={e => setForm(f => ({ ...f, service_name: e.target.value }))}
+              placeholder="e.g. payment-service"
+              style={{ width: "100%", background: "#0f172a", border: "1px solid rgba(255,255,255,0.1)",
+                borderRadius: "8px", padding: "10px 12px", color: "#f1f5f9",
+                fontSize: "14px", outline: "none", boxSizing: "border-box" }}
+            />
+          </div>
+
+          {/* Error message */}
+          <div style={{ marginBottom: "16px" }}>
+            <label style={{ display: "block", fontSize: "12px", color: "#94a3b8",
+              marginBottom: "6px", fontWeight: 600 }}>Error Message</label>
+            <textarea
+              value={form.error_message}
+              onChange={e => setForm(f => ({ ...f, error_message: e.target.value }))}
+              rows={3}
+              placeholder="PaymentError: Stripe API timeout after 30s"
+              style={{ width: "100%", background: "#0f172a", border: "1px solid rgba(255,255,255,0.1)",
+                borderRadius: "8px", padding: "10px 12px", color: "#f1f5f9",
+                fontSize: "13px", outline: "none", resize: "vertical",
+                fontFamily: "monospace", boxSizing: "border-box" }}
+            />
+          </div>
+
+          {/* Count + severity row */}
+          <div style={{ display: "flex", gap: "12px", marginBottom: "20px" }}>
+            <div style={{ flex: 1 }}>
+              <label style={{ display: "block", fontSize: "12px", color: "#94a3b8",
+                marginBottom: "6px", fontWeight: 600 }}>Error Count (in window)</label>
+              <input
+                type="number"
+                min={1}
+                max={999}
+                value={form.error_count}
+                onChange={e => setForm(f => ({ ...f, error_count: parseInt(e.target.value) || 1 }))}
+                style={{ width: "100%", background: "#0f172a", border: "1px solid rgba(255,255,255,0.1)",
+                  borderRadius: "8px", padding: "10px 12px", color: "#f1f5f9",
+                  fontSize: "14px", outline: "none" }}
+              />
+            </div>
+            <div style={{ flex: 1 }}>
+              <label style={{ display: "block", fontSize: "12px", color: "#94a3b8",
+                marginBottom: "6px", fontWeight: 600 }}>Severity</label>
+              <select
+                value={form.severity}
+                onChange={e => setForm(f => ({ ...f, severity: e.target.value }))}
+                style={{ width: "100%", background: "#0f172a", border: "1px solid rgba(255,255,255,0.1)",
+                  borderRadius: "8px", padding: "10px 12px", color: "#f1f5f9",
+                  fontSize: "14px", outline: "none" }}
+              >
+                {["p0", "p1", "p2", "p3"].map(s => (
+                  <option key={s} value={s}>{s.toUpperCase()} – {{ p0: "Critical", p1: "High", p2: "Medium", p3: "Low" }[s]}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {/* Result / error */}
+          {result && (
+            <div style={{ background: "rgba(34,197,94,0.1)", border: "1px solid rgba(34,197,94,0.3)",
+              borderRadius: "8px", padding: "12px 16px", marginBottom: "16px" }}>
+              <div style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}>
+                <CheckCircle size={16} color="#4ade80" style={{ flexShrink: 0, marginTop: "1px" }} />
+                <div>
+                  <div style={{ fontSize: "13px", fontWeight: 600, color: "#4ade80", marginBottom: "4px" }}>
+                    Simulation running!
+                  </div>
+                  <div style={{ fontSize: "12px", color: "#94a3b8", lineHeight: 1.5 }}>{result.message}</div>
+                  <div style={{ marginTop: "8px" }}>
+                    <a href="/rrt-briefs" style={{ fontSize: "12px", color: "#2dd4bf", textDecoration: "none",
+                      display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                      <ExternalLink size={11} /> View RRT Briefs →
+                    </a>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+          {err && (
+            <div style={{ background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.3)",
+              borderRadius: "8px", padding: "12px 16px", marginBottom: "16px",
+              fontSize: "13px", color: "#f87171" }}>{err}</div>
+          )}
+
+          <div style={{ display: "flex", gap: "12px", justifyContent: "flex-end" }}>
+            <button type="button" onClick={onClose}
+              style={{ padding: "10px 20px", borderRadius: "8px",
+                background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)",
+                color: "#94a3b8", fontSize: "14px", cursor: "pointer" }}>
+              {result ? "Close" : "Cancel"}
+            </button>
+            {!result && (
+              <button type="submit" disabled={loading || !form.service_name.trim() || !form.error_message.trim()}
+                style={{ padding: "10px 20px", borderRadius: "8px",
+                  background: loading ? "rgba(20,184,166,0.5)" : "rgba(20,184,166,0.9)",
+                  border: "none", color: "#fff", fontSize: "14px",
+                  fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: "8px",
+                  opacity: (!form.service_name.trim() || !form.error_message.trim()) ? 0.5 : 1 }}>
+                {loading && <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} />}
+                <Zap size={14} />
+                {loading ? "Dispatching…" : "Run Simulation"}
+              </button>
+            )}
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+
 // ─── Main Page ───────────────────────────────────────────────────────────────
 
 export default function IncidentsPage() {
@@ -541,6 +769,7 @@ export default function IncidentsPage() {
   const [filterSeverity, setFilterSeverity] = useState("");
   const [selected, setSelected] = useState<Incident | null>(null);
   const [showNew, setShowNew] = useState(false);
+  const [showSimulate, setShowSimulate] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -598,6 +827,12 @@ export default function IncidentsPage() {
     setIncidents(prev => prev.map(i => i.id === updated.id ? updated : i));
   }
 
+  async function handleSimulate(data: { service_name: string; error_message: string; error_count: number; severity: string }) {
+    const token = await getToken();
+    if (!token) throw new Error("Not authenticated");
+    await logOpsApi.simulate(token, data);
+  }
+
   async function refreshSelected() {
     if (!selected) return;
     const token = await getToken();
@@ -650,6 +885,13 @@ export default function IncidentsPage() {
                 color: "#94a3b8", fontSize: "13px", cursor: "pointer",
                 display: "flex", alignItems: "center", gap: "6px" }}>
               <RefreshCw size={14} /> Refresh
+            </button>
+            <button onClick={() => setShowSimulate(true)}
+              style={{ padding: "10px 18px", borderRadius: "8px",
+                background: "rgba(20,184,166,0.15)", border: "1px solid rgba(20,184,166,0.4)",
+                color: "#2dd4bf", fontSize: "13px", fontWeight: 600, cursor: "pointer",
+                display: "flex", alignItems: "center", gap: "8px" }}>
+              <Zap size={14} /> Simulate Alert
             </button>
             <button onClick={() => setShowNew(true)}
               style={{ padding: "10px 18px", borderRadius: "8px",
@@ -796,6 +1038,12 @@ export default function IncidentsPage() {
       </div>
 
       {/* Modals */}
+      {showSimulate && (
+        <SimulateAlertModal
+          onClose={() => setShowSimulate(false)}
+          onSimulate={handleSimulate}
+        />
+      )}
       {showNew && (
         <NewIncidentModal onClose={() => setShowNew(false)} onCreate={handleCreate} />
       )}

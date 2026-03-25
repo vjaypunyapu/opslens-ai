@@ -342,3 +342,101 @@ export const integrationsApi = {
       token,
     }),
 };
+
+// ─── Log Ops / Simulate ───────────────────────────────────────────────────────
+
+export interface SimulateAlertResponse {
+  status: string;
+  message: string;
+  enrich_task_id: string | null;
+  rrt_task_id: string | null;
+  error_signature: string;
+  service_name: string;
+}
+
+export const logOpsApi = {
+  simulate: (
+    token: string,
+    data: {
+      service_name: string;
+      error_message: string;
+      error_count?: number;
+      severity?: string;
+      webhook_url?: string;
+    },
+  ) =>
+    request<SimulateAlertResponse>("/log-ops/simulate", {
+      method: "POST",
+      body: JSON.stringify(data),
+      token,
+    }),
+};
+
+// ─── RRT Briefs ───────────────────────────────────────────────────────────────
+
+export interface RRTBrief {
+  id: string;
+  title: string;
+  what_happened: string;
+  impact: string | null;
+  started_at: string | null;
+  detected_at: string;
+  suspected_cause: string | null;
+  next_actions: string[];
+  related_items: {
+    source_type: string;
+    title: string;
+    url: string | null;
+    snippet: string;
+    score: number;
+  }[];
+  owner_team: string | null;
+  owner_contacts: string[];
+  status: string;
+  resolved_at: string | null;
+  resolution_notes: string | null;
+  error_signature: string | null;
+  error_sample: string | null;
+  channels_sent: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export const rrtBriefsApi = {
+  list: (token: string, params?: { status?: string; days?: number; limit?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.status) qs.set("status", params.status);
+    if (params?.days)   qs.set("days",   String(params.days));
+    if (params?.limit)  qs.set("limit",  String(params.limit));
+    const query = qs.toString() ? `?${qs}` : "";
+    return request<RRTBrief[]>(`/rrt-briefs${query}`, { token });
+  },
+
+  get: (token: string, id: string) =>
+    request<RRTBrief>(`/rrt-briefs/${id}`, { token }),
+
+  update: (token: string, id: string, data: { status?: string; resolution_notes?: string; impact?: string; owner_team?: string }) =>
+    request<RRTBrief>(`/rrt-briefs/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+      token,
+    }),
+
+  postUpdate: (token: string, id: string, data: { update_text: string; status?: string }) =>
+    request<{ message: string; new_status: string; slack_notified: boolean }>(
+      `/rrt-briefs/${id}/update`,
+      { method: "POST", body: JSON.stringify(data), token },
+    ),
+
+  generate: (
+    token: string,
+    data: { service_name: string; error_message: string; error_count?: number; webhook_url?: string },
+  ) =>
+    request<{ status: string; task_id: string; message: string; error_signature: string }>(
+      "/rrt-briefs/generate",
+      { method: "POST", body: JSON.stringify(data), token },
+    ),
+
+  delete: (token: string, id: string) =>
+    request<void>(`/rrt-briefs/${id}`, { method: "DELETE", token }),
+};

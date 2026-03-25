@@ -77,6 +77,90 @@ class PostUpdateRequest(BaseModel):
     )
 
 
+# ── Manual generate (demo/testing) ───────────────────────────────────────────
+
+class GenerateBriefRequest(BaseModel):
+    service_name: str = Field(..., min_length=1, max_length=100)
+    error_message: str = Field(..., min_length=5, max_length=1000)
+    error_count: int = Field(default=12, ge=1, le=999)
+    webhook_url: str | None = Field(
+        None,
+        description="Slack webhook override. Falls back to env LOG_FAST_ALERT_SLACK_WEBHOOK.",
+    )
+
+
+@router.post(
+    "/generate",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Manually trigger RRT brief generation (demo / testing)",
+)
+async def generate_rrt_brief_manual(
+    body: GenerateBriefRequest,
+    ctx: Annotated[TenantContext, Depends(require_admin)],
+):
+    """
+    Manually dispatch an RRT brief generation task. Useful for demos and testing
+    when you want to trigger *only* the brief (without the full alert pipeline).
+
+    For the full end-to-end demo (fast alert → enrichment → brief), use
+    `POST /api/v1/log-ops/simulate` instead.
+    """
+    import hashlib as _hashlib
+    import re as _re
+    from apps.api.config import settings as cfg
+
+    webhook = body.webhook_url or cfg.LOG_FAST_ALERT_SLACK_WEBHOOK or cfg.LOG_SCAN_SLACK_WEBHOOK
+    if not webhook:
+        raise HTTPException(
+            status_code=422,
+            detail="No Slack webhook configured. Provide webhook_url or set LOG_FAST_ALERT_SLACK_WEBHOOK.",
+        )
+
+    normalised = _re.sub(r"\b[0-9a-f]{8,}\b", "<hex>", body.error_message)
+    normalised = _re.sub(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}[.,\d]*", "<ts>", normalised)
+    signature = _hashlib.md5(normalised[:120].encode()).hexdigest()
+
+    error_group_dict = {
+        "signature": signature,
+        "first_line": f"[DEMO] {body.service_name}: {body.error_message}",
+        "count": body.error_count,
+        "sample_lines": [
+            f"[SIMULATED] ERROR {body.service_name}: {body.error_message}",
+            f"    Traceback (most recent call last):",
+            f"      File \"{body.service_name}/main.py\", line 42, in handle_request",
+            f"    {body.error_message}",
+            f"    [Count in window: {body.error_count} occurrences]",
+        ],
+    }
+
+    routing_targets = [{"team_name": "Demo Team", "slack_webhook": webhook, "email_recipients": []}]
+
+    try:
+        from apps.worker.tasks.rrt_briefing import generate_rrt_brief
+        task = generate_rrt_brief.delay(
+            tenant_id=str(ctx.tenant_id),
+            error_group_dict=error_group_dict,
+            related_items=[],
+            routing_targets=routing_targets,
+            error_count=body.error_count,
+            window_minutes=5,
+        )
+        return {
+            "status": "dispatched",
+            "task_id": task.id,
+            "message": (
+                "RRT brief generation started. Check your Slack channel in ~20–30 seconds "
+                "and visit /api/v1/rrt-briefs to see the result."
+            ),
+            "error_signature": signature,
+        }
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Could not dispatch task — is the Celery worker running? ({exc})",
+        )
+
+
 # ── List briefs ───────────────────────────────────────────────────────────────
 @router.get("", response_model=list[RRTBriefOut])
 async def list_rrt_briefs(
