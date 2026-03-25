@@ -33,6 +33,7 @@ from langchain_core.documents import Document
 
 from ..config import settings
 from ..utils.logging import get_logger
+from . import telemetry
 
 logger = get_logger(__name__)
 
@@ -284,14 +285,28 @@ async def hybrid_retrieve(
 
     dense_docs, bm25_docs = [], []
 
+    import time
+
     try:
+        t0 = time.monotonic()
         dense_docs = await _dense_search(query_vector, collection, top_k=k * 2)
+        telemetry.record_latency_span(
+            "retrieval_dense",
+            latency_ms=(time.monotonic() - t0) * 1000,
+            metadata={"docs": len(dense_docs), "collection": collection},
+        )
         logger.info("hybrid_retrieve: dense=%d", len(dense_docs))
     except Exception as exc:
         logger.warning("hybrid_retrieve: dense search failed: %s", exc)
 
     try:
+        t0 = time.monotonic()
         bm25_docs = await _bm25_search(query, tenant_id, top_k=k * 2)
+        telemetry.record_latency_span(
+            "retrieval_bm25",
+            latency_ms=(time.monotonic() - t0) * 1000,
+            metadata={"docs": len(bm25_docs)},
+        )
         logger.info("hybrid_retrieve: bm25=%d", len(bm25_docs))
     except Exception as exc:
         logger.warning("hybrid_retrieve: BM25 search failed: %s", exc)
@@ -303,6 +318,12 @@ async def hybrid_retrieve(
     merged = _rrf_merge(dense_docs, bm25_docs)
     logger.info("hybrid_retrieve: after RRF merge=%d", len(merged))
 
+    t0 = time.monotonic()
     final = await _cohere_rerank(query, merged, top_k=k)
+    telemetry.record_latency_span(
+        "retrieval_rerank",
+        latency_ms=(time.monotonic() - t0) * 1000,
+        metadata={"candidates_in": len(merged), "docs_out": len(final)},
+    )
     logger.info("hybrid_retrieve: final=%d docs", len(final))
     return final

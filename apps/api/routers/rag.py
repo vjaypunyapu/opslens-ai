@@ -271,6 +271,49 @@ async def submit_feedback(
     logger.info("Feedback %s on message %s", msg.feedback, body.message_id)
 
 
+# ── Telemetry / metrics ────────────────────────────────────────────────────────
+@router.get("/metrics")
+async def get_metrics(
+    ctx: Annotated[TenantContext, Depends(require_viewer)],
+    n: int = 50,
+):
+    """
+    Return aggregated performance metrics for the current tenant's RAG queries.
+
+    Response shape:
+      {
+        "summary": {
+          "total_traces": int,
+          "avg_latency_ms": float,
+          "p95_latency_ms": float,
+          "avg_cost_usd": float,
+          "total_cost_usd": float,
+          "avg_tokens": float,
+          "validation_failure_rate": float,   // 0.0–1.0
+          "retry_rate": float,
+          "error_rate": float,
+          "step_breakdown": {
+            "planner":    { avg_latency_ms, avg_cost_usd, avg_tokens, calls },
+            "retrieval":  { ... },
+            "generation": { ... },
+            "auditor":    { ... },
+            "gatekeeper": { ... },
+            "strategist": { ... },
+            "hyde":       { ... }   // ingestion-time cost
+          }
+        },
+        "recent_traces": [ { trace details } ]
+      }
+    """
+    from ..services.telemetry import get_store
+    store  = get_store()
+    tid    = str(ctx.tenant_uuid)
+    return {
+        "summary":       store.summary(tenant_id=tid),
+        "recent_traces": [t.to_dict() for t in store.recent(n=n, tenant_id=tid)],
+    }
+
+
 # ── Helpers ────────────────────────────────────────────────────────────────────
 async def _get_session_or_404(db, session_id: str, tenant_id: str) -> ChatSession:
     result = await db.execute(
@@ -306,3 +349,4 @@ def _message_to_out(m: ChatMessage) -> MessageOut:
         feedback=m.feedback,  # already SMALLINT (int | None)
         created_at=m.created_at.isoformat(),
     )
+

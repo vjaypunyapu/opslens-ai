@@ -53,6 +53,7 @@ from ..config import settings
 from ..utils.logging import get_logger
 from .hybrid_retriever import hybrid_retrieve
 from .validator import validate_answer, FullValidation
+from . import telemetry
 
 logger = get_logger(__name__)
 
@@ -112,11 +113,15 @@ Output JSON only:
 
 async def _plan_node(state: PlannerState) -> PlannerState:
     """Decompose the question into sub-queries."""
+    import time
+    t0 = time.monotonic()
+    model = "gpt-4o-mini"
+    in_tok = out_tok = 0
     try:
         from openai import AsyncOpenAI
         client = AsyncOpenAI(api_key=_openai_key())
         resp = await client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=model,
             temperature=0.0,
             response_format={"type": "json_object"},
             messages=[
@@ -124,15 +129,22 @@ async def _plan_node(state: PlannerState) -> PlannerState:
                 {"role": "user",   "content": state.question},
             ],
         )
+        in_tok  = resp.usage.prompt_tokens     if resp.usage else 0
+        out_tok = resp.usage.completion_tokens if resp.usage else 0
         data = json.loads(resp.choices[0].message.content or '{"queries":[]}')
         queries = data.get("queries", [state.question])
-        # Sanitise
         state.sub_queries = [q.strip() for q in queries if q.strip()][:MAX_SUB_QUERIES]
         if not state.sub_queries:
             state.sub_queries = [state.question]
     except Exception as exc:
         logger.warning("plan_node failed (%s), falling back to single query", exc)
         state.sub_queries = [state.question]
+    finally:
+        telemetry.record_llm_span(
+            "planner", model, in_tok, out_tok,
+            latency_ms=(time.monotonic() - t0) * 1000,
+            metadata={"sub_queries": len(state.sub_queries)},
+        )
 
     logger.info("plan_node: %d sub-queries: %s", len(state.sub_queries), state.sub_queries)
     return state
@@ -141,6 +153,9 @@ async def _plan_node(state: PlannerState) -> PlannerState:
 # ── Node: Retrieve ────────────────────────────────────────────────────────────
 async def _retrieve_node(state: PlannerState) -> PlannerState:
     """Run hybrid_retrieve for each sub-query in parallel, then deduplicate."""
+    import time
+    t0 = time.monotonic()
+
     tasks = [
         hybrid_retrieve(q, state.tenant_id, top_k=TOP_K)
         for q in state.sub_queries
@@ -159,9 +174,17 @@ async def _retrieve_node(state: PlannerState) -> PlannerState:
                 seen_content.add(key)
                 merged.append(doc)
 
-    # Keep top-K by RRF score if available, else just cap
     merged.sort(key=lambda d: -d.metadata.get("_rrf_score", 0.0))
     state.retrieved_docs = merged[:TOP_K * 2]
+
+    telemetry.record_latency_span(
+        "retrieval",
+        latency_ms=(time.monotonic() - t0) * 1000,
+        metadata={
+            "sub_queries":   len(state.sub_queries),
+            "docs_returned": len(state.retrieved_docs),
+        },
+    )
     logger.info("retrieve_node: merged %d unique docs", len(state.retrieved_docs))
     return state
 
@@ -196,6 +219,10 @@ Use markdown formatting. Cite sources with [N] notation where relevant."""
 
 async def _generate_node(state: PlannerState) -> PlannerState:
     """Generate an answer using the retrieved docs."""
+    import time
+    t0 = time.monotonic()
+    in_tok = out_tok = 0
+
     context = _build_context(state.retrieved_docs)
     if not context.strip():
         state.answer = (
@@ -206,28 +233,30 @@ async def _generate_node(state: PlannerState) -> PlannerState:
 
     messages = [
         {"role": "system", "content": _GENERATE_SYSTEM},
-        {"role": "user",   "content": (
-            f"Context:\n{context}\n\n"
-            f"Question: {state.question}"
-        )},
+        {"role": "user",   "content": f"Context:\n{context}\n\nQuestion: {state.question}"},
     ]
+    model_name = settings.OPENAI_CHAT_MODEL
 
     try:
         if settings.LLM_PROVIDER == "claude":
             from anthropic import AsyncAnthropic
-            client   = AsyncAnthropic(api_key=_anthropic_key())
-            response = await client.messages.create(
-                model=settings.ANTHROPIC_CHAT_MODEL,
+            model_name = settings.ANTHROPIC_CHAT_MODEL
+            client     = AsyncAnthropic(api_key=_anthropic_key())
+            response   = await client.messages.create(
+                model=model_name,
                 max_tokens=settings.OPENAI_MAX_TOKENS,
                 system=_GENERATE_SYSTEM,
                 messages=[m for m in messages if m["role"] != "system"],
             )
             state.answer = response.content[0].text
+            in_tok  = response.usage.input_tokens
+            out_tok = response.usage.output_tokens
         elif settings.LLM_PROVIDER == "ollama":
             import httpx
+            model_name = settings.OLLAMA_CHAT_MODEL
             resp = await httpx.AsyncClient(timeout=120).post(
                 f"{settings.OLLAMA_URL}/api/chat",
-                json={"model": settings.OLLAMA_CHAT_MODEL, "messages": messages, "stream": False},
+                json={"model": model_name, "messages": messages, "stream": False},
             )
             resp.raise_for_status()
             state.answer = resp.json()["message"]["content"]
@@ -235,17 +264,26 @@ async def _generate_node(state: PlannerState) -> PlannerState:
             from openai import AsyncOpenAI
             client = AsyncOpenAI(api_key=_openai_key())
             resp   = await client.chat.completions.create(
-                model=settings.OPENAI_CHAT_MODEL,
+                model=model_name,
                 temperature=settings.OPENAI_TEMPERATURE,
                 max_tokens=settings.OPENAI_MAX_TOKENS,
                 messages=messages,
             )
             state.answer = resp.choices[0].message.content or ""
+            in_tok  = resp.usage.prompt_tokens     if resp.usage else 0
+            out_tok = resp.usage.completion_tokens if resp.usage else 0
     except Exception as exc:
         logger.error("generate_node: LLM call failed: %s", exc)
         state.answer = f"An error occurred generating the response: {exc}"
+    finally:
+        telemetry.record_llm_span(
+            "generation", model_name, in_tok, out_tok,
+            latency_ms=(time.monotonic() - t0) * 1000,
+            metadata={"context_docs": len(state.retrieved_docs)},
+        )
 
-    logger.info("generate_node: answer len=%d", len(state.answer))
+    logger.info("generate_node: answer len=%d tokens_in=%d tokens_out=%d",
+                len(state.answer), in_tok, out_tok)
     return state
 
 

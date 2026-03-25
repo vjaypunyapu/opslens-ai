@@ -223,31 +223,42 @@ class RagService:
             {"type": "error",   "message": "<str>"}
         """
         import time
-        start = time.monotonic()
-        logger.info("RAG: stream called tenant=%s question=%r", tenant_id, question[:80])
+        import uuid as _uuid
+        from . import telemetry
+
+        start    = time.monotonic()
+        trace_id = str(_uuid.uuid4())
+        telemetry.start_trace(trace_id, tenant_id, question)
+        logger.info("RAG: trace=%s tenant=%s question=%r", trace_id[:8], tenant_id, question[:80])
+
+        validation_passed = True
+        retry_count       = 0
+        error_msg         = ""
 
         try:
-            from .planner import plan_and_answer, PlannerState
+            from .planner import plan_and_answer
 
-            # Run full planner graph (plan → hybrid retrieve → generate → validate)
             answer, state = await plan_and_answer(question, tenant_id)
 
-            # Stream answer word-by-word for a responsive UX
-            words = answer.split(" ")
-            for i, word in enumerate(words):
-                yield {"type": "token", "data": word + (" " if i < len(words) - 1 else "")}
-
-            # Emit validation metadata as a debug event (optional, UI can ignore)
             if state.validation:
+                validation_passed = state.validation.passed
+                retry_count       = state.iteration - 1
                 logger.info(
-                    "RAG: validation scores A:%.2f G:%.2f S:%.2f passed=%s",
+                    "RAG: trace=%s validation A:%.2f G:%.2f S:%.2f passed=%s retries=%d",
+                    trace_id[:8],
                     state.validation.auditor.score,
                     state.validation.gatekeeper.score,
                     state.validation.strategist.score,
                     state.validation.passed,
+                    retry_count,
                 )
 
-            # Emit source metadata from retrieved docs
+            # Stream answer word-by-word
+            words = answer.split(" ")
+            for i, word in enumerate(words):
+                yield {"type": "token", "data": word + (" " if i < len(words) - 1 else "")}
+
+            # Source citations
             docs = state.retrieved_docs
             sources = [
                 {
@@ -259,11 +270,22 @@ class RagService:
                 for doc in docs
             ]
             yield {"type": "sources", "data": sources}
-            yield {"type": "done", "latency_ms": int((time.monotonic() - start) * 1000)}
+
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            yield {"type": "done", "latency_ms": elapsed_ms, "trace_id": trace_id}
 
         except Exception as exc:
-            logger.exception("RAG pipeline error for tenant=%s", tenant_id)
-            yield {"type": "error", "message": str(exc)}
+            error_msg = str(exc)
+            logger.exception("RAG pipeline error trace=%s tenant=%s", trace_id[:8], tenant_id)
+            yield {"type": "error", "message": error_msg}
+
+        finally:
+            telemetry.finish_trace(
+                trace_id,
+                validation_passed=validation_passed,
+                retry_count=retry_count,
+                error=error_msg,
+            )
 
 
 # ── FastAPI dependency ────────────────────────────────────────────────────────

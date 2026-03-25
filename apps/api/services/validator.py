@@ -41,6 +41,7 @@ from langchain_core.documents import Document
 
 from ..config import settings
 from ..utils.logging import get_logger
+from . import telemetry
 
 logger = get_logger(__name__)
 
@@ -54,16 +55,24 @@ def _openai_key() -> str:
     ).strip()
 
 
-async def _call_validator(system_prompt: str, user_content: str) -> dict[str, Any]:
+async def _call_validator(
+    step: str,
+    system_prompt: str,
+    user_content: str,
+) -> dict[str, Any]:
     """
     Shared helper: calls GPT-4o-mini with a system prompt and returns parsed JSON.
-    Falls back gracefully on any error.
+    Records a telemetry span for the call.  Falls back gracefully on any error.
     """
+    import time
+    t0 = time.monotonic()
+    model = "gpt-4o-mini"
+    in_tok = out_tok = 0
     try:
         from openai import AsyncOpenAI
         client = AsyncOpenAI(api_key=_openai_key())
         resp = await client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=model,
             temperature=0.0,
             response_format={"type": "json_object"},
             messages=[
@@ -71,10 +80,17 @@ async def _call_validator(system_prompt: str, user_content: str) -> dict[str, An
                 {"role": "user",   "content": user_content},
             ],
         )
+        in_tok  = resp.usage.prompt_tokens     if resp.usage else 0
+        out_tok = resp.usage.completion_tokens if resp.usage else 0
         return json.loads(resp.choices[0].message.content or "{}")
     except Exception as exc:
-        logger.warning("validator LLM call failed: %s", exc)
+        logger.warning("validator LLM call failed (%s): %s", step, exc)
         return {}
+    finally:
+        telemetry.record_llm_span(
+            step, model, in_tok, out_tok,
+            latency_ms=(time.monotonic() - t0) * 1000,
+        )
 
 
 # ── Result type ───────────────────────────────────────────────────────────────
@@ -151,7 +167,7 @@ async def run_auditor(
         f"CONTEXT PASSAGES:\n{context_text}\n\n"
         f"GENERATED ANSWER:\n{answer}"
     )
-    raw = await _call_validator(_AUDITOR_SYSTEM, user_content)
+    raw = await _call_validator("auditor", _AUDITOR_SYSTEM, user_content)
     return ValidationResult(
         node="auditor",
         passed=bool(raw.get("passed", True)),
@@ -183,7 +199,7 @@ async def run_gatekeeper(
     answer: str,
 ) -> ValidationResult:
     user_content = f"QUESTION:\n{question}\n\nGENERATED ANSWER:\n{answer}"
-    raw = await _call_validator(_GATEKEEPER_SYSTEM, user_content)
+    raw = await _call_validator("gatekeeper", _GATEKEEPER_SYSTEM, user_content)
     result = ValidationResult(
         node="gatekeeper",
         passed=bool(raw.get("passed", True)),
@@ -219,7 +235,7 @@ async def run_strategist(
     answer: str,
 ) -> ValidationResult:
     user_content = f"QUESTION:\n{question}\n\nGENERATED ANSWER:\n{answer}"
-    raw = await _call_validator(_STRATEGIST_SYSTEM, user_content)
+    raw = await _call_validator("strategist", _STRATEGIST_SYSTEM, user_content)
     return ValidationResult(
         node="strategist",
         passed=bool(raw.get("passed", True)),

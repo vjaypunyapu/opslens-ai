@@ -51,6 +51,7 @@ import tiktoken
 
 from ..config import settings
 from ..utils.logging import get_logger
+from . import telemetry
 
 logger = get_logger(__name__)
 
@@ -547,6 +548,9 @@ async def _enrich_batch(chunks: list[StructuredChunk]) -> None:
         for i, c in enumerate(to_enrich)
     )
 
+    import time
+    t0 = time.monotonic()
+    in_tok = out_tok = 0
     try:
         resp = await client.chat.completions.create(
             model=HYDE_MODEL,
@@ -557,8 +561,9 @@ async def _enrich_batch(chunks: list[StructuredChunk]) -> None:
                 {"role": "user",   "content": numbered},
             ],
         )
+        in_tok  = resp.usage.prompt_tokens     if resp.usage else 0
+        out_tok = resp.usage.completion_tokens if resp.usage else 0
         raw  = json.loads(resp.choices[0].message.content or "[]")
-        # The model may return {"chunks": [...]} or just [...]
         items: list = raw if isinstance(raw, list) else (
             raw.get("chunks") or raw.get("results") or list(raw.values())[0]
             if isinstance(raw, dict) else []
@@ -570,6 +575,14 @@ async def _enrich_batch(chunks: list[StructuredChunk]) -> None:
             to_enrich[i].hypothetical_questions = [q for q in qs if isinstance(q, str)]
     except Exception as exc:
         logger.warning("hyde enrichment failed: %s", exc)
+    finally:
+        # Record under "hyde" step — uses current trace_id if set (ingestion),
+        # or logs silently to the store if no trace is active (offline sync).
+        telemetry.record_llm_span(
+            "hyde", HYDE_MODEL, in_tok, out_tok,
+            latency_ms=(time.monotonic() - t0) * 1000,
+            metadata={"chunks_enriched": len(to_enrich)},
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
