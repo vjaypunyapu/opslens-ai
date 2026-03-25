@@ -33,7 +33,7 @@ from typing import Annotated
 
 import sqlalchemy as sa
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field, EmailStr
+from pydantic import BaseModel, Field
 
 from ..auth.dependencies import TenantContext, require_admin, require_member
 from ..db.session import get_db
@@ -97,7 +97,7 @@ class RoleUpdate(BaseModel):
 
 
 class InviteRequest(BaseModel):
-    email: EmailStr
+    email: str
     team_id: str | None = None
     role: str = Field(default="member", pattern="^(admin|member|viewer)$")
     team_role: str = Field(default="member", pattern="^(member|admin)$")
