@@ -272,7 +272,12 @@ class RagService:
             yield {"type": "sources", "data": sources}
 
             elapsed_ms = int((time.monotonic() - start) * 1000)
-            yield {"type": "done", "latency_ms": elapsed_ms, "trace_id": trace_id}
+            yield {
+                "type":       "done",
+                "latency_ms": elapsed_ms,
+                "trace_id":   trace_id,
+                "model_tier": state.model_tier,   # "mini" | "full" — useful for cost debugging
+            }
 
         except Exception as exc:
             error_msg = str(exc)

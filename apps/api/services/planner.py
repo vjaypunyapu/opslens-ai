@@ -79,6 +79,13 @@ def _anthropic_key() -> str:
     ).strip()
 
 
+# ── Model tiers ───────────────────────────────────────────────────────────────
+# "mini"  → gpt-4o-mini  (~87% cheaper, used for direct lookups)
+# "full"  → gpt-4o        (used for reasoning, cross-source, analysis)
+_MODEL_MINI = "gpt-4o-mini"
+_MODEL_FULL = "gpt-4o"          # overridden by settings.OPENAI_CHAT_MODEL at runtime
+
+
 # ── State dataclass ───────────────────────────────────────────────────────────
 @dataclass
 class PlannerState:
@@ -89,6 +96,7 @@ class PlannerState:
     answer:         str                   = ""
     validation:     FullValidation | None = None
     iteration:      int                   = 0
+    model_tier:     str                   = "full"   # "mini" | "full"
     metadata:       dict[str, Any]        = field(default_factory=dict)
 
 
@@ -97,17 +105,26 @@ _PLAN_SYSTEM = """\
 You are a query planning assistant for an enterprise knowledge-retrieval system
 that has data from GitHub, Jira, and Slack.
 
-Given a user question, decompose it into 1–{max_sub} specific search queries
-that together will retrieve all the evidence needed to answer it completely.
+Given a user question, do two things in a single JSON response:
 
-Rules:
-- If the question is simple and single-topic, emit exactly 1 query (= the question itself).
-- If the question spans multiple sources or concepts, emit 2–{max_sub} targeted queries.
-- Each query should be a natural search phrase (not a question), optimised for keyword and semantic retrieval.
-- Do NOT add queries for information that isn't needed.
+1. DECOMPOSE into 1–{max_sub} specific search queries that together retrieve all
+   evidence needed to answer the question completely.
+   - Simple, single-topic questions → exactly 1 query.
+   - Questions spanning multiple sources or concepts → 2–{max_sub} targeted queries.
+   - Each query should be a natural search phrase optimised for keyword and semantic retrieval.
 
-Output JSON only:
-  {{"queries": ["query1", "query2", ...]}}
+2. CLASSIFY the complexity as either "simple" or "complex":
+   - "simple": direct factual lookup, single data source likely sufficient, no
+     reasoning or comparison required.
+     Examples: "status of AUTH-123", "who owns the payments service",
+               "latest commit on main", "is PROJ-45 resolved?"
+   - "complex": requires reasoning, comparison, cross-source analysis, time-range
+     synthesis, or the answer depends on multiple interconnected facts.
+     Examples: "what's blocking the sprint", "why did error rate spike yesterday",
+               "compare PR review time across teams", "summarise all open bugs"
+
+Output JSON only — two keys, nothing else:
+  {{"queries": ["query1", ...], "complexity": "simple" | "complex"}}
 """.replace("{max_sub}", str(MAX_SUB_QUERIES))
 
 
@@ -136,17 +153,29 @@ async def _plan_node(state: PlannerState) -> PlannerState:
         state.sub_queries = [q.strip() for q in queries if q.strip()][:MAX_SUB_QUERIES]
         if not state.sub_queries:
             state.sub_queries = [state.question]
+
+        # Route model tier from classifier output.
+        # Fall back to "mini" when there's only 1 sub-query even if unclassified —
+        # a single focused query is almost always a direct lookup.
+        complexity = data.get("complexity", "")
+        if complexity == "simple" or (not complexity and len(state.sub_queries) == 1):
+            state.model_tier = "mini"
+        else:
+            state.model_tier = "full"
+
     except Exception as exc:
         logger.warning("plan_node failed (%s), falling back to single query", exc)
         state.sub_queries = [state.question]
+        state.model_tier  = "full"   # safe default on error
     finally:
         telemetry.record_llm_span(
             "planner", model, in_tok, out_tok,
             latency_ms=(time.monotonic() - t0) * 1000,
-            metadata={"sub_queries": len(state.sub_queries)},
+            metadata={"sub_queries": len(state.sub_queries), "model_tier": state.model_tier},
         )
 
-    logger.info("plan_node: %d sub-queries: %s", len(state.sub_queries), state.sub_queries)
+    logger.info("plan_node: %d sub-queries tier=%s queries=%s",
+                len(state.sub_queries), state.model_tier, state.sub_queries)
     return state
 
 
@@ -235,14 +264,23 @@ async def _generate_node(state: PlannerState) -> PlannerState:
         {"role": "system", "content": _GENERATE_SYSTEM},
         {"role": "user",   "content": f"Context:\n{context}\n\nQuestion: {state.question}"},
     ]
-    model_name = settings.OPENAI_CHAT_MODEL
+
+    # ── Model routing ─────────────────────────────────────────────────────────
+    # Simple / single-source queries use gpt-4o-mini (~87% cheaper per token).
+    # Complex / multi-source / reasoning queries use the full model.
+    # For non-OpenAI providers we don't have a cheap variant — use the configured model.
+    if settings.LLM_PROVIDER == "openai":
+        model_name = _MODEL_MINI if state.model_tier == "mini" else settings.OPENAI_CHAT_MODEL
+    elif settings.LLM_PROVIDER == "claude":
+        model_name = settings.ANTHROPIC_CHAT_MODEL
+    else:
+        model_name = settings.OLLAMA_CHAT_MODEL
 
     try:
         if settings.LLM_PROVIDER == "claude":
             from anthropic import AsyncAnthropic
-            model_name = settings.ANTHROPIC_CHAT_MODEL
-            client     = AsyncAnthropic(api_key=_anthropic_key())
-            response   = await client.messages.create(
+            client   = AsyncAnthropic(api_key=_anthropic_key())
+            response = await client.messages.create(
                 model=model_name,
                 max_tokens=settings.OPENAI_MAX_TOKENS,
                 system=_GENERATE_SYSTEM,
@@ -253,7 +291,6 @@ async def _generate_node(state: PlannerState) -> PlannerState:
             out_tok = response.usage.output_tokens
         elif settings.LLM_PROVIDER == "ollama":
             import httpx
-            model_name = settings.OLLAMA_CHAT_MODEL
             resp = await httpx.AsyncClient(timeout=120).post(
                 f"{settings.OLLAMA_URL}/api/chat",
                 json={"model": model_name, "messages": messages, "stream": False},
@@ -279,11 +316,11 @@ async def _generate_node(state: PlannerState) -> PlannerState:
         telemetry.record_llm_span(
             "generation", model_name, in_tok, out_tok,
             latency_ms=(time.monotonic() - t0) * 1000,
-            metadata={"context_docs": len(state.retrieved_docs)},
+            metadata={"context_docs": len(state.retrieved_docs), "tier": state.model_tier},
         )
 
-    logger.info("generate_node: answer len=%d tokens_in=%d tokens_out=%d",
-                len(state.answer), in_tok, out_tok)
+    logger.info("generate_node: tier=%s model=%s answer_len=%d in=%d out=%d",
+                state.model_tier, model_name, len(state.answer), in_tok, out_tok)
     return state
 
 
