@@ -22,7 +22,7 @@ from .auth.middleware import JWTAuthMiddleware
 from .config import settings
 from .db.session import engine, Base
 from .routers import (
-    alerts, dashboard, enterprise, incidents, ingestion, insights,
+    admin, alerts, dashboard, enterprise, incidents, ingestion, insights,
     log_ops, manager_dashboard, rag, retention, rrt_briefs,
     settings as settings_router, timeline, users,
 )
@@ -256,6 +256,73 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE opslens.canonical_documents "
                 "ADD COLUMN IF NOT EXISTS chunk_count INTEGER"
             ))
+            await conn.execute(sa.text(
+                "ALTER TABLE opslens.canonical_documents "
+                "ADD COLUMN IF NOT EXISTS source_id VARCHAR(512)"
+            ))
+
+            # ── RBAC: Teams, TeamMembers, TeamResourcePermissions, PendingInvites ──
+            # These are created by create_all() above but may not exist on older
+            # deployments — the ADD COLUMN IF NOT EXISTS statements below are
+            # idempotent guards for rolling upgrades.
+            await conn.execute(sa.text("""
+                CREATE TABLE IF NOT EXISTS opslens.teams (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    tenant_id UUID NOT NULL REFERENCES opslens.tenants(id) ON DELETE CASCADE,
+                    name VARCHAR(255) NOT NULL,
+                    description TEXT,
+                    created_by VARCHAR(255),
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """))
+            await conn.execute(sa.text("""
+                CREATE TABLE IF NOT EXISTS opslens.team_members (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    team_id UUID NOT NULL REFERENCES opslens.teams(id) ON DELETE CASCADE,
+                    user_external_id VARCHAR(255) NOT NULL,
+                    user_email VARCHAR(255),
+                    role VARCHAR(50) NOT NULL DEFAULT 'member',
+                    added_by VARCHAR(255),
+                    added_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CONSTRAINT uq_team_members_user UNIQUE (team_id, user_external_id)
+                )
+            """))
+            await conn.execute(sa.text(
+                "CREATE INDEX IF NOT EXISTS ix_team_members_user_external_id "
+                "ON opslens.team_members (user_external_id)"
+            ))
+            await conn.execute(sa.text("""
+                CREATE TABLE IF NOT EXISTS opslens.team_resource_permissions (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    team_id UUID NOT NULL REFERENCES opslens.teams(id) ON DELETE CASCADE,
+                    source_type VARCHAR(50) NOT NULL,
+                    source_id VARCHAR(512) NOT NULL,
+                    can_read BOOLEAN NOT NULL DEFAULT TRUE,
+                    can_see_metrics BOOLEAN NOT NULL DEFAULT FALSE,
+                    can_see_logs BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CONSTRAINT uq_team_resource UNIQUE (team_id, source_type, source_id)
+                )
+            """))
+            await conn.execute(sa.text("""
+                CREATE TABLE IF NOT EXISTS opslens.pending_invites (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    tenant_id UUID NOT NULL REFERENCES opslens.tenants(id) ON DELETE CASCADE,
+                    team_id UUID REFERENCES opslens.teams(id) ON DELETE SET NULL,
+                    email VARCHAR(255) NOT NULL,
+                    role VARCHAR(50) NOT NULL DEFAULT 'member',
+                    team_role VARCHAR(50) NOT NULL DEFAULT 'member',
+                    invited_by VARCHAR(255),
+                    accepted_at TIMESTAMPTZ,
+                    expires_at TIMESTAMPTZ,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """))
+            await conn.execute(sa.text(
+                "CREATE INDEX IF NOT EXISTS ix_pending_invites_email "
+                "ON opslens.pending_invites (email)"
+            ))
+
         logger.info("Database schema + tables verified / created.")
 
     yield
@@ -298,6 +365,11 @@ def create_app() -> FastAPI:
     # Each router is mounted under its own prefix.
     # Tags appear in the auto-generated Swagger docs.
 
+    app.include_router(
+        admin.router,
+        prefix="/api/v1/admin",
+        tags=["Admin — Teams & RBAC"],
+    )
     app.include_router(
         dashboard.router,
         prefix="/api/v1",

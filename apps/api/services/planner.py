@@ -89,15 +89,17 @@ _MODEL_FULL = "gpt-4o"          # overridden by settings.OPENAI_CHAT_MODEL at ru
 # ── State dataclass ───────────────────────────────────────────────────────────
 @dataclass
 class PlannerState:
-    question:       str
-    tenant_id:      str
-    sub_queries:    list[str]             = field(default_factory=list)
-    retrieved_docs: list[Document]        = field(default_factory=list)
-    answer:         str                   = ""
-    validation:     FullValidation | None = None
-    iteration:      int                   = 0
-    model_tier:     str                   = "full"   # "mini" | "full"
-    metadata:       dict[str, Any]        = field(default_factory=dict)
+    question:        str
+    tenant_id:       str
+    sub_queries:     list[str]             = field(default_factory=list)
+    retrieved_docs:  list[Document]        = field(default_factory=list)
+    answer:          str                   = ""
+    validation:      FullValidation | None = None
+    iteration:       int                   = 0
+    model_tier:      str                   = "full"   # "mini" | "full"
+    metadata:        dict[str, Any]        = field(default_factory=dict)
+    # None = admin/unrestricted; [] = no access; [...] = restricted source list
+    allowed_sources: list[dict] | None     = None
 
 
 # ── Node: Plan ────────────────────────────────────────────────────────────────
@@ -186,7 +188,7 @@ async def _retrieve_node(state: PlannerState) -> PlannerState:
     t0 = time.monotonic()
 
     tasks = [
-        hybrid_retrieve(q, state.tenant_id, top_k=TOP_K)
+        hybrid_retrieve(q, state.tenant_id, top_k=TOP_K, allowed_sources=state.allowed_sources)
         for q in state.sub_queries
     ]
     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -344,12 +346,21 @@ async def _validate_node(state: PlannerState) -> PlannerState:
 
 
 # ── Graph runner ──────────────────────────────────────────────────────────────
-async def _run_graph(question: str, tenant_id: str) -> PlannerState:
+async def _run_graph(
+    question: str,
+    tenant_id: str,
+    allowed_sources: list[dict] | None = None,
+) -> PlannerState:
     """
     Execute the planner graph: plan → retrieve → generate → validate,
     with up to MAX_ITER retry loops using Gatekeeper's missing_queries.
+
+    allowed_sources: passed from the auth layer via permissions.get_allowed_sources().
+        None  → unrestricted (admin)
+        []    → no access
+        [...] → restricted to these source_ids
     """
-    state = PlannerState(question=question, tenant_id=tenant_id)
+    state = PlannerState(question=question, tenant_id=tenant_id, allowed_sources=allowed_sources)
 
     # Step 1: plan
     state = await _plan_node(state)
@@ -386,12 +397,18 @@ async def _run_graph(question: str, tenant_id: str) -> PlannerState:
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
-async def plan_and_answer(question: str, tenant_id: str) -> tuple[str, PlannerState]:
+async def plan_and_answer(
+    question: str,
+    tenant_id: str,
+    allowed_sources: list[dict] | None = None,
+) -> tuple[str, PlannerState]:
     """
     Non-streaming version. Returns (answer_text, final_state).
     The caller can inspect state.validation for scores/issues.
+
+    allowed_sources: from permissions.get_allowed_sources(). None = unrestricted.
     """
-    state = await _run_graph(question, tenant_id)
+    state = await _run_graph(question, tenant_id, allowed_sources=allowed_sources)
 
     answer = state.answer
     if state.validation and not state.validation.passed:

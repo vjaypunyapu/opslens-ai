@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 from ..auth.dependencies import TenantContext, require_member, require_viewer
 from ..db.session import get_db
 from ..models.chat import ChatMessage, ChatSession
+from ..services.permissions import get_allowed_sources, get_allowed_source_ids
 from ..services.rag_service import RagService, get_rag_service
 from ..utils.logging import get_logger
 
@@ -191,6 +192,10 @@ async def query_session(
     source_types = body.filters.source_types if body.filters else None
     start = time.monotonic()
 
+    # Resolve which data sources this user is allowed to query.
+    # None = admin (unrestricted); [] = no access; [...] = specific sources.
+    allowed_sources = await get_allowed_sources(ctx.user_id, ctx.tenant_id, db)
+
     async def event_stream():
         tokens: list[str] = []
         try:
@@ -200,6 +205,7 @@ async def query_session(
                 question=body.content,
                 history=history,
                 source_types=source_types,
+                allowed_sources=allowed_sources,
             ):
                 if event["type"] == "token":
                     tokens.append(event["data"])
@@ -275,42 +281,31 @@ async def submit_feedback(
 @router.get("/metrics")
 async def get_metrics(
     ctx: Annotated[TenantContext, Depends(require_viewer)],
+    db=Depends(get_db),
     n: int = 50,
 ):
     """
     Return aggregated performance metrics for the current tenant's RAG queries.
+    Non-admin users only see metrics for sources their team has can_see_metrics=true.
 
     Response shape:
       {
-        "summary": {
-          "total_traces": int,
-          "avg_latency_ms": float,
-          "p95_latency_ms": float,
-          "avg_cost_usd": float,
-          "total_cost_usd": float,
-          "avg_tokens": float,
-          "validation_failure_rate": float,   // 0.0–1.0
-          "retry_rate": float,
-          "error_rate": float,
-          "step_breakdown": {
-            "planner":    { avg_latency_ms, avg_cost_usd, avg_tokens, calls },
-            "retrieval":  { ... },
-            "generation": { ... },
-            "auditor":    { ... },
-            "gatekeeper": { ... },
-            "strategist": { ... },
-            "hyde":       { ... }   // ingestion-time cost
-          }
-        },
-        "recent_traces": [ { trace details } ]
+        "summary": { total_traces, avg_latency_ms, p95_latency_ms, avg_cost_usd, ... },
+        "recent_traces": [ { trace details } ],
+        "access": "full" | "restricted"
       }
     """
     from ..services.telemetry import get_store
-    store  = get_store()
-    tid    = str(ctx.tenant_uuid)
+    store = get_store()
+    tid   = str(ctx.tenant_uuid)
+
+    # Resolve metric visibility — admins see everything
+    allowed_ids = await get_allowed_source_ids(ctx.user_id, ctx.tenant_id, db, "can_see_metrics")
+
     return {
-        "summary":       store.summary(tenant_id=tid),
+        "summary":       store.summary(tenant_id=tid, allowed_source_ids=allowed_ids),
         "recent_traces": [t.to_dict() for t in store.recent(n=n, tenant_id=tid)],
+        "access":        "full" if allowed_ids is None else "restricted",
     }
 
 

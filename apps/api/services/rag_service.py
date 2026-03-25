@@ -209,6 +209,7 @@ class RagService:
         question: str,
         history: list[dict],
         source_types: list[str] | None = None,
+        allowed_sources: list[dict] | None = None,
     ) -> AsyncGenerator[dict, None]:
         """
         Run the full RAG pipeline and yield structured SSE events.
@@ -238,7 +239,7 @@ class RagService:
         try:
             from .planner import plan_and_answer
 
-            answer, state = await plan_and_answer(question, tenant_id)
+            answer, state = await plan_and_answer(question, tenant_id, allowed_sources=allowed_sources)
 
             if state.validation:
                 validation_passed = state.validation.passed

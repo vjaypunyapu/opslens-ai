@@ -289,6 +289,112 @@ class Incident(Base):
     tenant: Mapped[Tenant] = relationship("Tenant")
 
 
+# ─── Teams & RBAC Resource Permissions ───────────────────────────────────────
+class Team(Base):
+    """
+    A named group of users within a tenant.
+    Teams are the unit of data-access control: each team is granted access to
+    a specific set of data sources (repos, Jira projects, Slack channels, etc.).
+    """
+    __tablename__ = "teams"
+    __table_args__ = {"schema": "opslens"}
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("opslens.tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str | None] = mapped_column(String(255))  # Clerk external_id of creator
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    members: Mapped[list[TeamMember]] = relationship("TeamMember", back_populates="team", cascade="all, delete-orphan")
+    permissions: Mapped[list[TeamResourcePermission]] = relationship(
+        "TeamResourcePermission", back_populates="team", cascade="all, delete-orphan"
+    )
+
+
+class TeamMember(Base):
+    """
+    Maps a user (by Clerk external_id) to a team with a role.
+    - member: standard team member, inherits team's data permissions
+    - admin:  can manage membership of this team (but not cross-team permissions)
+    """
+    __tablename__ = "team_members"
+    __table_args__ = (
+        UniqueConstraint("team_id", "user_external_id", name="uq_team_members_user"),
+        {"schema": "opslens"},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    team_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("opslens.teams.id", ondelete="CASCADE"), nullable=False
+    )
+    # Clerk external_id (string) — same value as TenantContext.user_id
+    user_external_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    user_email: Mapped[str | None] = mapped_column(String(255))  # denormalised for display
+    role: Mapped[str] = mapped_column(String(50), nullable=False, default="member")  # member | admin
+    added_by: Mapped[str | None] = mapped_column(String(255))   # Clerk external_id of who added them
+    added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    team: Mapped[Team] = relationship("Team", back_populates="members")
+
+
+class TeamResourcePermission(Base):
+    """
+    Grants a team access to a specific data source (repo, Jira project, Slack channel, etc.).
+
+    source_type: 'github' | 'jira' | 'slack' | 'confluence' | 'gdrive' | ...
+    source_id:   The identifier of the specific resource (repo name, project key, channel ID, etc.)
+
+    Permissions are additive — a user's effective access is the union of all teams they belong to.
+    Tenant admins bypass all permission checks entirely.
+    """
+    __tablename__ = "team_resource_permissions"
+    __table_args__ = (
+        UniqueConstraint("team_id", "source_type", "source_id", name="uq_team_resource"),
+        {"schema": "opslens"},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    team_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("opslens.teams.id", ondelete="CASCADE"), nullable=False
+    )
+    source_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    source_id: Mapped[str] = mapped_column(String(512), nullable=False)
+    can_read: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    can_see_metrics: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    can_see_logs: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    team: Mapped[Team] = relationship("Team", back_populates="permissions")
+
+
+# ─── Pending Invites ──────────────────────────────────────────────────────────
+class PendingInvite(Base):
+    """
+    A one-time invite link that pre-assigns a team and role upon acceptance.
+    The token is a UUID used as the URL token; it is invalidated after first use or expiry.
+    """
+    __tablename__ = "pending_invites"
+    __table_args__ = {"schema": "opslens"}
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("opslens.tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    team_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("opslens.teams.id", ondelete="SET NULL"), nullable=True
+    )
+    email: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    role: Mapped[str] = mapped_column(String(50), nullable=False, default="member")  # tenant role
+    team_role: Mapped[str] = mapped_column(String(50), nullable=False, default="member")  # team role
+    invited_by: Mapped[str | None] = mapped_column(String(255))   # Clerk external_id of inviter
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 # ─── Ingestion Queue ──────────────────────────────────────────────────────────
 class IngestionQueue(Base):
     """

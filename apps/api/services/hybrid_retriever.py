@@ -78,15 +78,37 @@ async def _dense_search(
     query_vector: list[float],
     collection: str,
     top_k: int,
+    allowed_sources: list[dict] | None = None,
 ) -> list[Document]:
-    """Hit Qdrant's /points/search endpoint directly via httpx."""
+    """Hit Qdrant's /points/search endpoint directly via httpx.
+
+    allowed_sources: list of {source_type, source_id} dicts. When provided,
+    adds a Qdrant filter so only documents from those sources are returned.
+    None means no filtering (admin / unrestricted user).
+    """
     base = _qdrant_base()
-    payload = {
+    payload: dict = {
         "vector": query_vector,
         "limit": top_k,
         "with_payload": True,
         "with_vector": False,
     }
+
+    # Build source_id filter when the user is restricted
+    if allowed_sources is not None:
+        if not allowed_sources:
+            # User has no permitted sources — return nothing immediately
+            return []
+        source_ids = list({s["source_id"] for s in allowed_sources})
+        payload["filter"] = {
+            "must": [
+                {
+                    "key": "metadata.source_id",
+                    "match": {"any": source_ids},
+                }
+            ]
+        }
+
     async with httpx.AsyncClient(headers=_qdrant_headers(), timeout=30) as client:
         resp = await client.post(f"{base}/collections/{collection}/points/search", json=payload)
         if resp.status_code == 404:
@@ -111,12 +133,20 @@ async def _bm25_search(
     query: str,
     tenant_id: str,
     top_k: int,
+    allowed_sources: list[dict] | None = None,
 ) -> list[Document]:
     """
     Build an in-memory BM25 index from CanonicalDocument rows for this tenant,
     then return the top-k matches.
     Falls back to empty list if rank_bm25 is not installed or DB is empty.
+
+    allowed_sources: list of {source_type, source_id} dicts. When provided,
+    the SQL query is filtered to only include matching documents.
+    None means no filtering (admin / unrestricted user).
     """
+    if allowed_sources is not None and not allowed_sources:
+        return []   # user has no permitted sources
+
     try:
         from rank_bm25 import BM25Okapi
     except ImportError:
@@ -128,13 +158,20 @@ async def _bm25_search(
     from ..db.session import AsyncSessionFactory as async_session_factory
 
     async with async_session_factory() as db:
-        result = await db.execute(
+        q = (
             sa.select(CanonicalDocument.id, CanonicalDocument.content, CanonicalDocument.title,
-                      CanonicalDocument.url, CanonicalDocument.source_type, CanonicalDocument.author,
-                      CanonicalDocument.source_created_at)
+                      CanonicalDocument.url, CanonicalDocument.source_type, CanonicalDocument.source_id,
+                      CanonicalDocument.author, CanonicalDocument.source_created_at)
             .where(CanonicalDocument.tenant_id == uuid.UUID(tenant_id))
-            .limit(5000)   # cap for memory safety
         )
+
+        # Apply source_id filter when the user is restricted
+        if allowed_sources is not None:
+            allowed_ids = [s["source_id"] for s in allowed_sources]
+            q = q.where(CanonicalDocument.source_id.in_(allowed_ids))
+
+        q = q.limit(5000)   # cap for memory safety
+        result = await db.execute(q)
         rows = result.fetchall()
 
     if not rows:
@@ -262,20 +299,34 @@ async def hybrid_retrieve(
     query: str,
     tenant_id: str,
     top_k: int | None = None,
+    allowed_sources: list[dict] | None = None,
 ) -> list[Document]:
     """
     Full hybrid retrieval pipeline:
       1. Embed query
-      2. Dense Qdrant search
-      3. BM25 search over tenant corpus
+      2. Dense Qdrant search  (filtered by allowed_sources when provided)
+      3. BM25 search over tenant corpus  (filtered by allowed_sources when provided)
       4. RRF fusion
       5. Cohere rerank (optional)
     Returns a list of LangChain Document objects.
+
+    allowed_sources: list of {source_type, source_id} from permissions.get_allowed_sources().
+        None  → unrestricted (admin): searches all tenant documents.
+        []    → empty (no team membership): returns nothing immediately.
+        [...]  → restricted: only searches within listed source_ids.
     """
+    if allowed_sources is not None and not allowed_sources:
+        logger.info("hybrid_retrieve: user has no allowed sources — returning empty")
+        return []
+
     k = top_k or TOP_K
     collection = f"{settings.QDRANT_COLLECTION_PREFIX}{tenant_id}"
 
-    logger.info("hybrid_retrieve: tenant=%s query=%r top_k=%d", tenant_id, query[:80], k)
+    logger.info(
+        "hybrid_retrieve: tenant=%s query=%r top_k=%d sources=%s",
+        tenant_id, query[:80], k,
+        "unrestricted" if allowed_sources is None else f"{len(allowed_sources)} allowed",
+    )
 
     try:
         query_vector = await _embed_query(query)
@@ -289,7 +340,7 @@ async def hybrid_retrieve(
 
     try:
         t0 = time.monotonic()
-        dense_docs = await _dense_search(query_vector, collection, top_k=k * 2)
+        dense_docs = await _dense_search(query_vector, collection, top_k=k * 2, allowed_sources=allowed_sources)
         telemetry.record_latency_span(
             "retrieval_dense",
             latency_ms=(time.monotonic() - t0) * 1000,
@@ -301,7 +352,7 @@ async def hybrid_retrieve(
 
     try:
         t0 = time.monotonic()
-        bm25_docs = await _bm25_search(query, tenant_id, top_k=k * 2)
+        bm25_docs = await _bm25_search(query, tenant_id, top_k=k * 2, allowed_sources=allowed_sources)
         telemetry.record_latency_span(
             "retrieval_bm25",
             latency_ms=(time.monotonic() - t0) * 1000,
