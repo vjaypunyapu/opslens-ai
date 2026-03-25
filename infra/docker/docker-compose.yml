@@ -88,7 +88,7 @@ services:
       redis:    { condition: service_healthy }
     volumes:
       - ../../apps:/app/apps
-    command: celery -A apps.worker.celery_app worker --loglevel=info --concurrency=2 -Q ingestion,insights,alerts
+    command: celery -A apps.worker.celery_app worker --loglevel=info --concurrency=2 -Q celery,ingestion,insights,alerts,logs,rrt
 
   beat:
     build:

@@ -4,7 +4,7 @@
 #
 # Service start commands:
 #   API:    uvicorn apps.api.main:app --host 0.0.0.0 --port $PORT
-#   Worker: celery -A apps.worker.celery_app worker --loglevel=info --concurrency=2 -Q ingestion,insights,alerts
+#   Worker: celery -A apps.worker.celery_app worker --loglevel=info --concurrency=2 -Q celery,ingestion,insights,alerts,logs,rrt
 #   Beat:   celery -A apps.worker.celery_app beat --loglevel=info
 
 [build]
