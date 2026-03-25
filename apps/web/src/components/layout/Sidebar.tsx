@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { UserButton } from "@clerk/nextjs";
-import { MessageSquare, Lightbulb, Bell, Plug, BarChart2, Settings, AlertTriangle } from "lucide-react";
+import { MessageSquare, Lightbulb, Bell, Plug, BarChart2, Settings, AlertTriangle, Shield } from "lucide-react";
 
 const NAV = [
   { href: "/dashboard",    label: "Dashboard",    icon: BarChart2 },
@@ -12,6 +12,7 @@ const NAV = [
   { href: "/alerts",       label: "Alerts",       icon: Bell },
   { href: "/integrations", label: "Integrations", icon: Plug },
   { href: "/settings",     label: "Settings",     icon: Settings },
+  { href: "/admin",        label: "Admin",        icon: Shield },
 ] as const;
 
 export function Sidebar() {

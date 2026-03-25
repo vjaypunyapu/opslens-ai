@@ -240,6 +240,84 @@ export const incidentsApi = {
     request<{ status: string; message: string }>(`/incidents/${id}/investigate`, { method: "POST", token }),
 };
 
+// ─── Admin — Teams & RBAC ─────────────────────────────────────────────────────
+export interface Team {
+  id: string;
+  name: string;
+  description: string | null;
+  member_count: number;
+  created_at: string;
+}
+
+export interface TeamMember {
+  user_external_id: string;
+  user_email: string | null;
+  role: string;
+  added_at: string;
+}
+
+export interface PermissionEntry {
+  source_type: string;
+  source_id: string;
+  can_read: boolean;
+  can_see_metrics: boolean;
+  can_see_logs: boolean;
+}
+
+export interface OrgUser {
+  external_id: string;
+  email: string;
+  name: string | null;
+  role: string;
+  created_at: string;
+}
+
+export const adminApi = {
+  // Teams
+  listTeams: (token: string) =>
+    request<Team[]>("/admin/teams", { token }),
+
+  createTeam: (token: string, data: { name: string; description?: string }) =>
+    request<Team>("/admin/teams", { method: "POST", body: JSON.stringify(data), token }),
+
+  deleteTeam: (token: string, teamId: string) =>
+    request<void>(`/admin/teams/${teamId}`, { method: "DELETE", token }),
+
+  // Members
+  listMembers: (token: string, teamId: string) =>
+    request<TeamMember[]>(`/admin/teams/${teamId}/members`, { token }),
+
+  addMember: (token: string, teamId: string, data: { user_external_id: string; user_email?: string; role?: string }) =>
+    request<TeamMember>(`/admin/teams/${teamId}/members`, { method: "POST", body: JSON.stringify(data), token }),
+
+  removeMember: (token: string, teamId: string, userExternalId: string) =>
+    request<void>(`/admin/teams/${teamId}/members/${userExternalId}`, { method: "DELETE", token }),
+
+  // Permissions
+  getPermissions: (token: string, teamId: string) =>
+    request<PermissionEntry[]>(`/admin/teams/${teamId}/permissions`, { token }),
+
+  setPermissions: (token: string, teamId: string, permissions: PermissionEntry[]) =>
+    request<PermissionEntry[]>(`/admin/teams/${teamId}/permissions`, {
+      method: "PUT", body: JSON.stringify({ permissions }), token,
+    }),
+
+  // Users
+  listUsers: (token: string) =>
+    request<OrgUser[]>("/admin/users", { token }),
+
+  updateUserRole: (token: string, externalId: string, role: string) =>
+    request<OrgUser>(`/admin/users/${externalId}/role`, {
+      method: "PATCH", body: JSON.stringify({ role }), token,
+    }),
+
+  // Invites
+  createInvite: (token: string, data: { email: string; team_id?: string; role?: string; team_role?: string }) =>
+    request<{ invite_id: string; email: string; token: string; expires_at: string }>(
+      "/admin/invites", { method: "POST", body: JSON.stringify(data), token }
+    ),
+};
+
 // ─── Integrations ─────────────────────────────────────────────────────────────
 export const integrationsApi = {
   list: (token: string) => request<Integration[]>("/integrations", { token }),
