@@ -16,6 +16,7 @@ from celery.utils.log import get_task_logger
 from ..db import AsyncSession
 from ..models.alert import AlertHistory, AlertRule
 from ..models.insight import Insight
+from ..async_utils import run_async as _run_async
 
 logger = get_task_logger(__name__)
 
@@ -120,9 +121,8 @@ async def _send_email(recipients: list[str], insight: Insight, rule: AlertRule) 
 # ── Core evaluation loop ──────────────────────────────────────────────────────
 @shared_task(name="alerts.evaluate_for_tenant", bind=True, max_retries=2)
 def evaluate_alerts_for_tenant(self, tenant_id: str):
-    import asyncio
     try:
-        asyncio.run(_evaluate_alerts_async(tenant_id))
+        _run_async(_evaluate_alerts_async(tenant_id))
     except Exception as exc:
         raise self.retry(exc=exc)
 

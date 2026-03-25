@@ -17,6 +17,7 @@ from ...api.config import settings
 from ..db import AsyncSession
 from ..models.document import CanonicalDocument
 from ..models.insight import Insight
+from ..async_utils import run_async as _run_async
 
 logger = get_task_logger(__name__)
 
@@ -95,9 +96,8 @@ async def _save_insight(db, tenant_id: str, parsed: dict, source_types: list[str
 # ── Complaint Spike Detector ─────────────────────────────────────────────────
 @shared_task(name="insights.complaint_spike", bind=True, max_retries=2)
 def detect_complaint_spike(self, tenant_id: str):
-    import asyncio
     try:
-        asyncio.run(_detect_complaint_spike(tenant_id))
+        _run_async(_detect_complaint_spike(tenant_id))
     except Exception as exc:
         raise self.retry(exc=exc)
 
@@ -136,9 +136,8 @@ async def _detect_complaint_spike(tenant_id: str):
 # ── Feature Request Trend Detector ──────────────────────────────────────────
 @shared_task(name="insights.feature_trend", bind=True, max_retries=2)
 def detect_feature_trend(self, tenant_id: str):
-    import asyncio
     try:
-        asyncio.run(_detect_feature_trend(tenant_id))
+        _run_async(_detect_feature_trend(tenant_id))
     except Exception as exc:
         raise self.retry(exc=exc)
 
@@ -181,9 +180,8 @@ async def _detect_feature_trend(tenant_id: str):
 # ── Engineering Bottleneck Detector ─────────────────────────────────────────
 @shared_task(name="insights.eng_bottleneck", bind=True, max_retries=2)
 def detect_eng_bottleneck(self, tenant_id: str):
-    import asyncio
     try:
-        asyncio.run(_detect_eng_bottleneck(tenant_id))
+        _run_async(_detect_eng_bottleneck(tenant_id))
     except Exception as exc:
         raise self.retry(exc=exc)
 

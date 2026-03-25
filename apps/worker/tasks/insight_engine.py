@@ -39,6 +39,7 @@ from ...api.config import settings
 from ...api.db import AsyncSession
 from ...api.models.document import CanonicalDocument
 from ...api.models.insight import Insight
+from ..async_utils import run_async as _run_async
 
 logger = get_task_logger(__name__)
 
@@ -707,7 +708,6 @@ def run_insights_for_tenant(self, tenant_id: str, only_type: str | None = None) 
     Run all (or one) insight detector(s) for a single tenant.
     Returns a list of result dicts, one per detector run.
     """
-    import asyncio
     try:
         detectors = (
             {only_type: ALL_DETECTORS[only_type]}
@@ -723,7 +723,7 @@ def run_insights_for_tenant(self, tenant_id: str, only_type: str | None = None) 
                 logger.info("[%s] %s → %s", tenant_id, name, result["status"])
             return results
 
-        return asyncio.run(_run_all())
+        return _run_async(_run_all())
 
     except Exception as exc:
         raise self.retry(exc=exc)
@@ -735,15 +735,13 @@ def run_all_insights_for_all_tenants() -> dict:
     Master fan-out task (triggered by Celery Beat every hour).
     Dispatches run_insights_for_tenant for each active tenant.
     """
-    import asyncio
-
     async def _get_tenants():
         from ...api.models.tenant import Tenant
         async with AsyncSession() as db:
             result = await db.execute(sa.select(Tenant.id).where(Tenant.plan != "inactive"))
             return [str(row[0]) for row in result.fetchall()]
 
-    tenant_ids = asyncio.run(_get_tenants())
+    tenant_ids = _run_async(_get_tenants())
     dispatched = 0
     for tid in tenant_ids:
         run_insights_for_tenant.delay(tid)

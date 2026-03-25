@@ -44,6 +44,7 @@ from celery import shared_task
 from celery.utils.log import get_task_logger
 
 from apps.api.config import settings
+from apps.worker.async_utils import run_async as _run_async
 
 logger = get_task_logger(__name__)
 
@@ -518,8 +519,6 @@ def generate_rrt_brief(
         error_count:     how many times the error occurred
         window_minutes:  scanning window (for display)
     """
-    import asyncio
-
     try:
         brief_id = str(uuid.uuid4())
         detected_at = datetime.now(tz=timezone.utc)
@@ -538,7 +537,7 @@ def generate_rrt_brief(
         )
 
         # 1a. Fetch timeline context: what changed in the 60 min before this incident
-        timeline_events = asyncio.run(
+        timeline_events = _run_async(
             _fetch_timeline_context(tenant_id, detected_at, window_minutes=60)
         )
         if timeline_events:
@@ -596,7 +595,7 @@ def generate_rrt_brief(
                 )
 
         # 3. Persist to DB
-        asyncio.run(_save_rrt_brief(
+        _run_async(_save_rrt_brief(
             tenant_id=tenant_id,
             brief_id=brief_id,
             fields=fields,

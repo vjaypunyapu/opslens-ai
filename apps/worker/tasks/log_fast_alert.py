@@ -44,6 +44,7 @@ from celery import shared_task
 from celery.utils.log import get_task_logger
 
 from apps.api.config import settings
+from apps.worker.async_utils import run_async as _run_async
 
 logger = get_task_logger(__name__)
 
@@ -762,7 +763,7 @@ def fast_scan(self, tenant_id: str | None = None):
 
         for eg in actionable:
             # ── Step 1: Known issue suppression (DB check) ────────────────────
-            is_suppressed, suppress_reason = asyncio.run(
+            is_suppressed, suppress_reason = _run_async(
                 _is_known_issue_async(tid, eg)
             )
             if is_suppressed:
@@ -778,7 +779,7 @@ def fast_scan(self, tenant_id: str | None = None):
 
             # ── Step 3: Resolve team routing ──────────────────────────────────
             # (timeline event written after routing is resolved, below)
-            targets = asyncio.run(
+            targets = _run_async(
                 _resolve_routing_async(tid, eg, container=None, fallback_webhook=fallback_webhook)
             )
             if not targets:
@@ -789,7 +790,7 @@ def fast_scan(self, tenant_id: str | None = None):
                 continue
 
             # ── Step 4: Write timeline event (non-blocking) ───────────────────
-            asyncio.run(
+            _run_async(
                 _write_timeline_event_async(
                     tenant_id=tid,
                     error_group=eg,

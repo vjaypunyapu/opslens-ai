@@ -7,12 +7,11 @@ decoupled from individual tenant IDs.
 """
 from __future__ import annotations
 
-import asyncio
-
 import sqlalchemy as sa
 from celery import shared_task
 from celery.utils.log import get_task_logger
 
+from ..async_utils import run_async as _run_async
 from ..db import AsyncSession
 from ..models.tenant import Tenant
 
@@ -31,7 +30,7 @@ def run_all_tenants_insights():
     """Dispatch run_all_insights_for_tenant for every tenant in the DB."""
     from .insight_runner import run_all_insights_for_tenant
 
-    tenant_ids = asyncio.run(_get_all_tenant_ids())
+    tenant_ids = _run_async(_get_all_tenant_ids())
     logger.info("Dispatching insights for %d tenants", len(tenant_ids))
     for tid in tenant_ids:
         run_all_insights_for_tenant.delay(tid)
@@ -44,7 +43,7 @@ def evaluate_all_tenants_alerts():
     """Dispatch evaluate_alerts_for_tenant for every tenant."""
     from .alert_runner import evaluate_alerts_for_tenant
 
-    tenant_ids = asyncio.run(_get_all_tenant_ids())
+    tenant_ids = _run_async(_get_all_tenant_ids())
     logger.info("Dispatching alert evaluation for %d tenants", len(tenant_ids))
     for tid in tenant_ids:
         evaluate_alerts_for_tenant.delay(tid)
@@ -68,7 +67,7 @@ def process_all_staging():
             )
             return [(str(r.tenant_id), r.source_type) for r in rows.all()]
 
-    pairs = asyncio.run(_get_tenant_integrations())
+    pairs = _run_async(_get_tenant_integrations())
     logger.info("Dispatching staging batch for %d tenant-source pairs", len(pairs))
     dispatched = 0
     for tenant_id, source_type in pairs:

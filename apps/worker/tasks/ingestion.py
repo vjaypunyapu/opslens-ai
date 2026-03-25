@@ -20,6 +20,7 @@ from qdrant_client.models import PointStruct, VectorParams, Distance
 from ..config import settings
 from ..db import AsyncSession
 from ..models.document import CanonicalDocument
+from ..async_utils import run_async as _run_async
 
 logger = get_task_logger(__name__)
 
@@ -648,9 +649,8 @@ def process_document(self, doc_id: str, tenant_id: str) -> dict:
     Process a single CanonicalDocument: chunk → embed → upsert.
     Called after the normalizer has created/updated the DB record.
     """
-    import asyncio
     try:
-        return asyncio.run(_process_async(doc_id, tenant_id))
+        return _run_async(_process_async(doc_id, tenant_id))
     except Exception as exc:
         logger.exception("process_document failed for %s: %s", doc_id, exc)
         raise self.retry(exc=exc)
@@ -688,8 +688,7 @@ def process_staging_batch(tenant_id: str, source_type: str, limit: int = 500) ->
     Reads unprocessed records from the Airbyte staging schema,
     normalises them, and dispatches process_document tasks.
     """
-    import asyncio
-    return asyncio.run(_process_staging_batch(tenant_id, source_type, limit))
+    return _run_async(_process_staging_batch(tenant_id, source_type, limit))
 
 
 async def _process_staging_batch(tenant_id: str, source_type: str, limit: int) -> dict:

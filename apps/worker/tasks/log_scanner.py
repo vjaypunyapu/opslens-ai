@@ -40,9 +40,11 @@ from celery import shared_task
 from celery.utils.log import get_task_logger
 
 from apps.api.config import settings
+from apps.worker.async_utils import run_async as _run_async
 from apps.worker.db import AsyncSession
 
 logger = get_task_logger(__name__)
+
 
 # ── Regex patterns for issue detection ───────────────────────────────────────
 _ISSUE_PATTERNS = re.compile(
@@ -443,8 +445,7 @@ def scan_logs_and_report(self, tenant_id: str | None = None):
                 logger.error("Email dispatch failed for log report")
 
         # 5. Persist
-        import asyncio
-        asyncio.run(_save_scan_result(
+        _run_async(_save_scan_result(
             tenant_id=tenant_id or "system",
             issue_count=len(issues),
             summary=summary,

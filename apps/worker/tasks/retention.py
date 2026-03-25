@@ -29,6 +29,7 @@ from datetime import datetime, timedelta, timezone
 
 import sqlalchemy as sa
 from celery import shared_task
+from ..async_utils import run_async as _run_async
 
 logger = logging.getLogger(__name__)
 
@@ -248,8 +249,7 @@ def run_cleanup(self, tenant_id: str | None = None):
     Returns:
         dict with per-tenant deletion counts and any errors encountered.
     """
-    import asyncio
-    return asyncio.run(_run_cleanup_async(tenant_id))
+    return _run_async(_run_cleanup_async(tenant_id))
 
 
 async def _run_cleanup_async(tenant_id: str | None) -> dict:
