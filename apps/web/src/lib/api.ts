@@ -487,6 +487,14 @@ export const demoApi = {
       "/log-ops/seed-demo",
       { method: "POST", token },
     ),
+
+  seedStatus: (token: string) =>
+    request<{
+      db_documents: { found: number; expected: number; done: number; pending: number; details: { source_id: string; source_type: string; embedding_status: string; chunk_count: number | null }[] };
+      qdrant: { url: string; reachable: boolean; collection: string; vector_count: number; error: string | null };
+      ready_for_demo: boolean;
+      next_step: string;
+    }>("/log-ops/seed-demo/status", { token }),
 };
 
 export const routingRulesApi = {

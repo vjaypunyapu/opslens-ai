@@ -772,6 +772,8 @@ export default function IncidentsPage() {
   const [showSimulate, setShowSimulate] = useState(false);
   const [seeding, setSeeding] = useState(false);
   const [seedMsg, setSeedMsg] = useState<string | null>(null);
+  const [seedStatus, setSeedStatus] = useState<null | { db_documents: { found: number; expected: number; done: number; pending: number; details: {source_id:string; source_type:string; embedding_status:string; chunk_count:number|null}[] }; qdrant: { url: string; reachable: boolean; collection: string; vector_count: number; error: string|null }; ready_for_demo: boolean; next_step: string }>(null);
+  const [checkingStatus, setCheckingStatus] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -847,6 +849,20 @@ export default function IncidentsPage() {
     } finally {
       setSeeding(false);
       setTimeout(() => setSeedMsg(null), 8000);
+    }
+  }
+
+  async function handleCheckSeedStatus() {
+    const token = await getToken();
+    if (!token) return;
+    setCheckingStatus(true);
+    try {
+      const s = await demoApi.seedStatus(token);
+      setSeedStatus(s);
+    } catch (e: unknown) {
+      setSeedMsg(e instanceof Error ? e.message : "Status check failed");
+    } finally {
+      setCheckingStatus(false);
     }
   }
 
@@ -929,15 +945,72 @@ export default function IncidentsPage() {
           </div>
         </div>
 
-        {/* Seed result toast */}
-        {seedMsg && (
-          <div style={{ marginBottom: "16px", padding: "12px 16px", borderRadius: "8px",
-            background: seedMsg.includes("failed") ? "rgba(239,68,68,0.1)" : "rgba(167,139,250,0.1)",
-            border: `1px solid ${seedMsg.includes("failed") ? "rgba(239,68,68,0.3)" : "rgba(167,139,250,0.3)"}`,
-            color: seedMsg.includes("failed") ? "#f87171" : "#c4b5fd",
-            fontSize: "13px", display: "flex", alignItems: "flex-start", gap: "8px" }}>
-            <Database size={14} style={{ marginTop: "1px", flexShrink: 0 }} />
-            {seedMsg}
+        {/* Seed result + status panel */}
+        {(seedMsg || seedStatus) && (
+          <div style={{ marginBottom: "16px", padding: "14px 16px", borderRadius: "8px",
+            background: "rgba(167,139,250,0.07)", border: "1px solid rgba(167,139,250,0.2)",
+            fontSize: "13px" }}>
+            {seedMsg && (
+              <div style={{ color: "#c4b5fd", display: "flex", gap: "8px", alignItems: "flex-start", marginBottom: seedStatus ? "12px" : 0 }}>
+                <Database size={14} style={{ marginTop: "1px", flexShrink: 0 }} />
+                {seedMsg}
+              </div>
+            )}
+            {seedStatus && (
+              <div>
+                {/* Summary row */}
+                <div style={{ display: "flex", gap: "20px", marginBottom: "10px", flexWrap: "wrap" }}>
+                  <span style={{ color: seedStatus.db_documents.found === seedStatus.db_documents.expected ? "#4ade80" : "#f87171" }}>
+                    DB: {seedStatus.db_documents.found}/{seedStatus.db_documents.expected} docs
+                  </span>
+                  <span style={{ color: seedStatus.db_documents.done === seedStatus.db_documents.expected ? "#4ade80" : "#fbbf24" }}>
+                    Embedded: {seedStatus.db_documents.done}/{seedStatus.db_documents.expected}
+                    {seedStatus.db_documents.pending > 0 && <span style={{ color: "#fbbf24" }}> ({seedStatus.db_documents.pending} pending)</span>}
+                  </span>
+                  <span style={{ color: seedStatus.qdrant.reachable ? "#4ade80" : "#f87171" }}>
+                    Qdrant: {seedStatus.qdrant.reachable ? `✓ ${seedStatus.qdrant.vector_count} vectors` : `✗ unreachable`}
+                  </span>
+                  <span style={{ color: "#64748b", fontFamily: "monospace", fontSize: "11px" }}>
+                    {seedStatus.qdrant.collection}
+                  </span>
+                </div>
+                {/* Next step */}
+                <div style={{ color: seedStatus.ready_for_demo ? "#4ade80" : "#fbbf24", fontWeight: 600, marginBottom: "8px" }}>
+                  {seedStatus.ready_for_demo ? "✓ Ready for demo" : `→ ${seedStatus.next_step}`}
+                </div>
+                {/* Qdrant error */}
+                {seedStatus.qdrant.error && (
+                  <div style={{ color: "#f87171", fontFamily: "monospace", fontSize: "11px", marginBottom: "8px" }}>
+                    Qdrant error: {seedStatus.qdrant.error}
+                  </div>
+                )}
+                {/* Doc details */}
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                  {seedStatus.db_documents.details.map(d => (
+                    <span key={d.source_id} style={{
+                      fontSize: "11px", padding: "2px 8px", borderRadius: "4px", fontFamily: "monospace",
+                      background: d.embedding_status === "done" ? "rgba(74,222,128,0.1)" : "rgba(251,191,36,0.1)",
+                      border: `1px solid ${d.embedding_status === "done" ? "rgba(74,222,128,0.3)" : "rgba(251,191,36,0.3)"}`,
+                      color: d.embedding_status === "done" ? "#4ade80" : "#fbbf24",
+                    }}>
+                      {d.source_type}:{d.source_id} · {d.embedding_status}{d.chunk_count != null ? ` (${d.chunk_count} chunks)` : ""}
+                    </span>
+                  ))}
+                </div>
+                <button onClick={() => setSeedStatus(null)} style={{ marginTop: "10px", background: "none",
+                  border: "none", color: "#475569", cursor: "pointer", fontSize: "12px" }}>Dismiss</button>
+              </div>
+            )}
+          </div>
+        )}
+        {/* Check status button (shown after seeding) */}
+        {!seedStatus && (
+          <div style={{ marginBottom: "8px" }}>
+            <button onClick={handleCheckSeedStatus} disabled={checkingStatus}
+              style={{ background: "none", border: "none", color: "#475569", fontSize: "12px",
+                cursor: checkingStatus ? "not-allowed" : "pointer", textDecoration: "underline", padding: 0 }}>
+              {checkingStatus ? "Checking…" : "Check demo data status"}
+            </button>
           </div>
         )}
 
