@@ -440,3 +440,70 @@ export const rrtBriefsApi = {
   delete: (token: string, id: string) =>
     request<void>(`/rrt-briefs/${id}`, { method: "DELETE", token }),
 };
+
+// ─── Routing Rules ────────────────────────────────────────────────────────────
+
+export interface RoutingRule {
+  id: string;
+  team_name: string;
+  description: string | null;
+  service_patterns: string[];
+  error_patterns: string[];
+  source_containers: string[];
+  match_all: boolean;
+  slack_webhook: string | null;
+  email_recipients: string[];
+  priority: number;
+  stop_on_match: boolean;
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface CreateRoutingRuleData {
+  team_name: string;
+  description?: string;
+  service_patterns?: string[];
+  error_patterns?: string[];
+  source_containers?: string[];
+  match_all?: boolean;
+  slack_webhook?: string;
+  email_recipients?: string[];
+  priority?: number;
+  stop_on_match?: boolean;
+  is_active?: boolean;
+}
+
+export interface TestRoutingResult {
+  matched_rules: { team_name: string; priority: number; slack_webhook?: string }[];
+  unmatched_rules: string[];
+  would_notify: string[];
+}
+
+export const routingRulesApi = {
+  list: (token: string) =>
+    request<RoutingRule[]>("/log-ops/routing-rules", { token }),
+
+  create: (token: string, data: CreateRoutingRuleData) =>
+    request<RoutingRule>("/log-ops/routing-rules", {
+      method: "POST",
+      body: JSON.stringify(data),
+      token,
+    }),
+
+  update: (token: string, id: string, data: Partial<CreateRoutingRuleData>) =>
+    request<RoutingRule>(`/log-ops/routing-rules/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+      token,
+    }),
+
+  delete: (token: string, id: string) =>
+    request<void>(`/log-ops/routing-rules/${id}`, { method: "DELETE", token }),
+
+  test: (token: string, error_line: string, container?: string) =>
+    request<TestRoutingResult>("/log-ops/routing-rules/test", {
+      method: "POST",
+      body: JSON.stringify({ error_line, container }),
+      token,
+    }),
+};
