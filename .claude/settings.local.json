@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(set -a)",
+      "Bash(source .env)",
+      "Bash(set +a)",
+      "Bash(celery -A apps.worker.celery_app worker --loglevel=info)"
+    ]
+  }
+}

@@ -25,12 +25,13 @@ from datetime import datetime, timezone
 from typing import Annotated
 
 import sqlalchemy as sa
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
 from ..auth.dependencies import TenantContext, require_admin, require_viewer
 from ..db.session import get_db
 from ..models.log_ops import AlertRoutingRule, KnownIssue
+from ..utils.audit import write_audit
 from ..utils.logging import get_logger
 
 router = APIRouter()
@@ -104,6 +105,7 @@ async def list_known_issues(
 
 @router.post("/known-issues", response_model=KnownIssueOut, status_code=status.HTTP_201_CREATED)
 async def create_known_issue(
+    request: Request,
     body: CreateKnownIssueRequest,
     ctx: Annotated[TenantContext, Depends(require_admin)],
     db=Depends(get_db),
@@ -136,6 +138,11 @@ async def create_known_issue(
         is_active=True,
     )
     db.add(ki)
+    await write_audit(db, tenant_id=ctx.tenant_id, actor_id=ctx.user_id, actor_role=ctx.role,
+                      resource="known_issue", resource_id=ki.id, action="create",
+                      after={"signature": ki.signature, "match_pattern": ki.match_pattern,
+                             "description": ki.description},
+                      request=request)
     await db.commit()
     await db.refresh(ki)
     logger.info("Known issue created by %s: sig=%s pattern=%s", ctx.user_id, body.signature, body.match_pattern)
@@ -144,6 +151,7 @@ async def create_known_issue(
 
 @router.patch("/known-issues/{issue_id}", response_model=KnownIssueOut)
 async def update_known_issue(
+    request: Request,
     issue_id: str,
     body: UpdateKnownIssueRequest,
     ctx: Annotated[TenantContext, Depends(require_admin)],
@@ -151,10 +159,18 @@ async def update_known_issue(
 ):
     """Update a suppression — extend snooze, link Jira ticket, or re-arm (is_active=true)."""
     ki = await _get_ki_or_404(db, issue_id, ctx.tenant_id)
+    before_snap = {"description": ki.description, "suppress_until": str(ki.suppress_until),
+                   "is_active": ki.is_active, "jira_ticket_key": ki.jira_ticket_key}
     if body.description     is not None: ki.description     = body.description
     if body.suppress_until  is not None: ki.suppress_until  = body.suppress_until
     if body.jira_ticket_key is not None: ki.jira_ticket_key = body.jira_ticket_key
     if body.is_active       is not None: ki.is_active       = body.is_active
+    await write_audit(db, tenant_id=ctx.tenant_id, actor_id=ctx.user_id, actor_role=ctx.role,
+                      resource="known_issue", resource_id=issue_id, action="update",
+                      before=before_snap,
+                      after={"description": ki.description, "suppress_until": str(ki.suppress_until),
+                             "is_active": ki.is_active, "jira_ticket_key": ki.jira_ticket_key},
+                      request=request)
     await db.commit()
     await db.refresh(ki)
     return _ki_to_out(ki)
@@ -162,12 +178,18 @@ async def update_known_issue(
 
 @router.delete("/known-issues/{issue_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_known_issue(
+    request: Request,
     issue_id: str,
     ctx: Annotated[TenantContext, Depends(require_admin)],
     db=Depends(get_db),
 ):
     """Remove a suppression — the exception will start alerting again."""
     ki = await _get_ki_or_404(db, issue_id, ctx.tenant_id)
+    await write_audit(db, tenant_id=ctx.tenant_id, actor_id=ctx.user_id, actor_role=ctx.role,
+                      resource="known_issue", resource_id=issue_id, action="delete",
+                      before={"signature": ki.signature, "match_pattern": ki.match_pattern,
+                              "description": ki.description},
+                      request=request)
     await db.delete(ki)
     await db.commit()
     logger.info("Known issue %s deleted (re-armed) by %s", issue_id, ctx.user_id)
@@ -179,6 +201,7 @@ async def delete_known_issue(
 
 class CreateRoutingRuleRequest(BaseModel):
     team_name:         str = Field(..., min_length=1, max_length=100)
+    team_id:           str | None = Field(None, description="Link to a Team row — owners can edit this rule")
     description:       str | None = None
     service_patterns:  list[str] = Field(
         default=[],
@@ -228,6 +251,7 @@ class UpdateRoutingRuleRequest(BaseModel):
 class RoutingRuleOut(BaseModel):
     id:                str
     team_name:         str
+    team_id:           str | None
     description:       str | None
     service_patterns:  list[str]
     error_patterns:    list[str]
@@ -271,6 +295,7 @@ async def list_routing_rules(
 
 @router.post("/routing-rules", response_model=RoutingRuleOut, status_code=status.HTTP_201_CREATED)
 async def create_routing_rule(
+    request: Request,
     body: CreateRoutingRuleRequest,
     ctx: Annotated[TenantContext, Depends(require_admin)],
     db=Depends(get_db),
@@ -305,6 +330,7 @@ async def create_routing_rule(
         id=str(uuid.uuid4()),
         tenant_id=ctx.tenant_id,
         team_name=body.team_name,
+        team_id=body.team_id,
         description=body.description,
         service_patterns=body.service_patterns,
         error_patterns=body.error_patterns,
@@ -317,6 +343,12 @@ async def create_routing_rule(
         is_active=body.is_active,
     )
     db.add(rr)
+    await write_audit(db, tenant_id=ctx.tenant_id, actor_id=ctx.user_id, actor_role=ctx.role,
+                      resource="alert_routing_rule", resource_id=rr.id, action="create",
+                      after={"team_name": rr.team_name, "priority": rr.priority,
+                             "service_patterns": rr.service_patterns,
+                             "error_patterns": rr.error_patterns},
+                      request=request)
     await db.commit()
     await db.refresh(rr)
     logger.info("Routing rule '%s' created by %s (priority=%d)", body.team_name, ctx.user_id, body.priority)
@@ -325,12 +357,27 @@ async def create_routing_rule(
 
 @router.patch("/routing-rules/{rule_id}", response_model=RoutingRuleOut)
 async def update_routing_rule(
+    request: Request,
     rule_id: str,
     body: UpdateRoutingRuleRequest,
     ctx: Annotated[TenantContext, Depends(require_admin)],
     db=Depends(get_db),
 ):
     rr = await _get_rr_or_404(db, rule_id, ctx.tenant_id)
+    # RBAC: engineers can only edit rules that belong to their team
+    if ctx.role == "engineer" and rr.team_id:
+        from ..db.models import TeamMember
+        membership = await db.execute(
+            sa.select(TeamMember).where(
+                TeamMember.team_id == rr.team_id,
+                TeamMember.user_external_id == ctx.user_id,
+            )
+        )
+        if not membership.scalar_one_or_none():
+            raise HTTPException(status_code=403, detail="You can only edit routing rules for your own team")
+    before_snap = {"team_name": rr.team_name, "priority": rr.priority, "is_active": rr.is_active,
+                   "service_patterns": list(rr.service_patterns or []),
+                   "error_patterns": list(rr.error_patterns or [])}
     if body.team_name         is not None: rr.team_name         = body.team_name
     if body.description       is not None: rr.description       = body.description
     if body.service_patterns  is not None: rr.service_patterns  = body.service_patterns
@@ -342,6 +389,13 @@ async def update_routing_rule(
     if body.priority          is not None: rr.priority          = body.priority
     if body.stop_on_match     is not None: rr.stop_on_match     = body.stop_on_match
     if body.is_active         is not None: rr.is_active         = body.is_active
+    await write_audit(db, tenant_id=ctx.tenant_id, actor_id=ctx.user_id, actor_role=ctx.role,
+                      resource="alert_routing_rule", resource_id=rule_id, action="update",
+                      before=before_snap,
+                      after={"team_name": rr.team_name, "priority": rr.priority, "is_active": rr.is_active,
+                             "service_patterns": list(rr.service_patterns or []),
+                             "error_patterns": list(rr.error_patterns or [])},
+                      request=request)
     await db.commit()
     await db.refresh(rr)
     return _rr_to_out(rr)
@@ -349,11 +403,17 @@ async def update_routing_rule(
 
 @router.delete("/routing-rules/{rule_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_routing_rule(
+    request: Request,
     rule_id: str,
     ctx: Annotated[TenantContext, Depends(require_admin)],
     db=Depends(get_db),
 ):
     rr = await _get_rr_or_404(db, rule_id, ctx.tenant_id)
+    await write_audit(db, tenant_id=ctx.tenant_id, actor_id=ctx.user_id, actor_role=ctx.role,
+                      resource="alert_routing_rule", resource_id=rule_id, action="delete",
+                      before={"team_name": rr.team_name, "priority": rr.priority,
+                              "service_patterns": list(rr.service_patterns or [])},
+                      request=request)
     await db.delete(rr)
     await db.commit()
 
@@ -890,6 +950,163 @@ async def seed_demo_status(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# WEBHOOK LOG INGEST — push-based alternative to 5-minute cron polling
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class IngestLogEventRequest(BaseModel):
+    """
+    Push a log event directly into the OpsLens alert pipeline.
+    Use this from your log shipper (Fluentd, Logstash, Vector, Datadog Webhook)
+    instead of waiting for the 5-minute polling cycle.
+    """
+    service_name:   str = Field(..., description="Container / service name, e.g. 'payment-service'")
+    error_message:  str = Field(..., description="The error or exception text")
+    log_level:      str = Field(default="ERROR", description="ERROR | CRITICAL | FATAL | WARN")
+    error_count:    int = Field(default=1, ge=1, description="Occurrence count in the window")
+    severity:       str = Field(default="p2", description="p0 / p1 / p2 / p3")
+    timestamp:      str | None = Field(None, description="ISO 8601 timestamp of first occurrence")
+    metadata:       dict | None = Field(None, description="Any extra fields to pass through to the brief")
+
+
+class IngestLogEventResponse(BaseModel):
+    status:         str
+    message:        str
+    task_id:        str | None = None
+    error_signature: str
+
+
+@router.post(
+    "/ingest",
+    response_model=IngestLogEventResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Push a log event into the alert pipeline (webhook ingestion)",
+)
+async def ingest_log_event(
+    body: IngestLogEventRequest,
+    ctx: Annotated[TenantContext, Depends(require_admin)],
+    db=Depends(get_db),
+):
+    """
+    **Webhook / push-based ingestion endpoint.**
+
+    Accepts a single log error event and immediately dispatches the full
+    enrich_and_alert pipeline — no need to wait for the 5-minute cron cycle.
+
+    Designed to be called from:
+    - Fluentd / Logstash / Vector output plugins
+    - Datadog Webhook integrations
+    - Custom log shippers
+    - CI/CD pipelines on deploy errors
+
+    Example curl:
+    ```
+    curl -X POST https://api.opslens.ai/api/v1/log-ops/ingest \\
+      -H "Authorization: Bearer <api_key>" \\
+      -H "Content-Type: application/json" \\
+      -d '{
+        "service_name": "payment-service",
+        "error_message": "PaymentError: Stripe API timeout after 30s",
+        "error_count": 12,
+        "severity": "p1"
+      }'
+    ```
+    """
+    import hashlib as _hashlib
+    from apps.api.config import settings as cfg
+
+    # Normalise + hash (same logic as fast_scan)
+    normalised = re.sub(r"\b[0-9a-f]{8,}\b", "<hex>", body.error_message)
+    normalised = re.sub(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}[.,\d]*", "<ts>", normalised)
+    signature = _hashlib.md5(normalised[:120].encode()).hexdigest()
+
+    # Check known issue suppression
+    from ..models.log_ops import KnownIssue as _KI
+    ki_result = await db.execute(
+        sa.select(_KI).where(
+            _KI.tenant_id == ctx.tenant_id,
+            _KI.is_active == True,
+        )
+    )
+    for ki in ki_result.scalars().all():
+        if ki.signature and ki.signature == signature:
+            return IngestLogEventResponse(
+                status="suppressed",
+                message=f"Matched known issue suppression (sig={signature[:8]}). No alert fired.",
+                error_signature=signature,
+            )
+        if ki.match_pattern:
+            try:
+                if re.search(ki.match_pattern, body.error_message, re.IGNORECASE):
+                    return IngestLogEventResponse(
+                        status="suppressed",
+                        message=f"Matched known issue pattern '{ki.match_pattern}'. No alert fired.",
+                        error_signature=signature,
+                    )
+            except re.error:
+                pass
+
+    # Resolve routing rules
+    result = await db.execute(
+        sa.select(AlertRoutingRule)
+        .where(AlertRoutingRule.tenant_id == ctx.tenant_id, AlertRoutingRule.is_active == True)
+        .order_by(AlertRoutingRule.priority)
+    )
+    rules = result.scalars().all()
+    routing_targets = []
+    sample_error = f"{body.service_name} {body.error_message}"
+    for rr in rules:
+        if _rule_matches(rr, sample_error, body.service_name):
+            routing_targets.append({
+                "team_name": rr.team_name,
+                "slack_webhook": rr.slack_webhook,
+                "email_recipients": list(rr.email_recipients or []),
+            })
+            if rr.stop_on_match:
+                break
+
+    webhook = cfg.LOG_FAST_ALERT_SLACK_WEBHOOK or cfg.LOG_SCAN_SLACK_WEBHOOK
+    if not routing_targets and not webhook:
+        raise HTTPException(
+            status_code=422,
+            detail="No matching routing rules and no fallback webhook configured.",
+        )
+
+    if not routing_targets:
+        routing_targets = [{"team_name": "Default", "slack_webhook": webhook, "email_recipients": []}]
+
+    # Build error group and dispatch
+    error_group_dict = {
+        "signature": signature,
+        "first_line": f"{body.service_name}: {body.error_message}",
+        "count": body.error_count,
+        "sample_lines": [f"[INGEST] {body.service_name}: {body.error_message}"],
+        "metadata": body.metadata or {},
+    }
+
+    try:
+        from apps.worker.tasks.log_fast_alert import enrich_and_alert
+        task = enrich_and_alert.delay(
+            tenant_id=str(ctx.tenant_id),
+            error_group_dict=error_group_dict,
+            webhook_url=routing_targets[0]["slack_webhook"] or webhook,
+            routing_targets=routing_targets,
+            error_count=body.error_count,
+            window_minutes=1,
+        )
+        logger.info("Ingest event dispatched: tenant=%s service=%s sig=%s task=%s",
+                    ctx.tenant_id, body.service_name, signature, task.id)
+        return IngestLogEventResponse(
+            status="dispatched",
+            message=f"Event ingested. Enrichment task dispatched to {len(routing_targets)} team(s).",
+            task_id=task.id,
+            error_signature=signature,
+        )
+    except Exception as exc:
+        logger.error("Failed to dispatch ingest task: %s", exc)
+        raise HTTPException(status_code=503, detail=f"Worker unavailable: {exc}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Shared matching logic (also used by log_fast_alert.py)
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -980,6 +1197,7 @@ def _rr_to_out(rr: AlertRoutingRule) -> RoutingRuleOut:
     return RoutingRuleOut(
         id=str(rr.id),
         team_name=rr.team_name,
+        team_id=str(rr.team_id) if rr.team_id else None,
         description=rr.description,
         service_patterns=list(rr.service_patterns or []),
         error_patterns=list(rr.error_patterns or []),

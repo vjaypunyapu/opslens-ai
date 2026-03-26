@@ -22,7 +22,7 @@ from .auth.middleware import JWTAuthMiddleware
 from .config import settings
 from .db.session import engine, Base
 from .routers import (
-    admin, alerts, dashboard, enterprise, incidents, ingestion, insights,
+    admin, alerts, billing, dashboard, enterprise, incidents, ingestion, insights,
     log_ops, manager_dashboard, rag, retention, rrt_briefs,
     settings as settings_router, timeline, users,
 )
@@ -440,6 +440,11 @@ def create_app() -> FastAPI:
         retention.router,
         prefix="/api/v1/retention",
         tags=["Retention Controls"],
+    )
+    app.include_router(
+        billing.router,
+        prefix="/api/v1/billing",
+        tags=["Billing & Metering"],
     )
 
     # ── Global exception handlers ─────────────────────────────────────────────

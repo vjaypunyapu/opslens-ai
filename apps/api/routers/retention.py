@@ -219,3 +219,127 @@ async def get_retention_stats(
         "projected_deletions": counts,
         "note": "Run POST /api/v1/retention/run to execute cleanup now.",
     }
+
+
+# ── GDPR Right-to-Erasure ─────────────────────────────────────────────────────
+
+class TenantPurgeRequest(BaseModel):
+    confirm_tenant_id: str = Field(
+        ...,
+        description="Must match the tenant_id being purged — double-confirmation guard."
+    )
+    reason: str = Field(
+        ...,
+        min_length=10,
+        description="Reason for purge: 'GDPR erasure request', 'contract termination', etc."
+    )
+
+
+@router.delete(
+    "/tenant/purge",
+    summary="GDPR right-to-erasure: permanently delete ALL tenant data (irreversible)",
+    status_code=200,
+)
+async def purge_tenant_data(
+    body: TenantPurgeRequest,
+    tenant_id: str = Query(...),
+    db: AsyncSession = Depends(get_db),
+    _auth=Depends(require_roles(["admin"])),
+):
+    """
+    **Permanently deletes all data for a tenant across every store.**
+
+    This is the GDPR Article 17 (Right to Erasure) implementation.
+    Use for:
+    - Customer requests to delete their data
+    - Contract termination data wipe
+    - Account closure
+
+    What gets deleted:
+    - All Postgres rows scoped to this tenant_id (documents, alerts, briefs,
+      timeline events, routing rules, known issues, chat sessions, insights,
+      integrations, audit logs, retention policy)
+    - The entire Qdrant vector collection (opslens_{tenant_id})
+
+    **This is irreversible. The confirm_tenant_id field must match tenant_id.**
+    """
+    if body.confirm_tenant_id != tenant_id:
+        raise HTTPException(
+            status_code=400,
+            detail="confirm_tenant_id does not match tenant_id — aborting purge."
+        )
+
+    from apps.api.models.audit import AuditLog
+    from apps.api.models.timeline import TimelineEvent
+    from apps.api.models.rrt_brief import RRTBrief
+    from apps.api.models.insight import Insight
+    from apps.api.models.log_ops import AlertRoutingRule, KnownIssue
+    from apps.api.db.models import (
+        CanonicalDocument, ChatSession, Integration, Incident,
+    )
+    from apps.api.config import settings as cfg
+
+    deleted: dict[str, int] = {}
+    errors: list[str] = []
+
+    async def _delete_table(model, label: str):
+        try:
+            r = await db.execute(
+                sa.delete(model).where(model.tenant_id == tenant_id).returning(
+                    sa.text("1")
+                )
+            )
+            deleted[label] = r.rowcount or 0
+        except Exception as exc:
+            errors.append(f"{label}: {exc}")
+            deleted[label] = -1
+
+    # Delete in reverse dependency order (children before parents)
+    for model, label in [
+        (AuditLog,           "audit_logs"),
+        (TimelineEvent,      "timeline_events"),
+        (RRTBrief,           "rrt_briefs"),
+        (Insight,            "insights"),
+        (AlertRoutingRule,   "alert_routing_rules"),
+        (KnownIssue,         "known_issues"),
+        (ChatSession,        "chat_sessions"),
+        (CanonicalDocument,  "canonical_documents"),
+        (Integration,        "integrations"),
+        (Incident,           "incidents"),
+        (RetentionPolicy,    "retention_policies"),
+    ]:
+        await _delete_table(model, label)
+
+    await db.commit()
+
+    # Wipe Qdrant collection
+    qdrant_deleted = False
+    qdrant_error = None
+    try:
+        from qdrant_client import QdrantClient
+        qc = QdrantClient(url=cfg.QDRANT_URL, api_key=cfg.QDRANT_API_KEY or None, timeout=30)
+        collection = f"{cfg.QDRANT_COLLECTION_PREFIX}{tenant_id}"
+        collections = [c.name for c in qc.get_collections().collections]
+        if collection in collections:
+            qc.delete_collection(collection)
+            qdrant_deleted = True
+    except Exception as exc:
+        qdrant_error = str(exc)
+
+    total = sum(v for v in deleted.values() if v >= 0)
+
+    return {
+        "status": "purged" if not errors else "partial",
+        "tenant_id": tenant_id,
+        "reason": body.reason,
+        "rows_deleted": deleted,
+        "total_rows_deleted": total,
+        "qdrant_collection_deleted": qdrant_deleted,
+        "qdrant_error": qdrant_error,
+        "errors": errors,
+        "note": (
+            "All tenant data has been permanently deleted. "
+            "This action cannot be undone. "
+            "Retain this response as your GDPR erasure evidence record."
+        ),
+    }

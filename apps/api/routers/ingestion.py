@@ -375,7 +375,7 @@ def _build_sync_catalog(source_type: str) -> dict:
     # Returns the streams we care about, with incremental sync mode
     streams_map = {
         "slack":   ["messages", "channels", "users"],
-        "jira":    ["issues", "projects", "users"],
+        "jira":    ["issues", "issue_comments", "projects", "users"],
         "gdrive":  ["files", "activity"],
         "zendesk": ["tickets", "comments", "users"],
         "github":  ["commits", "pull_requests", "issues"],

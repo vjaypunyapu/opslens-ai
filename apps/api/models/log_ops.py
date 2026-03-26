@@ -105,6 +105,9 @@ class AlertRoutingRule(Base):
     email_recipients    = Column(ARRAY(String), nullable=False, default=list)
     pagerduty_key       = Column(String, nullable=True)           # future
 
+    # Team ownership — links rule to a Team; engineers on that team can edit
+    team_id             = Column(String, nullable=True, index=True)
+
     # Control
     priority            = Column(Integer, nullable=False, default=100)
     stop_on_match       = Column(Boolean, nullable=False, default=False)

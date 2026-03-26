@@ -222,6 +222,10 @@ async def query_session(
                         content=assistant_content,
                         latency_ms=int((time.monotonic() - start) * 1000),
                     ))
+                    from ..utils.billing import record_usage
+                    await record_usage(db, tenant_id=str(ctx.tenant_uuid),
+                                       event_type="rag_query", actor_id=ctx.user_id,
+                                       resource_id=str(session.id))
                     await db.flush()
                 await db.commit()
 

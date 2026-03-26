@@ -560,9 +560,61 @@ class GCPLoggingNormalizer:
         )
 
 
+class JiraCommentNormalizer:
+    """
+    Handles records from Airbyte's `issue_comments` stream.
+    Each row is a single Jira comment with its own author, timestamp, and body.
+    Stored as a separate CanonicalDocument so comment text is independently
+    searchable in RAG — critical for tickets where diagnosis lives in comments,
+    not the description.
+    """
+    SOURCE = "jira"
+
+    @staticmethod
+    def normalise(raw: dict) -> RawRecord:
+        issue_key = raw.get("issueKey") or raw.get("issue_key") or raw.get("issueId", "")
+        body = raw.get("body", "") or raw.get("renderedBody", "")
+        author = (
+            raw.get("author", {}).get("displayName", "")
+            or raw.get("updateAuthor", {}).get("displayName", "")
+        )
+        created_str = raw.get("created", "")
+        updated_str = raw.get("updated", created_str)
+
+        try:
+            created_at = datetime.fromisoformat(created_str.replace("Z", "+00:00"))
+        except Exception:
+            created_at = datetime.now(tz=timezone.utc)
+        try:
+            updated_at = datetime.fromisoformat(updated_str.replace("Z", "+00:00"))
+        except Exception:
+            updated_at = created_at
+
+        # Build a stable source_id so comment updates are deduped correctly
+        comment_id = raw.get("id", raw.get("self", ""))
+        source_id = f"comment:{comment_id}"
+
+        return RawRecord(
+            source_type=JiraCommentNormalizer.SOURCE,
+            source_id=source_id,
+            title=f"[{issue_key}] Comment by {author}",
+            content=body,
+            author=author,
+            url=raw.get("self", ""),
+            created_at=created_at,
+            updated_at=updated_at,
+            metadata={
+                "issue_key": issue_key,
+                "comment_id": comment_id,
+                "record_type": "jira_comment",
+            },
+        )
+
+
 NORMALIZERS = {
     "slack":          SlackNormalizer,
     "jira":           JiraNormalizer,
+    "jira_comment":   JiraCommentNormalizer,
     "gdrive":         GDriveNormalizer,
     "github":         GitHubNormalizer,
     "zendesk":        ZendeskNormalizer,
@@ -761,6 +813,9 @@ async def _process_staging_batch(tenant_id: str, source_type: str, limit: int) -
     """
     import sqlalchemy as sa
 
+    # Map Airbyte stream names to normalizer keys
+    # e.g. Airbyte emits source_type="jira" for all Jira streams, but the
+    # staging record has a _airbyte_stream field to distinguish them.
     normalizer_cls = NORMALIZERS.get(source_type)
     if not normalizer_cls:
         return {"error": f"No normalizer for source_type={source_type}"}
@@ -788,7 +843,17 @@ async def _process_staging_batch(tenant_id: str, source_type: str, limit: int) -
             raw: dict = row.raw_data  # JSONB → dict via asyncpg
 
             try:
-                record: RawRecord = normalizer_cls.normalise(raw)
+                # Route Jira comment records to the dedicated normalizer
+                effective_normalizer = normalizer_cls
+                if source_type == "jira" and (
+                    raw.get("_airbyte_stream") == "issue_comments"
+                    or raw.get("record_type") == "jira_comment"
+                    or "issueKey" in raw
+                    or "issue_key" in raw
+                ):
+                    effective_normalizer = JiraCommentNormalizer
+
+                record: RawRecord = effective_normalizer.normalise(raw)
                 chash = content_hash(record)
 
                 # Check for existing doc with same hash — skip if unchanged
