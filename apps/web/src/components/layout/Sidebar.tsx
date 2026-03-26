@@ -2,7 +2,8 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { UserButton } from "@clerk/nextjs";
-import { MessageSquare, Lightbulb, Bell, Plug, BarChart2, Settings, AlertTriangle, Shield, FileText, Route } from "lucide-react";
+import { MessageSquare, Lightbulb, Bell, Plug, BarChart2, Settings, AlertTriangle, Shield, FileText, Route, Sun, Moon } from "lucide-react";
+import { useTheme } from "@/contexts/ThemeContext";
 
 const NAV = [
   { href: "/dashboard",    label: "Dashboard",    icon: BarChart2 },
@@ -19,6 +20,7 @@ const NAV = [
 
 export function Sidebar() {
   const pathname = usePathname();
+  const { isDark, toggle } = useTheme();
   return (
     <aside style={{
       position: "fixed", top: 0, left: 0, bottom: 0, width: "260px",
@@ -69,9 +71,30 @@ export function Sidebar() {
           <UserButton appearance={{ elements: { avatarBox: { width: 28, height: 28 } } }} />
           <span style={{ fontSize: "12px", color: "#64748b" }}>My Account</span>
         </div>
-        <Link href="/settings" style={{ color: "#475569", display: "flex" }}>
-          <Settings size={15} />
-        </Link>
+        <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+          {/* Dark / Light toggle */}
+          <button
+            onClick={toggle}
+            title={isDark ? "Switch to light mode" : "Switch to dark mode"}
+            style={{
+              display: "flex", alignItems: "center", justifyContent: "center",
+              width: "28px", height: "28px", borderRadius: "6px", border: "none",
+              cursor: "pointer", background: "rgba(255,255,255,0.06)",
+              color: isDark ? "#fbbf24" : "#94a3b8",
+              transition: "background 0.15s, color 0.15s",
+            }}
+            onMouseEnter={e => (e.currentTarget.style.background = "rgba(255,255,255,0.12)")}
+            onMouseLeave={e => (e.currentTarget.style.background = "rgba(255,255,255,0.06)")}
+          >
+            {isDark ? <Sun size={14} /> : <Moon size={14} />}
+          </button>
+          <Link href="/settings" style={{ color: "#475569", display: "flex",
+            width: "28px", height: "28px", alignItems: "center", justifyContent: "center",
+            borderRadius: "6px",
+          }}>
+            <Settings size={15} />
+          </Link>
+        </div>
       </div>
     </aside>
   );

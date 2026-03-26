@@ -5,12 +5,59 @@
 @tailwind utilities;
 
 @layer base {
-  :root { --sidebar-width: 260px; }
-  body { background: #0f172a; color: #f1f5f9; @apply antialiased; font-family: 'Inter', system-ui, sans-serif; }
+  /* ── Dark theme (default) ───────────────────────────────────────────── */
+  :root,
+  [data-theme="dark"] {
+    --sidebar-width: 260px;
+    --bg-app:        #0f172a;
+    --bg-surface:    #1e293b;
+    --bg-elevated:   #263449;
+    --bg-input:      #1e293b;
+    --text-primary:  #f1f5f9;
+    --text-secondary:#94a3b8;
+    --text-muted:    #475569;
+    --border:        rgba(255,255,255,0.08);
+    --border-strong: rgba(255,255,255,0.14);
+    --accent:        #14b8a6;
+    --accent-dim:    rgba(20,184,166,0.15);
+    --accent-text:   #2dd4bf;
+    --danger:        #ef4444;
+    --warning:       #f59e0b;
+    --success:       #10b981;
+    --badge-bg:      rgba(255,255,255,0.06);
+  }
+
+  /* ── Light theme ────────────────────────────────────────────────────── */
+  [data-theme="light"] {
+    --bg-app:        #f1f5f9;
+    --bg-surface:    #ffffff;
+    --bg-elevated:   #f8fafc;
+    --bg-input:      #ffffff;
+    --text-primary:  #0f172a;
+    --text-secondary:#475569;
+    --text-muted:    #94a3b8;
+    --border:        rgba(0,0,0,0.08);
+    --border-strong: rgba(0,0,0,0.14);
+    --accent:        #0d9488;
+    --accent-dim:    rgba(13,148,136,0.10);
+    --accent-text:   #0d9488;
+    --danger:        #dc2626;
+    --warning:       #d97706;
+    --success:       #059669;
+    --badge-bg:      rgba(0,0,0,0.05);
+  }
+
+  body {
+    background: var(--bg-app);
+    color: var(--text-primary);
+    @apply antialiased;
+    font-family: 'Inter', system-ui, sans-serif;
+    transition: background 0.2s ease, color 0.2s ease;
+  }
   ::-webkit-scrollbar { width: 5px; height: 5px; }
   ::-webkit-scrollbar-track { @apply bg-transparent; }
-  ::-webkit-scrollbar-thumb { @apply bg-gray-300 rounded-full; }
-  ::-webkit-scrollbar-thumb:hover { @apply bg-gray-400; }
+  ::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 999px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
 }
 @layer components {
   .prose-chat { @apply text-sm leading-relaxed; }

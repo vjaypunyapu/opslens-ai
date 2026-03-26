@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { ClerkProvider } from "@clerk/nextjs";
 import { Toaster } from "sonner";
+import { ThemeProvider } from "@/contexts/ThemeContext";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -13,9 +14,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <ClerkProvider afterSignInUrl="/chat" afterSignUpUrl="/chat">
       <html lang="en" suppressHydrationWarning>
-        <body className="min-h-screen bg-gray-50">
-          {children}
-          <Toaster position="bottom-right" richColors />
+        <body className="min-h-screen">
+          <ThemeProvider>
+            {children}
+            <Toaster position="bottom-right" richColors />
+          </ThemeProvider>
         </body>
       </html>
     </ClerkProvider>
