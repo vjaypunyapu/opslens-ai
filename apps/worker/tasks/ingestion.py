@@ -21,6 +21,11 @@ from ..config import settings
 from ..db import AsyncSession
 from ..models.document import CanonicalDocument
 from ..async_utils import run_async as _run_async
+from ..structural_parser import (
+    StructuralChunk,
+    structural_parse,
+    generate_hyde_questions,
+)
 
 logger = get_task_logger(__name__)
 
@@ -576,9 +581,12 @@ def content_hash(record: RawRecord) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
-# ── Stage 3: Chunking ─────────────────────────────────────────────────────────
+# ── Stage 3: Chunking (structural — replaces naive chunk_text) ────────────────
+# chunk_text() kept for backward-compat with any external callers; internally
+# the pipeline now uses structural_parse() from structural_parser.py.
 def chunk_text(text: str) -> list[str]:
-    """Split text into overlapping token-bounded chunks."""
+    """Legacy flat chunker — preserved for backward compatibility only.
+    New code should call structural_parse() directly."""
     tokens = _enc.encode(text)
     if not tokens:
         return []
@@ -590,13 +598,21 @@ def chunk_text(text: str) -> list[str]:
     return chunks
 
 
-# ── Stage 4 + 5: Embed & Upsert ──────────────────────────────────────────────
+# ── Stage 4 + 5: Embed & Upsert (accepts StructuralChunk list) ───────────────
 async def embed_and_upsert(
     doc: CanonicalDocument,
-    chunks: list[str],
+    chunks: list[StructuralChunk],
     tenant_id: str,
 ) -> None:
-    """Embed chunks and upsert each batch immediately to avoid memory spikes."""
+    """
+    Embed structural chunks and upsert to Qdrant in batches.
+
+    Each Qdrant point now carries richer payload:
+      heading        — breadcrumb of the section this chunk belongs to
+      chunk_type     — "text" | "code" | "table"
+      hyde_questions — list of hypothetical questions (from HyDE step)
+      code_language  — programming language (code chunks only)
+    """
     collection_name = f"opslens_{tenant_id}"
 
     # Ensure collection exists
@@ -609,13 +625,19 @@ async def embed_and_upsert(
 
     upserted_points = 0
 
-    for batch_start in range(0, len(chunks), EMBED_BATCH):
-        batch = chunks[batch_start: batch_start + EMBED_BATCH]
-        response = await _openai.embeddings.create(model=EMBED_MODEL, input=batch)
+    # chunks is now list[StructuralChunk]; embed the .content field
+    chunk_texts = [c.content for c in chunks]
+
+    for batch_start in range(0, len(chunk_texts), EMBED_BATCH):
+        batch_texts  = chunk_texts[batch_start: batch_start + EMBED_BATCH]
+        batch_chunks = chunks[batch_start: batch_start + EMBED_BATCH]
+
+        response = await _openai.embeddings.create(model=EMBED_MODEL, input=batch_texts)
         batch_points: list[PointStruct] = []
 
         for local_i, emb_obj in enumerate(response.data):
             chunk_idx = batch_start + local_i
+            sc        = batch_chunks[local_i]
             batch_points.append(
                 PointStruct(
                     id=str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{doc.id}:{chunk_idx}")),
@@ -629,7 +651,13 @@ async def embed_and_upsert(
                         "url":             doc.url,
                         "author":          doc.author,
                         "created_at":      doc.source_created_at.isoformat() if doc.source_created_at else None,
-                        "content_preview": batch[local_i][:400],
+                        # structural metadata
+                        "heading":         sc.heading,
+                        "chunk_type":      sc.chunk_type,
+                        "hyde_questions":  sc.hyde_questions,
+                        "code_language":   sc.metadata.get("code_language", ""),
+                        # preview uses raw_content (no heading prefix, no HyDE questions)
+                        "content_preview": sc.raw_content[:400],
                     },
                 )
             )
@@ -639,7 +667,7 @@ async def embed_and_upsert(
             upserted_points += len(batch_points)
 
     if upserted_points:
-        logger.info("Upserted %d points to %s", upserted_points, collection_name)
+        logger.info("Upserted %d structural points to %s", upserted_points, collection_name)
 
 
 # ── Celery task ───────────────────────────────────────────────────────────────
@@ -671,14 +699,48 @@ async def _process_async(doc_id: str, tenant_id: str) -> dict:
             await db.commit()
             return {"status": "empty", "doc_id": doc_id}
 
-        chunks = chunk_text(content)
-        await embed_and_upsert(doc, chunks, tenant_id)
+        # ── Stage 3: Structural parse ──────────────────────────────────────
+        # Respects headings, keeps code blocks and tables atomic,
+        # inherits heading breadcrumb into each chunk's content & metadata.
+        structural_chunks = structural_parse(content)
+        logger.info(
+            "Structural parse: doc=%s source=%s → %d chunks "
+            "(%d text, %d code, %d table)",
+            doc_id, doc.source_type,
+            len(structural_chunks),
+            sum(1 for c in structural_chunks if c.chunk_type == "text"),
+            sum(1 for c in structural_chunks if c.chunk_type == "code"),
+            sum(1 for c in structural_chunks if c.chunk_type == "table"),
+        )
+
+        # ── Stage 3b: HyDE — hypothetical questions per chunk ─────────────
+        # One batched gpt-4o-mini call per document.
+        # Appends questions to each chunk's .content before embedding.
+        # Non-fatal: on failure the chunks are embedded without questions.
+        try:
+            structural_chunks = await generate_hyde_questions(
+                structural_chunks, _openai,
+            )
+            hyde_count = sum(1 for c in structural_chunks if c.hyde_questions)
+            logger.info("HyDE: generated questions for %d/%d chunks", hyde_count, len(structural_chunks))
+        except Exception as hyde_exc:
+            logger.warning("HyDE generation failed (proceeding without): %s", hyde_exc)
+
+        # ── Stage 4+5: Embed & upsert ──────────────────────────────────────
+        await embed_and_upsert(doc, structural_chunks, tenant_id)
 
         doc.embedding_status = "done"
-        doc.chunk_count = len(chunks)
+        doc.chunk_count = len(structural_chunks)
         await db.commit()
 
-        return {"status": "ok", "doc_id": doc_id, "chunks": len(chunks)}
+        return {
+            "status":      "ok",
+            "doc_id":      doc_id,
+            "chunks":      len(structural_chunks),
+            "code_chunks": sum(1 for c in structural_chunks if c.chunk_type == "code"),
+            "table_chunks":sum(1 for c in structural_chunks if c.chunk_type == "table"),
+            "hyde_chunks": sum(1 for c in structural_chunks if c.hyde_questions),
+        }
 
 
 @shared_task(name="ingestion.process_staging_batch")
