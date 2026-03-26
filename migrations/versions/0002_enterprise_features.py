@@ -11,8 +11,8 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
-revision = "0002_enterprise_features"
-down_revision = "0001_initial_schema"
+revision = "0002"
+down_revision = "0001"
 branch_labels = None
 depends_on = None
 
