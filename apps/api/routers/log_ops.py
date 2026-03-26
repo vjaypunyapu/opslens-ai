@@ -810,6 +810,85 @@ async def seed_demo_data(
     }
 
 
+@router.get("/seed-demo/status")
+async def seed_demo_status(
+    ctx: Annotated[TenantContext, Depends(require_viewer)],
+    db=Depends(get_db),
+):
+    """
+    Diagnostic: checks every step of the demo data pipeline.
+    Call this after seeding to see exactly where things stand.
+    """
+    from ..db.models import CanonicalDocument
+    from ..config import settings as cfg
+
+    source_ids = [t["source_id"] for t in _DEMO_TICKETS]
+
+    # 1. Check DB documents
+    result = await db.execute(
+        sa.select(
+            CanonicalDocument.source_id,
+            CanonicalDocument.source_type,
+            CanonicalDocument.embedding_status,
+            CanonicalDocument.chunk_count,
+        ).where(
+            CanonicalDocument.tenant_id == ctx.tenant_id,
+            CanonicalDocument.source_id.in_(source_ids),
+        )
+    )
+    docs = [
+        {"source_id": r.source_id, "source_type": r.source_type,
+         "embedding_status": r.embedding_status, "chunk_count": r.chunk_count}
+        for r in result.all()
+    ]
+
+    # 2. Check Qdrant connectivity + collection
+    qdrant_ok = False
+    qdrant_count = 0
+    qdrant_error = None
+    collection_name = f"{cfg.QDRANT_COLLECTION_PREFIX}{ctx.tenant_id}"
+    try:
+        from qdrant_client import QdrantClient
+        qc = QdrantClient(url=cfg.QDRANT_URL, api_key=cfg.QDRANT_API_KEY or None, timeout=5)
+        collections = [c.name for c in qc.get_collections().collections]
+        qdrant_ok = True
+        if collection_name in collections:
+            info = qc.get_collection(collection_name)
+            qdrant_count = info.points_count
+        else:
+            qdrant_error = f"Collection '{collection_name}' does not exist yet"
+    except Exception as exc:
+        qdrant_error = str(exc)
+
+    done = [d for d in docs if d["embedding_status"] == "done"]
+    pending = [d for d in docs if d["embedding_status"] == "pending"]
+
+    return {
+        "db_documents": {
+            "found": len(docs),
+            "expected": len(source_ids),
+            "done": len(done),
+            "pending": len(pending),
+            "details": docs,
+        },
+        "qdrant": {
+            "url": cfg.QDRANT_URL,
+            "reachable": qdrant_ok,
+            "collection": collection_name,
+            "vector_count": qdrant_count,
+            "error": qdrant_error,
+        },
+        "ready_for_demo": qdrant_ok and len(done) == len(source_ids) and qdrant_count > 0,
+        "next_step": (
+            "All good — run Simulate Alert" if (qdrant_ok and len(done) == len(source_ids) and qdrant_count > 0)
+            else "Click Seed Demo Data and wait for worker to embed" if len(docs) == 0
+            else f"{len(pending)} docs still pending embedding — check worker logs for process_document tasks" if pending
+            else "Qdrant issue — check QDRANT_URL on worker service" if not qdrant_ok
+            else "Collection empty — embedding may have failed, try seed again"
+        ),
+    }
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Shared matching logic (also used by log_fast_alert.py)
 # ═══════════════════════════════════════════════════════════════════════════════
