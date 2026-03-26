@@ -344,13 +344,12 @@ def _enrich_with_rag(error_group: ErrorGroup, tenant_id: str) -> list[dict]:
         enriched = []
         for hit in results:
             payload = hit.payload or {}
-            meta = payload.get("metadata", {})
             enriched.append({
-                "source_type": meta.get("source_type", "unknown"),
-                "title":       meta.get("title", "Untitled"),
-                "url":         meta.get("url", ""),
-                "author":      meta.get("author", ""),
-                "snippet":     (payload.get("page_content") or "")[:300],
+                "source_type": payload.get("source_type", "unknown"),
+                "title":       payload.get("title", "Untitled"),
+                "url":         payload.get("url", ""),
+                "author":      payload.get("author", ""),
+                "snippet":     (payload.get("content_preview") or "")[:300],
                 "score":       round(hit.score, 3),
             })
         return enriched
