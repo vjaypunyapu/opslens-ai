@@ -334,13 +334,27 @@ def _enrich_with_rag(error_group: ErrorGroup, tenant_id: str) -> list[dict]:
         )
 
         # qdrant-client >= 1.9 replaced .search() with .query_points()
-        response = qdrant.query_points(
-            collection_name=collection,
-            query=embedding,
-            limit=settings.LOG_FAST_ALERT_ENRICH_TOP_K,
-            query_filter=search_filter,
-            with_payload=True,
-        )
+        try:
+            response = qdrant.query_points(
+                collection_name=collection,
+                query=embedding,
+                limit=settings.LOG_FAST_ALERT_ENRICH_TOP_K,
+                query_filter=search_filter,
+                with_payload=True,
+            )
+        except Exception as filter_exc:
+            # If the filtered query fails (e.g. 400 from dimension mismatch
+            # or filter serialisation issue) fall back to an unfiltered query
+            # so we still get results and can diagnose in logs.
+            logger.warning(
+                "RAG filtered query failed (%s) — retrying without filter", filter_exc
+            )
+            response = qdrant.query_points(
+                collection_name=collection,
+                query=embedding,
+                limit=settings.LOG_FAST_ALERT_ENRICH_TOP_K,
+                with_payload=True,
+            )
 
         enriched = []
         for hit in response.points:
@@ -361,7 +375,17 @@ def _enrich_with_rag(error_group: ErrorGroup, tenant_id: str) -> list[dict]:
 
 
 def _get_embedding(text: str) -> list[float] | None:
-    """Get embedding synchronously using configured provider."""
+    """Get embedding synchronously using configured provider.
+
+    IMPORTANT: the model used here MUST match the model used in ingestion.py
+    (embed_and_upsert) so query vectors have the same dimensions as stored
+    vectors.  ingestion.py hardcodes "text-embedding-3-small" (1536-dim);
+    we mirror that here instead of reading settings.OPENAI_EMBED_MODEL which
+    could differ from what was used at ingest-time.
+    """
+    # Mirror ingestion.py: hardcoded to "text-embedding-3-small" (1536-dim).
+    # Change both files together if you switch embed models.
+    _INGEST_EMBED_MODEL = "text-embedding-3-small"
     try:
         if settings.LLM_PROVIDER == "ollama":
             resp = httpx.post(
@@ -375,7 +399,7 @@ def _get_embedding(text: str) -> list[float] | None:
             import openai
             client = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
             resp = client.embeddings.create(
-                model=settings.OPENAI_EMBED_MODEL,
+                model=_INGEST_EMBED_MODEL,
                 input=text[:2000],  # cap to avoid token limits
             )
             return resp.data[0].embedding
