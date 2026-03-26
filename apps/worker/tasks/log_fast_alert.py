@@ -333,16 +333,17 @@ def _enrich_with_rag(error_group: ErrorGroup, tenant_id: str) -> list[dict]:
             ]
         )
 
-        results = qdrant.search(
+        # qdrant-client >= 1.9 replaced .search() with .query_points()
+        response = qdrant.query_points(
             collection_name=collection,
-            query_vector=embedding,
+            query=embedding,
             limit=settings.LOG_FAST_ALERT_ENRICH_TOP_K,
             query_filter=search_filter,
             with_payload=True,
         )
 
         enriched = []
-        for hit in results:
+        for hit in response.points:
             payload = hit.payload or {}
             enriched.append({
                 "source_type": payload.get("source_type", "unknown"),
