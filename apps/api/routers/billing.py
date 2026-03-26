@@ -273,7 +273,7 @@ async def list_usage_events(
             "actor_id":       e.actor_id,
             "resource_id":    e.resource_id,
             "occurred_at":    e.occurred_at.isoformat(),
-            "metadata":       e.metadata,
+            "metadata":       e.extra,
         }
         for e in events
     ]

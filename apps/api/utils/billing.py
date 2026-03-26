@@ -90,7 +90,7 @@ async def record_usage(
             quantity=quantity,
             unit_cost_usd=unit_cost,
             total_cost_usd=total_cost,
-            metadata=metadata,
+            extra=metadata,
         )
         db.add(event)
 

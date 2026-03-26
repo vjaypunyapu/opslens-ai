@@ -71,7 +71,8 @@ class UsageEvent(Base):
     )
 
     # Free-form extras (model used, token count, etc.)
-    metadata        = Column(JSONB, nullable=True)
+    # Note: cannot use 'metadata' — reserved by SQLAlchemy DeclarativeBase
+    extra           = Column(JSONB, nullable=True)
 
 
 class BillingSubscription(Base):

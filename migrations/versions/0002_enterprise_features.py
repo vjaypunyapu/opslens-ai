@@ -33,7 +33,7 @@ def upgrade() -> None:
         sa.Column("stripe_reported_at",     sa.DateTime(timezone=True), nullable=True),
         sa.Column("occurred_at",            sa.DateTime(timezone=True), nullable=False,
                   server_default=sa.text("now()")),
-        sa.Column("metadata",               postgresql.JSONB(), nullable=True),
+        sa.Column("extra",                  postgresql.JSONB(), nullable=True),
         sa.PrimaryKeyConstraint("id"),
         schema="opslens",
     )
