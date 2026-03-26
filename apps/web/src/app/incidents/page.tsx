@@ -4,9 +4,9 @@ import { useAuth } from "@clerk/nextjs";
 import {
   AlertTriangle, Plus, RefreshCw, Search, ChevronRight,
   Clock, CheckCircle, Loader2, Zap, GitBranch, MessageSquare,
-  FileText, Activity, X, ExternalLink, Play
+  FileText, Activity, X, ExternalLink, Play, Database
 } from "lucide-react";
-import { incidentsApi, logOpsApi, Incident, TimelineEvent } from "@/lib/api";
+import { incidentsApi, logOpsApi, demoApi, Incident, TimelineEvent } from "@/lib/api";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -770,6 +770,8 @@ export default function IncidentsPage() {
   const [selected, setSelected] = useState<Incident | null>(null);
   const [showNew, setShowNew] = useState(false);
   const [showSimulate, setShowSimulate] = useState(false);
+  const [seeding, setSeeding] = useState(false);
+  const [seedMsg, setSeedMsg] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -833,6 +835,21 @@ export default function IncidentsPage() {
     await logOpsApi.simulate(token, data);
   }
 
+  async function handleSeedDemo() {
+    const token = await getToken();
+    if (!token) return;
+    setSeeding(true); setSeedMsg(null);
+    try {
+      const res = await demoApi.seedDemoData(token);
+      setSeedMsg(res.message);
+    } catch (e: unknown) {
+      setSeedMsg(e instanceof Error ? e.message : "Seeding failed");
+    } finally {
+      setSeeding(false);
+      setTimeout(() => setSeedMsg(null), 8000);
+    }
+  }
+
   async function refreshSelected() {
     if (!selected) return;
     const token = await getToken();
@@ -886,6 +903,15 @@ export default function IncidentsPage() {
                 display: "flex", alignItems: "center", gap: "6px" }}>
               <RefreshCw size={14} /> Refresh
             </button>
+            <button onClick={handleSeedDemo} disabled={seeding}
+              title="Seed Jira tickets, GitHub PRs, and Slack threads as demo context — they'll appear in RRT brief related items"
+              style={{ padding: "10px 16px", borderRadius: "8px",
+                background: "rgba(167,139,250,0.12)", border: "1px solid rgba(167,139,250,0.3)",
+                color: "#a78bfa", fontSize: "13px", fontWeight: 600,
+                cursor: seeding ? "not-allowed" : "pointer", opacity: seeding ? 0.6 : 1,
+                display: "flex", alignItems: "center", gap: "6px" }}>
+              <Database size={13} /> {seeding ? "Seeding…" : "Seed Demo Data"}
+            </button>
             <button onClick={() => setShowSimulate(true)}
               style={{ padding: "10px 18px", borderRadius: "8px",
                 background: "rgba(20,184,166,0.15)", border: "1px solid rgba(20,184,166,0.4)",
@@ -902,6 +928,18 @@ export default function IncidentsPage() {
             </button>
           </div>
         </div>
+
+        {/* Seed result toast */}
+        {seedMsg && (
+          <div style={{ marginBottom: "16px", padding: "12px 16px", borderRadius: "8px",
+            background: seedMsg.includes("failed") ? "rgba(239,68,68,0.1)" : "rgba(167,139,250,0.1)",
+            border: `1px solid ${seedMsg.includes("failed") ? "rgba(239,68,68,0.3)" : "rgba(167,139,250,0.3)"}`,
+            color: seedMsg.includes("failed") ? "#f87171" : "#c4b5fd",
+            fontSize: "13px", display: "flex", alignItems: "flex-start", gap: "8px" }}>
+            <Database size={14} style={{ marginTop: "1px", flexShrink: 0 }} />
+            {seedMsg}
+          </div>
+        )}
 
         {/* Stats strip */}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",

@@ -479,6 +479,16 @@ export interface TestRoutingResult {
   would_notify: string[];
 }
 
+// ─── Demo seeding ─────────────────────────────────────────────────────────────
+
+export const demoApi = {
+  seedDemoData: (token: string) =>
+    request<{ status: string; created: number; skipped: number; message: string }>(
+      "/log-ops/seed-demo",
+      { method: "POST", token },
+    ),
+};
+
 export const routingRulesApi = {
   list: (token: string) =>
     request<RoutingRule[]>("/log-ops/routing-rules", { token }),

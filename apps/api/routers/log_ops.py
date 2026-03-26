@@ -18,6 +18,7 @@ Routing Rules (route alerts to teams):
 """
 from __future__ import annotations
 
+import hashlib
 import re
 import uuid
 from datetime import datetime, timezone
@@ -588,6 +589,225 @@ async def simulate_alert(
         error_signature=signature,
         service_name=body.service_name,
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SEED DEMO DATA
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_DEMO_TICKETS = [
+    # ── Payment / Stripe scenario ──────────────────────────────────────────────
+    {
+        "source_type": "jira",
+        "source_id": "PAYMT-1234",
+        "title": "PAYMT-1234: Stripe API timeout causing checkout failures",
+        "content": (
+            "Summary: Stripe payment API is timing out intermittently, causing checkout to fail for ~12% of users.\n\n"
+            "Description:\n"
+            "Starting 2024-11-15, our payment-service began receiving 30s timeout errors from Stripe's charge endpoint. "
+            "Retries exhaust quickly and the transaction is dropped, leading to PaymentError: Stripe API timeout in logs.\n\n"
+            "Root cause investigation:\n"
+            "- Stripe status page showed degraded performance on their EU charge endpoint\n"
+            "- Our retry policy was set to 3 attempts with no backoff — needs exponential backoff\n"
+            "- Connection pool exhaustion observed under peak load (pool_size=20 hit capacity)\n\n"
+            "Fix applied:\n"
+            "- Increased connection pool size to 50\n"
+            "- Implemented exponential backoff: 1s, 2s, 4s with jitter\n"
+            "- Added circuit breaker: open after 5 consecutive failures\n\n"
+            "Status: Resolved. Monitor for recurrence during peak hours.\n"
+            "Labels: payment, stripe, timeout, checkout, p1"
+        ),
+        "url": "https://yourcompany.atlassian.net/browse/PAYMT-1234",
+        "author": "alice@yourcompany.com",
+        "metadata": {"status": "Done", "priority": "P1", "labels": ["payment", "stripe", "timeout"]},
+    },
+    {
+        "source_type": "jira",
+        "source_id": "PAYMT-890",
+        "title": "PAYMT-890: Stripe webhook retry exhaustion during outage window",
+        "content": (
+            "Summary: Stripe webhook delivery failing silently — events queued but not processed.\n\n"
+            "Description:\n"
+            "During the Nov outage, webhook-worker failed to process payment.succeeded events because "
+            "the Stripe API was unreachable for verification. Queue backed up to 8,000+ events.\n\n"
+            "Impact: Revenue recognition delayed 4 hours. No double-charges occurred but reconciliation required.\n\n"
+            "Action items:\n"
+            "- Add dead-letter queue for failed webhook events\n"
+            "- Decouple webhook receipt from Stripe API verification (verify async)\n"
+            "- Alert when webhook queue depth > 1000\n\n"
+            "Labels: stripe, webhook, queue-backlog, payment"
+        ),
+        "url": "https://yourcompany.atlassian.net/browse/PAYMT-890",
+        "author": "bob@yourcompany.com",
+        "metadata": {"status": "In Progress", "priority": "P2", "labels": ["stripe", "webhook", "queue"]},
+    },
+    # ── Auth / JWT scenario ────────────────────────────────────────────────────
+    {
+        "source_type": "jira",
+        "source_id": "AUTH-512",
+        "title": "AUTH-512: JWT verification failures from DB connection pool exhaustion",
+        "content": (
+            "Summary: auth-service returning 500s due to connection pool being exhausted during JWT verification.\n\n"
+            "Description:\n"
+            "JWT verification requires a DB lookup for token revocation check. Under high load, "
+            "the async connection pool (pool_size=20) saturates, causing InternalServerError: JWT verification failed.\n\n"
+            "Observed pattern:\n"
+            "- Occurs during login spikes (08:00–09:30 UTC daily)\n"
+            "- pool_size=20 exhausted in <30s at peak\n"
+            "- Error: database connection pool exhausted appears in auth-service logs\n\n"
+            "Mitigation:\n"
+            "- Increase pool_size to 50, max_overflow to 20\n"
+            "- Cache revocation list in Redis (TTL 60s) to avoid DB hit per request\n"
+            "- Add /health/db endpoint to track pool utilization\n\n"
+            "Labels: auth, jwt, database, connection-pool, 500-errors"
+        ),
+        "url": "https://yourcompany.atlassian.net/browse/AUTH-512",
+        "author": "carol@yourcompany.com",
+        "metadata": {"status": "In Review", "priority": "P1", "labels": ["auth", "jwt", "database"]},
+    },
+    # ── Database OOM scenario ──────────────────────────────────────────────────
+    {
+        "source_type": "jira",
+        "source_id": "INFRA-789",
+        "title": "INFRA-789: postgres-primary OOM kills under heavy analytics queries",
+        "content": (
+            "Summary: PostgreSQL primary crashing with OOM errors when large analytical queries run alongside OLTP.\n\n"
+            "Description:\n"
+            "FATAL: out of memory errors observed on postgres-primary when reporting queries run concurrently with "
+            "production traffic. shared_buffers=4GB is being exceeded.\n\n"
+            "Affected queries: SELECT * FROM orders WHERE (unbounded range scan), large JOIN on transactions table.\n\n"
+            "Root cause:\n"
+            "- No work_mem limit set — large sorts and hash joins consume unbounded memory\n"
+            "- Reporting workload not isolated from OLTP — no read replica routing\n\n"
+            "Resolution plan:\n"
+            "- Set work_mem = 64MB per session\n"
+            "- Route all reporting queries to read replica\n"
+            "- Add query timeout: statement_timeout = 30s for non-admin users\n"
+            "- Index orders(created_at) to avoid full table scans\n\n"
+            "Labels: postgres, database, oom, memory, infrastructure"
+        ),
+        "url": "https://yourcompany.atlassian.net/browse/INFRA-789",
+        "author": "dave@yourcompany.com",
+        "metadata": {"status": "Open", "priority": "P1", "labels": ["postgres", "oom", "memory", "infrastructure"]},
+    },
+    # ── GitHub PR context ──────────────────────────────────────────────────────
+    {
+        "source_type": "github",
+        "source_id": "pr-847",
+        "title": "PR #847: Add exponential backoff to payment-service Stripe client",
+        "content": (
+            "Pull Request: Add exponential backoff + circuit breaker to Stripe API client\n\n"
+            "Changes:\n"
+            "- stripe_client.py: implement tenacity retry with exponential backoff (1s, 2s, 4s) + 10% jitter\n"
+            "- circuit_breaker.py: open after 5 failures in 60s window, half-open after 30s\n"
+            "- connection_pool.py: increase pool_size from 20 to 50, add pool_pre_ping=True\n\n"
+            "Testing: load tested at 500 RPS, pool exhaustion no longer observed.\n"
+            "Related: PAYMT-1234\n"
+            "Merged: 2024-11-16 by alice@yourcompany.com"
+        ),
+        "url": "https://github.com/yourcompany/backend/pull/847",
+        "author": "alice@yourcompany.com",
+        "metadata": {"state": "merged", "labels": ["payment", "reliability"]},
+    },
+    # ── Slack context ──────────────────────────────────────────────────────────
+    {
+        "source_type": "slack",
+        "source_id": "slack-incident-paymt-nov15",
+        "title": "#incidents Slack thread: payment-service Stripe timeout Nov 15",
+        "content": (
+            "Slack channel: #incidents\n\n"
+            "alice: @oncall payment-service is throwing PaymentError: Stripe API timeout — 47 errors in last 5 min\n"
+            "bob: Checking Stripe status page now\n"
+            "alice: Stripe EU endpoint showing degraded. Switching to US endpoint as fallback\n"
+            "carol: Connection pool is full — pool_size=20 hit. Restarting payment-service pods\n"
+            "bob: Stripe acknowledged issue, ETA 20 min. We should implement circuit breaker\n"
+            "dave: Error rate dropping. Down to 3 errors/min. Looks like pod restart helped\n"
+            "alice: All clear. Filing PAYMT-1234 for the backoff + circuit breaker work\n"
+            "Resolved in: 34 minutes"
+        ),
+        "url": "https://yourcompany.slack.com/archives/C01234/p1700000000",
+        "author": "alice@yourcompany.com",
+        "metadata": {"channel": "#incidents", "thread_ts": "1700000000.000000"},
+    },
+]
+
+
+@router.post("/seed-demo", status_code=202)
+async def seed_demo_data(
+    ctx: Annotated[TenantContext, Depends(require_admin)],
+    db=Depends(get_db),
+):
+    """
+    Seed realistic Jira tickets, GitHub PRs, and Slack threads as demo context documents.
+    These get embedded into Qdrant and will appear as related_items in RRT briefs
+    when a matching error is simulated via POST /simulate.
+
+    Safe to call multiple times — uses content_hash deduplication.
+    """
+    from ..db.models import CanonicalDocument
+
+    created = []
+    skipped = []
+
+    for ticket in _DEMO_TICKETS:
+        content_hash = hashlib.sha256(ticket["content"].encode()).hexdigest()
+
+        # Check for existing doc (dedup by content_hash + tenant)
+        existing = await db.execute(
+            sa.select(CanonicalDocument).where(
+                CanonicalDocument.tenant_id == ctx.tenant_id,
+                CanonicalDocument.content_hash == content_hash,
+            )
+        )
+        if existing.scalar_one_or_none():
+            skipped.append(ticket["source_id"])
+            continue
+
+        doc = CanonicalDocument(
+            id=uuid.uuid4(),
+            tenant_id=ctx.tenant_id,
+            source_type=ticket["source_type"],
+            source_id=ticket["source_id"],
+            content_hash=content_hash,
+            title=ticket["title"],
+            content=ticket["content"],
+            author=ticket.get("author"),
+            url=ticket.get("url"),
+            doc_metadata=ticket.get("metadata", {}),
+            embedding_status="pending",
+            source_created_at=datetime.now(tz=timezone.utc),
+        )
+        db.add(doc)
+        await db.flush()  # get the ID before commit
+        created.append(str(doc.id))
+
+    await db.commit()
+
+    # Dispatch embedding tasks for newly created docs
+    embedded = []
+    for doc_id in created:
+        try:
+            from apps.worker.tasks.ingestion import process_document
+            process_document.delay(doc_id, str(ctx.tenant_id))
+            embedded.append(doc_id)
+        except Exception as exc:
+            logger.warning("Could not dispatch embedding for %s: %s", doc_id, exc)
+
+    logger.info(
+        "Demo seed: tenant=%s created=%d skipped=%d dispatched=%d",
+        ctx.tenant_id, len(created), len(skipped), len(embedded),
+    )
+
+    return {
+        "status": "ok",
+        "created": len(created),
+        "skipped": len(skipped),
+        "message": (
+            f"Seeded {len(created)} demo documents ({len(skipped)} already existed). "
+            f"Dispatched {len(embedded)} embedding tasks — wait ~30 seconds, "
+            "then run Simulate Alert to see Jira/GitHub/Slack context in the RRT brief."
+        ),
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
