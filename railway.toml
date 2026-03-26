@@ -1,18 +1,26 @@
-# railway.toml — OpsLens AI API service
-# Deploy this service first. Worker and Beat services share the same repo
-# but use different start commands (set in Railway dashboard per service).
+# railway.toml — OpsLens AI (all services)
+# All three services (api, worker, beat) share this repo and this file.
+# The start command uses $RAILWAY_SERVICE_NAME to dispatch the right process.
 #
-# Service start commands:
-#   API:    uvicorn apps.api.main:app --host 0.0.0.0 --port $PORT
-#   Worker: celery -A apps.worker.celery_app worker --loglevel=info --concurrency=2 -Q celery,ingestion,insights,alerts,logs,rrt
-#   Beat:   celery -A apps.worker.celery_app beat --loglevel=info
+# Railway service names must match exactly (case-sensitive):
+#   Service named "api"    → runs uvicorn
+#   Service named "worker" → runs celery worker
+#   Service named "beat"   → runs celery beat
 
 [build]
 builder = "dockerfile"
 dockerfilePath = "Dockerfile.api"
 
 [deploy]
-startCommand = "sh -c 'uvicorn apps.api.main:app --host 0.0.0.0 --port $PORT --no-access-log'"
+startCommand = """sh -c '
+  if [ "$RAILWAY_SERVICE_NAME" = "worker" ]; then
+    exec celery -A apps.worker.celery_app worker --loglevel=info --concurrency=2 -Q celery,ingestion,insights,alerts,logs,rrt
+  elif [ "$RAILWAY_SERVICE_NAME" = "beat" ]; then
+    exec celery -A apps.worker.celery_app beat --loglevel=info
+  else
+    exec uvicorn apps.api.main:app --host 0.0.0.0 --port $PORT --no-access-log
+  fi
+'"""
 healthcheckPath = "/health"
 healthcheckTimeout = 30
 restartPolicyType = "on_failure"
