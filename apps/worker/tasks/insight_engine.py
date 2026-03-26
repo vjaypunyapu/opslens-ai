@@ -36,7 +36,7 @@ from celery import shared_task
 from celery.utils.log import get_task_logger
 from langchain_core.prompts import ChatPromptTemplate
 from ...api.config import settings
-from ...api.db import AsyncSession
+from ..db import AsyncSession
 from ...api.models.document import CanonicalDocument
 from ...api.models.insight import Insight
 from ..async_utils import run_async as _run_async
