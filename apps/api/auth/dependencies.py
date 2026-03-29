@@ -117,13 +117,20 @@ async def _provision_user(db, tenant_uuid_str: str, external_id: str, email: str
     Ensure a User row exists for this Clerk user in the given tenant.
     - First user in a tenant → role='admin' (they're the owner who set it up)
     - Subsequent users       → role='member'
+
+    Domain allowlist enforcement:
+        If the tenant has configured allowed_email_domains (a non-empty list),
+        only users whose email domain appears in that list will be provisioned.
+        Existing users are never blocked — the check only applies to first login.
+        Admins manage the allowlist via POST /api/v1/auth/domain-allowlist.
+
     Returns the user's role string.
     """
-    from ..db.models import User
+    from ..db.models import User, Tenant
 
     tenant_uuid_obj = _uuid.UUID(tenant_uuid_str)
 
-    # Check if user already exists
+    # Check if user already exists — existing users bypass all allowlist checks
     result = await db.execute(
         sa.select(User.role).where(
             User.tenant_id == tenant_uuid_obj,
@@ -133,6 +140,31 @@ async def _provision_user(db, tenant_uuid_str: str, external_id: str, email: str
     existing_role = result.scalar_one_or_none()
     if existing_role is not None:
         return existing_role
+
+    # ── Domain allowlist check (new users only) ────────────────────────────────
+    # Fetch the tenant's allowed_email_domains list from the DB.
+    tenant_result = await db.execute(
+        sa.select(Tenant.allowed_email_domains).where(Tenant.id == tenant_uuid_obj)
+    )
+    allowed_domains: list[str] = tenant_result.scalar_one_or_none() or []
+
+    if allowed_domains:
+        # Extract domain from the email address (case-insensitive comparison)
+        email_domain = email.split("@")[-1].lower() if "@" in email else ""
+        allowed_lower = [d.strip().lower() for d in allowed_domains]
+        if email_domain not in allowed_lower:
+            logger.warning(
+                "Registration blocked: email domain '%s' not in allowlist for tenant %s. "
+                "Allowed: %s",
+                email_domain, tenant_uuid_str, allowed_lower,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    f"Your email domain '{email_domain}' is not approved for this workspace. "
+                    "Contact your administrator to request access."
+                ),
+            )
 
     # Count existing users in this tenant to decide role
     count_result = await db.execute(

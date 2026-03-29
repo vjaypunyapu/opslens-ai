@@ -24,3 +24,13 @@ def decrypt_credentials(stored: dict) -> dict:
     except Exception as exc:
         logger.error("Failed to decrypt credentials: %s", exc)
         return {}
+
+
+def encrypt(plaintext: str) -> str:
+    """Encrypt a plaintext string with Fernet (AES-256). Returns a base64-encoded token."""
+    return _fernet.encrypt(plaintext.encode()).decode()
+
+
+def decrypt(token: str) -> str:
+    """Decrypt a Fernet token back to plaintext. Raises InvalidToken on failure."""
+    return _fernet.decrypt(token.encode()).decode()

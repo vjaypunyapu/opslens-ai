@@ -162,9 +162,20 @@ class Settings(BaseSettings):
     # Global fallback key — per-team keys are stored on AlertRoutingRule.pagerduty_key
     PAGERDUTY_ROUTING_KEY: str = ""
 
-    # ── SAML SSO (per-tenant config is stored in DB; these are SP-level defaults) ─
+    # ── Enterprise SSO (SAML / OIDC / LDAP) ──────────────────────────────────
+    # Per-tenant SAML config is stored in DB; these are SP-level defaults.
     SAML_SP_ENTITY_ID: str = "https://app.opslens.ai"
     SAML_SP_BASE_URL: str = "https://app.opslens.ai"   # used to build ACS / SLO URLs
+
+    # Frontend URL used for SSO callbacks.
+    # After SAML/OIDC login, the user is redirected to:
+    #   {FRONTEND_URL}/auth/sso-callback?token=<jwt>
+    # The frontend should extract the token and use it as a Bearer header.
+    FRONTEND_URL: str = "http://localhost:3000"
+
+    # Lifetime (seconds) for internally-issued SSO tokens (SAML/OIDC/LDAP).
+    # Default: 3600 (1 hour). Rotate SECRET_KEY to invalidate all sessions.
+    INTERNAL_TOKEN_TTL_SECONDS: int = 3600
 
     # ── S3 Archive (optional — used by RetentionPolicy when archive_to_s3=true) ──
     AWS_ACCESS_KEY_ID: str | None = None

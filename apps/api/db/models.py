@@ -34,6 +34,17 @@ class Tenant(Base):
     slug: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
     plan: Mapped[str] = mapped_column(String(50), nullable=False, default="starter")
     settings: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+
+    # Domain-based registration allow-list.
+    # Stores a list of approved email domain strings, e.g. ["acme.com", "acme.io"].
+    # An empty list (the default) disables the allowlist — users from any domain
+    # may join this tenant. When non-empty, only users whose email domain appears
+    # in this list will be provisioned on first login. Existing users are never
+    # affected, regardless of their domain.
+    allowed_email_domains: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
