@@ -17,11 +17,23 @@ logger = get_logger(__name__)
 _PUBLIC_PATHS = {
     "/health", "/api/docs", "/api/redoc", "/api/openapi.json",
     "/api/v1/ping", "/api/v1/integrations/webhooks/airbyte",
-    "/api/v1/debug/db",            # dev-only DB diagnostics — no auth required
-    "/api/v1/auth/saml/metadata",  # SAML SP metadata — public
-    "/api/v1/auth/saml/acs",       # SAML Assertion Consumer Service — called by IdP
-    "/api/v1/auth/saml/slo",       # SAML Single Logout — called by IdP
-    "/api/v1/scim/v2",             # SCIM uses its own bearer token, not JWT
+    "/api/v1/debug/db",              # dev-only DB diagnostics — no auth required
+
+    # ── SAML SSO ──────────────────────────────────────────────────────────────
+    "/api/v1/auth/saml/metadata",    # SP metadata XML — shared with IdP admin
+    "/api/v1/auth/saml/login",       # Initiates SP-initiated SSO → redirects to IdP
+    "/api/v1/auth/saml/acs",         # Assertion Consumer Service — called by IdP POST
+    "/api/v1/auth/saml/slo",         # Single Logout — called by IdP
+
+    # ── OIDC SSO ──────────────────────────────────────────────────────────────
+    "/api/v1/auth/oidc/login",       # Redirects user to IdP authorization endpoint
+    "/api/v1/auth/oidc/callback",    # IdP redirects back here with auth code
+
+    # ── LDAP / AD ─────────────────────────────────────────────────────────────
+    "/api/v1/auth/ldap/login",       # Direct credential auth (username + password)
+
+    # ── SCIM ──────────────────────────────────────────────────────────────────
+    "/api/v1/scim/v2",               # SCIM uses its own bearer token, not JWT
 }
 
 _jwks_client: PyJWKClient | None = None
@@ -196,6 +208,36 @@ async def _resolve_api_key(token: str, request: Request) -> bool:
 
 
 def _decode_token(token: str) -> dict:
+    """
+    Validate and decode a Bearer token. Supports two token types:
+
+    1. External provider tokens (Clerk, Auth0) — RS256, validated via JWKS or
+       a static PEM public key. These are the default for cloud-hosted OpsLens.
+
+    2. Internal SSO tokens — HS256, issued by apps/api/auth/token_issuer.py
+       after a successful SAML, OIDC, or LDAP authentication. Identified by
+       alg=HS256 in the token header; validated with settings.SECRET_KEY.
+
+    The algorithm is detected from the unverified JWT header to decide which
+    key material and verification path to use. This is safe because the
+    signature is always verified regardless of which path is taken.
+    """
+    try:
+        header = jwt.get_unverified_header(token)
+    except Exception:
+        raise jwt.InvalidTokenError("Cannot parse token header.")
+
+    alg = header.get("alg", "")
+
+    # ── Internal SSO token (HS256) ────────────────────────────────────────────
+    # Issued by token_issuer.issue_sso_token() after SAML/OIDC/LDAP login.
+    # Signed with SECRET_KEY — rotate it to immediately invalidate all sessions.
+    if alg == "HS256":
+        from .token_issuer import decode_sso_token
+        return decode_sso_token(token)
+
+    # ── External provider token (RS256 or configured algorithm) ──────────────
+    # Issued by Clerk, Auth0, or another external provider with RS256 JWTs.
     kwargs: dict = {"algorithms": [settings.JWT_ALGORITHM], "options": {"verify_exp": True}}
     if settings.JWT_AUDIENCE:
         kwargs["audience"] = settings.JWT_AUDIENCE

@@ -18,8 +18,18 @@ pydantic-settings>=2.3.0
 python-dotenv>=1.0.1
 
 # ── Authentication ────────────────────────────────────────────────────────────
-PyJWT[crypto]>=2.8.0          # RS256 JWT validation
-cryptography>=42.0.0          # AES-256 credential encryption
+PyJWT[crypto]>=2.8.0          # RS256 + HS256 JWT validation and issuance
+cryptography>=42.0.0          # AES-256 credential encryption (Fernet)
+
+# Enterprise SSO — SAML 2.0
+# Requires native libraries: libxml2-dev + libxmlsec1-dev
+#   Debian/Ubuntu:  apt-get install libxml2-dev libxmlsec1-dev libxmlsec1-openssl
+#   Alpine Linux:   apk add libxmlsec1-dev
+#   macOS:          brew install libxmlsec1
+python3-saml>=2.6.0           # SAML 2.0 SP implementation (OneLogin python3-saml)
+
+# Enterprise SSO — LDAP / Active Directory
+ldap3>=2.9.1                  # Pure-Python LDAP client (no native deps required)
 
 # ── AI / LLM ─────────────────────────────────────────────────────────────────
 langchain>=0.2.0
