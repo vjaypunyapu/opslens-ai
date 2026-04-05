@@ -75,3 +75,16 @@ def process_all_staging():
             process_staging_batch.delay(tenant_id, source_type)
             dispatched += 1
     return {"dispatched": dispatched}
+
+
+# ── Fast log alert fan-out ────────────────────────────────────────────────────
+@shared_task(name="logs.fast_scan_all_tenants")
+def fast_scan_all_tenants():
+    """Dispatch fast_scan for every tenant so routing rules are resolved per tenant."""
+    from .log_fast_alert import fast_scan
+
+    tenant_ids = _run_async(_get_all_tenant_ids())
+    logger.info("Dispatching fast_scan for %d tenants", len(tenant_ids))
+    for tid in tenant_ids:
+        fast_scan.delay(tid)
+    return {"dispatched": len(tenant_ids)}

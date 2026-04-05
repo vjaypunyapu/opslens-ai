@@ -64,11 +64,11 @@ app.conf.beat_schedule = {
         "kwargs": {"tenant_id": None},
     },
     # Fast alert — runs every 5 min, fires immediately on new exceptions,
-    # then dispatches RAG enrichment to find related Jira/Slack/GitHub context
+    # then dispatches RAG enrichment to find related Jira/Slack/GitHub context.
+    # Fan-out to all tenants so routing rules are resolved per-tenant.
     "log-fast-alert": {
-        "task": "logs.fast_scan",
+        "task": "logs.fast_scan_all_tenants",
         "schedule": crontab(minute=f"*/{settings.LOG_FAST_ALERT_CRON_MINUTES}"),
-        "kwargs": {"tenant_id": None},
     },
     # Data retention cleanup — daily at 02:00 UTC
     # Deletes rows older than each tenant's RetentionPolicy thresholds

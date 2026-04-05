@@ -750,11 +750,6 @@ def fast_scan(self, tenant_id: str | None = None):
     if not settings.LOG_FAST_ALERT_ENABLED:
         return {"status": "disabled"}
 
-    webhook = settings.LOG_FAST_ALERT_SLACK_WEBHOOK or settings.LOG_SCAN_SLACK_WEBHOOK
-    if not webhook:
-        logger.warning("No Slack webhook configured for fast alerts — set LOG_FAST_ALERT_SLACK_WEBHOOK")
-        return {"status": "no_webhook"}
-
     try:
         lines = _collect_lines()
         if not lines:
