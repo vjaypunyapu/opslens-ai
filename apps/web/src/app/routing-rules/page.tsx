@@ -285,7 +285,7 @@ function RuleModal({
 
 // ─── Test panel ───────────────────────────────────────────────────────────────
 
-function TestPanel({ token }: { token: string }) {
+function TestPanel({ getToken }: { getToken: () => Promise<string | null> }) {
   const [errorLine, setErrorLine] = useState("");
   const [container, setContainer] = useState("");
   const [result, setResult] = useState<TestRoutingResult | null>(null);
@@ -297,7 +297,9 @@ function TestPanel({ token }: { token: string }) {
     if (!errorLine.trim()) return;
     setLoading(true); setErr(null); setResult(null);
     try {
-      const r = await routingRulesApi.test(token, errorLine, container || undefined);
+      const tok = await getToken();
+      if (!tok) { setErr("Not authenticated"); setLoading(false); return; }
+      const r = await routingRulesApi.test(tok, errorLine, container || undefined);
       setResult(r);
     } catch (e: unknown) {
       setErr(e instanceof Error ? e.message : "Test failed");
@@ -576,72 +578,80 @@ export default function RoutingRulesPage() {
   const [showModal, setShowModal] = useState(false);
   const [editingRule, setEditingRule] = useState<RoutingRule | null>(null);
 
-  const load = useCallback(async (tok: string) => {
+  const load = useCallback(async () => {
     setLoading(true); setError(null);
     try {
+      const tok = await getToken();
+      if (!tok) return;
+      setToken(tok); // keep token state fresh for TestPanel gate check
       setRules(await routingRulesApi.list(tok));
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to load rules");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [getToken]);
 
   useEffect(() => {
-    getToken().then(tok => {
-      if (tok) { setToken(tok); load(tok); }
-    });
-  }, [getToken, load]);
+    load();
+  }, [load]);
 
   async function handleSave(data: CreateRoutingRuleData) {
-    if (!token) return;
+    const tok = await getToken();
+    if (!tok) return;
     if (editingRule) {
-      await routingRulesApi.update(token, editingRule.id, data);
+      await routingRulesApi.update(tok, editingRule.id, data);
     } else {
-      await routingRulesApi.create(token, data);
+      await routingRulesApi.create(tok, data);
     }
     setShowModal(false);
     setEditingRule(null);
-    load(token);
+    load();
   }
 
   async function handleDelete(id: string) {
-    if (!token) return;
-    await routingRulesApi.delete(token, id);
-    load(token);
+    const tok = await getToken();
+    if (!tok) return;
+    await routingRulesApi.delete(tok, id);
+    load();
   }
 
   async function handleToggle(rule: RoutingRule) {
-    if (!token) return;
-    await routingRulesApi.update(token, rule.id, { is_active: !rule.is_active });
-    load(token);
+    const tok = await getToken();
+    if (!tok) return;
+    await routingRulesApi.update(tok, rule.id, { is_active: !rule.is_active });
+    load();
   }
 
   async function handleMoveUp(idx: number) {
-    if (!token || idx === 0) return;
+    if (idx === 0) return;
+    const tok = await getToken();
+    if (!tok) return;
     const a = rules[idx], b = rules[idx - 1];
     // Swap priorities
     const pa = a.priority, pb = b.priority;
     if (pa === pb) {
-      await routingRulesApi.update(token, a.id, { priority: pb - 1 });
+      await routingRulesApi.update(tok, a.id, { priority: pb - 1 });
     } else {
-      await routingRulesApi.update(token, a.id, { priority: pb });
-      await routingRulesApi.update(token, b.id, { priority: pa });
+      await routingRulesApi.update(tok, a.id, { priority: pb });
+      await routingRulesApi.update(tok, b.id, { priority: pa });
     }
-    load(token);
+    load();
   }
 
   async function handleMoveDown(idx: number) {
-    if (!token || idx >= rules.length - 1) return;
+    if (idx >= rules.length - 1) return;
+    const tok = await getToken();
+    if (!tok) return;
     const a = rules[idx], b = rules[idx + 1];
     const pa = a.priority, pb = b.priority;
     if (pa === pb) {
-      await routingRulesApi.update(token, b.id, { priority: pa + 1 });
+      await routingRulesApi.update(tok, b.id, { priority: pa + 1 });
     } else {
-      await routingRulesApi.update(token, a.id, { priority: pb });
-      await routingRulesApi.update(token, b.id, { priority: pa });
+      await routingRulesApi.update(tok, a.id, { priority: pb });
+      await routingRulesApi.update(tok, b.id, { priority: pa });
     }
-    load(token);
+    load();
   }
 
   const activeCount = rules.filter(r => r.is_active).length;
@@ -671,7 +681,7 @@ export default function RoutingRulesPage() {
       </div>
 
       {/* Test panel */}
-      {token && <TestPanel token={token} />}
+      {token && <TestPanel getToken={getToken} />}
 
       {/* Empty state */}
       {!loading && rules.length === 0 && (
