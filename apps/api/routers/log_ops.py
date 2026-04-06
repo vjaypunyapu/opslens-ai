@@ -351,7 +351,7 @@ async def create_routing_rule(
                       request=request)
     await db.commit()
     await db.refresh(rr)
-    logger.info("Routing rule '%s' created by %s (priority=%d)", body.team_name, ctx.user_id, body.priority)
+    logger.info("Routing rule '%s' created by %s (priority=%d, tenant=%s)", body.team_name, ctx.user_id, body.priority, ctx.tenant_id)
     return _rr_to_out(rr)
 
 
