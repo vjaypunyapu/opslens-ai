@@ -352,6 +352,8 @@ export interface SimulateAlertResponse {
   rrt_task_id: string | null;
   error_signature: string;
   service_name: string;
+  routed_to: string[];
+  routing_used_fallback: boolean;
 }
 
 export const logOpsApi = {

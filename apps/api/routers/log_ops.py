@@ -511,6 +511,8 @@ class SimulateAlertResponse(BaseModel):
     rrt_task_id: str | None = None
     error_signature: str
     service_name: str
+    routed_to: list[str] = []           # team names that matched routing rules
+    routing_used_fallback: bool = False  # True = no rules matched, used env var webhook
 
 
 @router.post(
@@ -581,6 +583,7 @@ async def simulate_alert(
 
     # ── Resolve routing targets (same logic as fast_scan) ────────────────────
     routing_targets = []
+    routing_error: str | None = None
     try:
         result = await db.execute(
             sa.select(AlertRoutingRule)
@@ -591,6 +594,10 @@ async def simulate_alert(
             .order_by(AlertRoutingRule.priority)
         )
         rules = result.scalars().all()
+        logger.info(
+            "Simulate routing: tenant=%s found %d active rules, checking against '%s %s'",
+            ctx.tenant_id, len(rules), body.service_name, body.error_message[:60],
+        )
         sample_error = f"{body.service_name} {body.error_message}"
         for rr in rules:
             if _rule_matches(rr, sample_error, body.service_name):
@@ -599,15 +606,29 @@ async def simulate_alert(
                     "slack_webhook": rr.slack_webhook or webhook,
                     "email_recipients": list(rr.email_recipients or []),
                 })
+                logger.info("Simulate: matched rule team=%s webhook_set=%s", rr.team_name, bool(rr.slack_webhook))
                 if rr.stop_on_match:
                     break
+        if not routing_targets:
+            logger.warning(
+                "Simulate: no routing rules matched for tenant=%s service=%s — using fallback webhook",
+                ctx.tenant_id, body.service_name,
+            )
     except Exception as exc:
-        logger.warning("Routing rule lookup failed during simulation: %s", exc)
+        routing_error = str(exc)
+        logger.error("Routing rule lookup FAILED during simulation: %s", exc)
 
-    if not routing_targets:
-        routing_targets = [
-            {"team_name": "Demo Team", "slack_webhook": webhook, "email_recipients": []}
-        ]
+    using_fallback = not routing_targets
+    if using_fallback:
+        if not webhook:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "No routing rules matched and no fallback webhook configured. "
+                    "Add a routing rule in the Routing Rules page, or set LOG_FAST_ALERT_SLACK_WEBHOOK."
+                ),
+            )
+        routing_targets = [{"team_name": "Fallback", "slack_webhook": webhook, "email_recipients": []}]
 
     # ── Dispatch async pipeline ───────────────────────────────────────────────
     enrich_task_id = None
@@ -624,30 +645,40 @@ async def simulate_alert(
         )
         enrich_task_id = task.id
         logger.info(
-            "Simulation dispatched for tenant=%s service=%s sig=%s task=%s",
+            "Simulation dispatched for tenant=%s service=%s sig=%s task=%s routed_to=%s fallback=%s",
             ctx.tenant_id, body.service_name, signature, task.id,
+            [t["team_name"] for t in routing_targets], using_fallback,
         )
     except Exception as exc:
         logger.error("Failed to dispatch simulation task: %s", exc)
         raise HTTPException(
             status_code=503,
-            detail=(
-                f"Could not dispatch simulation — is the Celery worker running? ({exc})"
-            ),
+            detail=f"Could not dispatch simulation — is the Celery worker running? ({exc})",
         )
+
+    matched_teams = [t["team_name"] for t in routing_targets]
+    if using_fallback:
+        msg = (
+            f"⚠️ No routing rules matched '{body.service_name}' — alert sent to fallback channel. "
+            "Check that your routing rule patterns match this service/error text."
+        )
+    else:
+        msg = (
+            f"Routing to: {', '.join(matched_teams)}. "
+            "Check Slack in ~15 seconds for the fast alert, then the enriched alert and RRT brief."
+        )
+        if routing_error:
+            msg = f"⚠️ Routing lookup error ({routing_error}) — sent to fallback. " + msg
 
     return SimulateAlertResponse(
         status="dispatched",
-        message=(
-            f"Simulation running for '{body.service_name}'. "
-            "Check your Slack channel in ~15 seconds for the fast alert, "
-            "then the enriched alert and RRT brief will follow. "
-            "Visit /api/v1/rrt-briefs to see the generated brief."
-        ),
+        message=msg,
         enrich_task_id=enrich_task_id,
         rrt_task_id=rrt_task_id,
         error_signature=signature,
         service_name=body.service_name,
+        routed_to=matched_teams,
+        routing_used_fallback=using_fallback,
     )
 
 

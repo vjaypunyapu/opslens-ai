@@ -560,7 +560,7 @@ const DEMO_SCENARIOS = [
 
 function SimulateAlertModal({ onClose, onSimulate }: {
   onClose: () => void;
-  onSimulate: (data: { service_name: string; error_message: string; error_count: number; severity: string }) => Promise<void>;
+  onSimulate: (data: { service_name: string; error_message: string; error_count: number; severity: string }) => Promise<import("@/lib/api").SimulateAlertResponse>;
 }) {
   const [form, setForm] = useState({
     service_name: "payment-service",
@@ -569,7 +569,7 @@ function SimulateAlertModal({ onClose, onSimulate }: {
     severity: "p1",
   });
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<{ message: string; signature: string } | null>(null);
+  const [result, setResult] = useState<import("@/lib/api").SimulateAlertResponse | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   function applyScenario(s: typeof DEMO_SCENARIOS[0]) {
@@ -584,11 +584,8 @@ function SimulateAlertModal({ onClose, onSimulate }: {
     setLoading(true);
     setErr(null);
     try {
-      await onSimulate(form);
-      setResult({
-        message: "Simulation dispatched! Check Slack in ~15 seconds for the fast alert, then the enriched alert and RRT brief will follow.",
-        signature: "",
-      });
+      const res = await onSimulate(form);
+      setResult(res);
     } catch (e: unknown) {
       setErr(e instanceof Error ? e.message : "Simulation failed — check that the Celery worker is running and a Slack webhook is configured.");
     } finally {
@@ -705,15 +702,37 @@ function SimulateAlertModal({ onClose, onSimulate }: {
 
           {/* Result / error */}
           {result && (
-            <div style={{ background: "rgba(34,197,94,0.1)", border: "1px solid rgba(34,197,94,0.3)",
-              borderRadius: "8px", padding: "12px 16px", marginBottom: "16px" }}>
+            <div style={{
+              background: result.routing_used_fallback ? "rgba(251,146,60,0.08)" : "rgba(34,197,94,0.1)",
+              border: `1px solid ${result.routing_used_fallback ? "rgba(251,146,60,0.3)" : "rgba(34,197,94,0.3)"}`,
+              borderRadius: "8px", padding: "12px 16px", marginBottom: "16px",
+            }}>
               <div style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}>
-                <CheckCircle size={16} color="#4ade80" style={{ flexShrink: 0, marginTop: "1px" }} />
-                <div>
-                  <div style={{ fontSize: "13px", fontWeight: 600, color: "#4ade80", marginBottom: "4px" }}>
-                    Simulation running!
+                <CheckCircle size={16} color={result.routing_used_fallback ? "#fb923c" : "#4ade80"}
+                  style={{ flexShrink: 0, marginTop: "1px" }} />
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: "13px", fontWeight: 600,
+                    color: result.routing_used_fallback ? "#fb923c" : "#4ade80", marginBottom: "4px" }}>
+                    {result.routing_used_fallback ? "⚠️ No routing rules matched" : "Simulation running!"}
                   </div>
                   <div style={{ fontSize: "12px", color: "#94a3b8", lineHeight: 1.5 }}>{result.message}</div>
+                  {!result.routing_used_fallback && result.routed_to.length > 0 && (
+                    <div style={{ marginTop: "6px", display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                      {result.routed_to.map(team => (
+                        <span key={team} style={{
+                          fontSize: "11px", background: "rgba(20,184,166,0.15)",
+                          border: "1px solid rgba(20,184,166,0.3)", color: "#2dd4bf",
+                          borderRadius: "4px", padding: "2px 8px",
+                        }}>✓ {team}</span>
+                      ))}
+                    </div>
+                  )}
+                  {result.routing_used_fallback && (
+                    <div style={{ marginTop: "6px", fontSize: "11px", color: "#94a3b8" }}>
+                      Add a routing rule matching <code style={{ color: "#fb923c" }}>{form.service_name}</code> in the{" "}
+                      <a href="/routing-rules" style={{ color: "#2dd4bf" }}>Routing Rules page</a>.
+                    </div>
+                  )}
                   <div style={{ marginTop: "8px" }}>
                     <a href="/rrt-briefs" style={{ fontSize: "12px", color: "#2dd4bf", textDecoration: "none",
                       display: "inline-flex", alignItems: "center", gap: "4px" }}>
@@ -834,7 +853,7 @@ export default function IncidentsPage() {
   async function handleSimulate(data: { service_name: string; error_message: string; error_count: number; severity: string }) {
     const token = await getToken();
     if (!token) throw new Error("Not authenticated");
-    await logOpsApi.simulate(token, data);
+    return await logOpsApi.simulate(token, data);
   }
 
   async function handleSeedDemo() {
