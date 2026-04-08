@@ -42,7 +42,7 @@ def upgrade() -> None:
     # Add a partial index so queries for active log source integrations are fast
     # (used by poll_all_log_sources every 5 minutes)
     op.execute("""
-        CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_integrations_log_sources_active
+        CREATE INDEX IF NOT EXISTS idx_integrations_log_sources_active
         ON opslens.integrations (tenant_id, source_type, last_synced_at)
         WHERE status = 'active'
           AND source_type IN (
@@ -52,7 +52,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute("DROP INDEX CONCURRENTLY IF EXISTS idx_integrations_log_sources_active")
+    op.execute("DROP INDEX IF EXISTS idx_integrations_log_sources_active")
     op.execute(f"ALTER TABLE opslens.integrations DROP CONSTRAINT IF EXISTS {_CONSTRAINT_NAME}")
 
     # Restore original narrow constraint
