@@ -108,7 +108,19 @@ class InviteOut(BaseModel):
     invite_id: str
     email: str
     token: str
+    invite_url: str
     expires_at: str
+    email_sent: bool
+
+
+class PendingInviteOut(BaseModel):
+    invite_id: str
+    email: str
+    role: str
+    invite_url: str
+    expires_at: str
+    invited_by: str
+    created_at: str
 
 
 # ── Teams ─────────────────────────────────────────────────────────────────────
@@ -440,12 +452,15 @@ async def create_invite(
     db=Depends(get_db),
 ):
     """
-    Generate an invite token for a new user. The token can be embedded in an
-    invite link (e.g. /join?token=<invite_id>) handled by the frontend.
+    Generate an invite token and email it to the recipient.
 
-    When the invitee signs up and visits the link, the frontend calls
-    POST /api/v1/admin/invites/{invite_id}/redeem to activate the membership.
+    The invite link points to /sign-up?token=<invite_id>. After completing
+    Clerk sign-up the user lands on /join?token=<invite_id> which calls
+    POST /api/v1/admin/invites/{invite_id}/redeem to activate their membership.
     """
+    from ..config import settings
+    from ..services.email_service import send_invite_email
+
     team_uuid: uuid.UUID | None = None
     if body.team_id:
         team = await _get_team_or_404(db, body.team_id, ctx.tenant_uuid)
@@ -456,7 +471,7 @@ async def create_invite(
         id=uuid.uuid4(),
         tenant_id=ctx.tenant_uuid,
         team_id=team_uuid,
-        email=body.email,
+        email=body.email.strip().lower(),
         role=body.role,
         team_role=body.team_role,
         invited_by=ctx.user_id,
@@ -465,16 +480,135 @@ async def create_invite(
     db.add(invite)
     await db.commit()
     await db.refresh(invite)
+
+    invite_url = f"{settings.APP_URL}/sign-up?token={invite.id}"
+
+    # Fetch workspace name and inviter display name for the email
+    from ..db.models import Tenant
+    tenant_result = await db.execute(
+        sa.select(Tenant.name).where(Tenant.id == ctx.tenant_uuid)
+    )
+    workspace_name = tenant_result.scalar_one_or_none() or "your workspace"
+
+    inviter_result = await db.execute(
+        sa.select(User).where(
+            User.tenant_id == ctx.tenant_uuid,
+            User.external_id == ctx.user_id,
+        )
+    )
+    inviter = inviter_result.scalar_one_or_none()
+    invited_by_name = (inviter.name if inviter and inviter.name else None) or \
+                      (inviter.email if inviter else ctx.user_id)
+
+    email_sent = await send_invite_email(
+        to_email=body.email,
+        invited_by_name=invited_by_name,
+        workspace_name=workspace_name,
+        role=body.role,
+        invite_url=invite_url,
+        expires_hours=body.expires_in_hours,
+    )
+
     logger.info(
-        "Invite created for %s → tenant %s team %s role=%s (by %s)",
-        body.email, ctx.tenant_id, body.team_id, body.role, ctx.user_id[:12],
+        "Invite created for %s → tenant %s role=%s email_sent=%s (by %s)",
+        body.email, ctx.tenant_id, body.role, email_sent, ctx.user_id[:12],
     )
     return InviteOut(
         invite_id=str(invite.id),
         email=invite.email,
-        token=str(invite.id),          # frontend embeds this in the invite URL
+        token=str(invite.id),
+        invite_url=invite_url,
         expires_at=invite.expires_at.isoformat(),
+        email_sent=email_sent,
     )
+
+
+@router.get("/invites", response_model=list[PendingInviteOut])
+async def list_pending_invites(
+    ctx: Annotated[TenantContext, Depends(require_admin)],
+    db=Depends(get_db),
+):
+    """List all pending (not yet accepted) invites for this workspace."""
+    from ..config import settings
+
+    result = await db.execute(
+        sa.select(PendingInvite)
+        .where(
+            PendingInvite.tenant_id == ctx.tenant_uuid,
+            PendingInvite.accepted_at == None,  # noqa: E711
+            PendingInvite.expires_at > datetime.now(tz=timezone.utc),
+        )
+        .order_by(PendingInvite.expires_at.desc())
+    )
+    invites = result.scalars().all()
+    return [
+        PendingInviteOut(
+            invite_id=str(i.id),
+            email=i.email,
+            role=i.role,
+            invite_url=f"{settings.APP_URL}/sign-up?token={i.id}",
+            expires_at=i.expires_at.isoformat(),
+            invited_by=str(i.invited_by),
+            created_at=i.created_at.isoformat() if hasattr(i, "created_at") else "",
+        )
+        for i in invites
+    ]
+
+
+@router.post("/invites/{invite_id}/resend", status_code=status.HTTP_200_OK)
+async def resend_invite(
+    invite_id: str,
+    ctx: Annotated[TenantContext, Depends(require_admin)],
+    db=Depends(get_db),
+):
+    """Resend the invite email for an existing pending invite."""
+    from ..config import settings
+    from ..services.email_service import send_invite_email
+    from ..db.models import Tenant
+
+    result = await db.execute(
+        sa.select(PendingInvite).where(
+            PendingInvite.id == uuid.UUID(invite_id),
+            PendingInvite.tenant_id == ctx.tenant_uuid,
+            PendingInvite.accepted_at == None,  # noqa: E711
+        )
+    )
+    invite = result.scalar_one_or_none()
+    if not invite:
+        raise HTTPException(status_code=404, detail="Invite not found or already accepted")
+    if invite.expires_at < datetime.now(tz=timezone.utc):
+        raise HTTPException(status_code=410, detail="Invite has expired — create a new one")
+
+    invite_url = f"{settings.APP_URL}/sign-up?token={invite.id}"
+
+    tenant_result = await db.execute(
+        sa.select(Tenant.name).where(Tenant.id == ctx.tenant_uuid)
+    )
+    workspace_name = tenant_result.scalar_one_or_none() or "your workspace"
+
+    inviter_result = await db.execute(
+        sa.select(User).where(
+            User.tenant_id == ctx.tenant_uuid,
+            User.external_id == ctx.user_id,
+        )
+    )
+    inviter = inviter_result.scalar_one_or_none()
+    invited_by_name = (inviter.name if inviter and inviter.name else None) or \
+                      (inviter.email if inviter else ctx.user_id)
+
+    hours_remaining = max(
+        1,
+        int((invite.expires_at - datetime.now(tz=timezone.utc)).total_seconds() // 3600),
+    )
+    email_sent = await send_invite_email(
+        to_email=invite.email,
+        invited_by_name=invited_by_name,
+        workspace_name=workspace_name,
+        role=invite.role,
+        invite_url=invite_url,
+        expires_hours=hours_remaining,
+    )
+    return {"status": "resent" if email_sent else "failed", "invite_url": invite_url}
 
 
 @router.post("/invites/{invite_id}/redeem", status_code=status.HTTP_200_OK)

@@ -1,15 +1,17 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useAuth } from "@clerk/nextjs";
 import {
-  Settings, Users, Building2, User, Save, Trash2,
+  Settings, Users, Building2, User, Trash2,
   Plus, Shield, CheckCircle, AlertTriangle, RefreshCw,
+  Mail, Copy, Clock, Send,
 } from "lucide-react";
 import { ApiError } from "@/lib/api";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
-interface TenantData { id: string; name: string; slug: string; plan: string; settings: Record<string, unknown> }
-interface MemberData  { id: string; email: string; name: string | null; role: string; external_id: string }
+interface TenantData    { id: string; name: string; slug: string; plan: string; settings: Record<string, unknown> }
+interface MemberData    { id: string; email: string; name: string | null; role: string; external_id: string }
+interface PendingInvite { invite_id: string; email: string; role: string; invite_url: string; expires_at: string; invited_by: string }
 
 type Tab = "workspace" | "members" | "profile";
 
@@ -48,6 +50,11 @@ export default function SettingsPage() {
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole]   = useState<"member" | "viewer">("member");
 
+  const [pendingInvites, setPendingInvites] = useState<PendingInvite[]>([]);
+  const [lastInviteUrl, setLastInviteUrl]   = useState<string | null>(null);
+  const [copied, setCopied]                 = useState(false);
+  const [resending, setResending]           = useState<string | null>(null);
+
   const [saving, setSaving]   = useState(false);
   const [loading, setLoading] = useState(true);
   const [toast, setToast]     = useState<{ msg: string; ok: boolean } | null>(null);
@@ -57,27 +64,29 @@ export default function SettingsPage() {
     setTimeout(() => setToast(null), 3500);
   };
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
       const token = await getToken();
       if (!token) return;
-      const [t, m, p] = await Promise.all([
+      const [t, m, p, inv] = await Promise.all([
         apiFetch<TenantData>("/settings/tenant", token),
         apiFetch<MemberData[]>("/settings/members", token),
         apiFetch<MemberData>("/settings/profile", token).catch(() => null),
+        apiFetch<PendingInvite[]>("/admin/invites", token).catch(() => []),
       ]);
       setTenant(t); setTenantName(t.name);
       setMembers(m);
+      setPendingInvites(inv);
       if (p) { setProfile(p); setProfileName(p.name ?? ""); }
     } catch (e: unknown) {
       showToast((e as Error).message, false);
     } finally {
       setLoading(false);
     }
-  };
+  }, [getToken]); // eslint-disable-line
 
-  useEffect(() => { load(); }, []); // eslint-disable-line
+  useEffect(() => { load(); }, [load]);
 
   const saveTenant = async () => {
     setSaving(true);
@@ -112,18 +121,63 @@ export default function SettingsPage() {
   const inviteMember = async () => {
     if (!inviteEmail.trim()) return;
     setSaving(true);
+    setLastInviteUrl(null);
     try {
       const token = await getToken();
       if (!token) return;
-      const newMember = await apiFetch<MemberData>("/settings/members", token, {
+      const result = await apiFetch<{
+        invite_id: string; email: string; invite_url: string; email_sent: boolean;
+      }>("/admin/invites", token, {
         method: "POST",
         body: JSON.stringify({ email: inviteEmail.trim(), role: inviteRole }),
       });
-      setMembers(prev => [...prev.filter(m => m.id !== newMember.id), newMember]);
+      setLastInviteUrl(result.invite_url);
       setInviteEmail("");
-      showToast(`${inviteEmail} added as ${inviteRole}.`);
+      // Reload pending invites
+      const inv = await apiFetch<PendingInvite[]>("/admin/invites", token).catch(() => []);
+      setPendingInvites(inv);
+      showToast(
+        result.email_sent
+          ? `Invite sent to ${result.email} ✓`
+          : `Invite created for ${result.email} — copy the link below (email not sent)`,
+        result.email_sent,
+      );
     } catch (e: unknown) { showToast((e as Error).message, false); }
     finally { setSaving(false); }
+  };
+
+  const copyInviteUrl = async (url: string) => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      showToast("Copy failed — please copy the link manually", false);
+    }
+  };
+
+  const resendInvite = async (inviteId: string, email: string) => {
+    setResending(inviteId);
+    try {
+      const token = await getToken();
+      if (!token) return;
+      const res = await apiFetch<{ status: string }>(`/admin/invites/${inviteId}/resend`, token, {
+        method: "POST",
+      });
+      showToast(res.status === "resent" ? `Re-sent invite to ${email} ✓` : "Email failed — copy the link instead", res.status === "resent");
+    } catch (e: unknown) { showToast((e as Error).message, false); }
+    finally { setResending(null); }
+  };
+
+  const revokeInvite = async (inviteId: string) => {
+    if (!confirm("Revoke this invite? The link will stop working immediately.")) return;
+    try {
+      const token = await getToken();
+      if (!token) return;
+      await apiFetch(`/admin/invites/${inviteId}`, token, { method: "DELETE" });
+      setPendingInvites(prev => prev.filter(i => i.invite_id !== inviteId));
+      showToast("Invite revoked.");
+    } catch (e: unknown) { showToast((e as Error).message, false); }
   };
 
   const updateRole = async (memberId: string, role: string) => {
@@ -226,28 +280,162 @@ export default function SettingsPage() {
       {/* ── Members tab ── */}
       {tab === "members" && (
         <>
-          <Card title="Invite Team Member" icon={Plus}>
+          {/* Send Invite */}
+          <Card title="Invite Team Member" icon={Mail}>
+            <p style={{ fontSize: 13, color: "#64748b", margin: "0 0 16px" }}>
+              An invite email will be sent automatically. The link expires in 72 hours.
+            </p>
             <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
               <input
                 placeholder="colleague@company.com"
                 value={inviteEmail}
                 onChange={e => setInviteEmail(e.target.value)}
                 onKeyDown={e => e.key === "Enter" && inviteMember()}
-                style={{ ...inputStyle, flex: 1, minWidth: 200 }}
+                style={{ ...inputStyle, flex: 1, minWidth: 220 }}
               />
-              <select value={inviteRole} onChange={e => setInviteRole(e.target.value as "member" | "viewer")}
-                style={{ ...inputStyle, width: "auto" }}>
+              <select
+                value={inviteRole}
+                onChange={e => setInviteRole(e.target.value as "member" | "viewer")}
+                style={{ ...inputStyle, width: "auto" }}
+              >
                 <option value="member">Member</option>
                 <option value="viewer">Viewer</option>
+                <option value="admin">Admin</option>
               </select>
-              <SaveButton onClick={inviteMember} saving={saving} label="Add Member" icon={Plus} />
+              <SaveButton onClick={inviteMember} saving={saving} label="Send Invite" icon={Send} />
             </div>
+
+            {/* Copy-link fallback shown after invite created */}
+            {lastInviteUrl && (
+              <div style={{
+                marginTop: 16, padding: "12px 14px",
+                background: "rgba(20,184,166,0.08)", border: "1px solid rgba(20,184,166,0.2)",
+                borderRadius: 8, display: "flex", alignItems: "center", gap: 10,
+              }}>
+                <CheckCircle size={15} color="#14b8a6" style={{ flexShrink: 0 }} />
+                <span style={{ fontSize: 12, color: "#64748b", flex: 1,
+                  overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {lastInviteUrl}
+                </span>
+                <button
+                  onClick={() => copyInviteUrl(lastInviteUrl)}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 6,
+                    padding: "5px 12px", borderRadius: 6, cursor: "pointer",
+                    background: copied ? "rgba(20,184,166,0.2)" : "rgba(255,255,255,0.06)",
+                    border: "1px solid rgba(255,255,255,0.1)",
+                    color: copied ? "#2dd4bf" : "#94a3b8", fontSize: 12, fontWeight: 500,
+                    transition: "all 0.15s",
+                  }}
+                >
+                  {copied ? <CheckCircle size={12} /> : <Copy size={12} />}
+                  {copied ? "Copied!" : "Copy link"}
+                </button>
+              </div>
+            )}
           </Card>
 
-          <Card title={`Team Members (${members.length})`} icon={Users} style={{ marginTop: 16 }}>
+          {/* Pending Invites */}
+          {pendingInvites.length > 0 && (
+            <Card title={`Pending Invites (${pendingInvites.length})`} icon={Clock} style={{ marginTop: 16 }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {pendingInvites.map(inv => {
+                  const expiresAt  = new Date(inv.expires_at);
+                  const hoursLeft  = Math.max(0, Math.round((expiresAt.getTime() - Date.now()) / 3_600_000));
+                  const expiresSoon = hoursLeft < 24;
+                  return (
+                    <div key={inv.invite_id} style={{
+                      display: "flex", alignItems: "center", gap: 12,
+                      padding: "10px 14px", background: "rgba(255,255,255,0.02)",
+                      borderRadius: 8, border: "1px solid rgba(255,255,255,0.05)",
+                    }}>
+                      {/* Avatar placeholder */}
+                      <div style={{
+                        width: 34, height: 34, borderRadius: "50%", flexShrink: 0,
+                        background: "rgba(100,116,139,0.15)",
+                        border: "1px dashed rgba(100,116,139,0.3)",
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                      }}>
+                        <Mail size={13} color="#64748b" />
+                      </div>
+
+                      {/* Info */}
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, color: "#cbd5e1", fontWeight: 500,
+                          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {inv.email}
+                        </div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 2 }}>
+                          <span style={{
+                            fontSize: 10, fontWeight: 600, padding: "1px 7px", borderRadius: 20,
+                            background: `${ROLE_COLOR[inv.role] || "#475569"}22`,
+                            color: ROLE_COLOR[inv.role] || "#94a3b8",
+                          }}>
+                            {inv.role}
+                          </span>
+                          <span style={{ fontSize: 11, color: expiresSoon ? "#f59e0b" : "#475569" }}>
+                            {expiresSoon ? `⚠ Expires in ${hoursLeft}h` : `Expires in ${hoursLeft}h`}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Actions */}
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <button
+                          onClick={() => copyInviteUrl(inv.invite_url)}
+                          title="Copy invite link"
+                          style={{
+                            display: "flex", alignItems: "center", gap: 5,
+                            padding: "5px 10px", borderRadius: 6, cursor: "pointer",
+                            background: "rgba(255,255,255,0.04)",
+                            border: "1px solid rgba(255,255,255,0.08)",
+                            color: "#64748b", fontSize: 11, fontWeight: 500,
+                          }}
+                        >
+                          <Copy size={11} /> Copy
+                        </button>
+                        <button
+                          onClick={() => resendInvite(inv.invite_id, inv.email)}
+                          disabled={resending === inv.invite_id}
+                          title="Resend invite email"
+                          style={{
+                            display: "flex", alignItems: "center", gap: 5,
+                            padding: "5px 10px", borderRadius: 6, cursor: "pointer",
+                            background: "rgba(20,184,166,0.08)",
+                            border: "1px solid rgba(20,184,166,0.15)",
+                            color: "#2dd4bf", fontSize: 11, fontWeight: 500,
+                            opacity: resending === inv.invite_id ? 0.5 : 1,
+                          }}
+                        >
+                          <Send size={11} />
+                          {resending === inv.invite_id ? "Sending…" : "Resend"}
+                        </button>
+                        <button
+                          onClick={() => revokeInvite(inv.invite_id)}
+                          title="Revoke invite"
+                          style={{
+                            display: "flex", alignItems: "center",
+                            padding: "5px 8px", borderRadius: 6, cursor: "pointer",
+                            background: "transparent",
+                            border: "1px solid transparent",
+                            color: "#475569",
+                          }}
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+          )}
+
+          {/* Active Members */}
+          <Card title={`Active Members (${members.length})`} icon={Users} style={{ marginTop: 16 }}>
             {members.length === 0 ? (
               <p style={{ color: "#64748b", fontSize: 13, textAlign: "center", padding: "16px 0" }}>
-                No members yet. Invite your team above.
+                No members yet. Send invites above.
               </p>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -275,10 +463,8 @@ export default function SettingsPage() {
                     <select
                       value={m.role}
                       onChange={e => updateRole(m.id, e.target.value)}
-                      style={{
-                        ...inputStyle, padding: "4px 10px", fontSize: 12,
-                        width: "auto", color: ROLE_COLOR[m.role] || "#94a3b8",
-                      }}
+                      style={{ ...inputStyle, padding: "4px 10px", fontSize: 12,
+                        width: "auto", color: ROLE_COLOR[m.role] || "#94a3b8" }}
                     >
                       <option value="admin">Admin</option>
                       <option value="member">Member</option>

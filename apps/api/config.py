@@ -110,7 +110,14 @@ class Settings(BaseSettings):
 
     # ── Notifications ─────────────────────────────────────────────────────────
     SENDGRID_API_KEY: str | None = None
-    ALERT_FROM_EMAIL: str = "alerts@opslens.ai"
+    ALERT_FROM_EMAIL: str = "alerts@opslensai.com"
+
+    # ── Transactional Email (Resend) ──────────────────────────────────────────
+    # Sign up at resend.com, verify your domain, then add your API key.
+    # Leave empty in dev to skip sending (emails are logged instead).
+    RESEND_API_KEY: str = ""
+    INVITE_FROM_EMAIL: str = "hello@opslensai.com"
+    APP_URL: str = "https://app.opslensai.com"   # used to build invite links
 
     # ── Log Scanner (hourly LLM digest) ──────────────────────────────────────
     # Runs once per hour, uses LLM to summarise all issues, sends to team.
