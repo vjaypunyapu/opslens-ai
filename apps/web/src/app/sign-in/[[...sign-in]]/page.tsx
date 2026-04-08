@@ -8,7 +8,16 @@ export default function SignInPage() {
           <h1 className="text-2xl font-bold">OpsLens AI</h1>
           <p className="text-white/60 text-sm mt-1">Operational Intelligence Copilot</p>
         </div>
-        <SignIn />
+        <SignIn
+          appearance={{
+            elements: {
+              // Hide the "Don't have an account? Sign up" footer link.
+              // OpsLens is invite-only — sign-up is not publicly available.
+              footerAction: { display: "none" },
+              footer: { display: "none" },
+            },
+          }}
+        />
       </div>
     </div>
   );
