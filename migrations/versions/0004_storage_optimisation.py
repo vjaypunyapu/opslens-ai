@@ -16,36 +16,44 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # CREATE INDEX CONCURRENTLY cannot run inside a transaction block.
+    # Switch the connection to AUTOCOMMIT for this migration so each
+    # index build runs outside any implicit transaction.
+    conn = op.get_bind()
+    conn.execution_options(isolation_level="AUTOCOMMIT")
+
     # ── ingestion_queue ───────────────────────────────────────────────────────
     # The daily retention task deletes processed rows by processed_at.
     # Without an index this is a full table scan on what can be millions of rows.
-    op.execute("""
+    conn.execute(op.inline_literal("""
         CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_ingestion_queue_processed_at
         ON opslens.ingestion_queue (processed_at)
         WHERE processed_at IS NOT NULL
-    """)
+    """))
 
     # ── canonical_documents ───────────────────────────────────────────────────
     # Speeds up the log-source canonical_documents cleanup query which filters
     # by tenant_id, source_type IN (...log types...), and source_created_at.
-    op.execute("""
+    conn.execute(op.inline_literal("""
         CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_canonical_docs_log_cleanup
         ON opslens.canonical_documents (tenant_id, source_created_at)
         WHERE source_type IN (
             'elasticsearch','datadog','cloudwatch','gcp','splunk','azuremonitor'
         )
-    """)
+    """))
 
     # ── ingestion_queue: error tracking ──────────────────────────────────────
     # Helps surface stuck/failed records in the queue (error_msg IS NOT NULL).
-    op.execute("""
+    conn.execute(op.inline_literal("""
         CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_ingestion_queue_errors
         ON opslens.ingestion_queue (tenant_id, created_at)
         WHERE processed_at IS NULL AND error_msg IS NOT NULL
-    """)
+    """))
 
 
 def downgrade() -> None:
-    op.execute("DROP INDEX CONCURRENTLY IF EXISTS opslens.idx_ingestion_queue_processed_at")
-    op.execute("DROP INDEX CONCURRENTLY IF EXISTS opslens.idx_canonical_docs_log_cleanup")
-    op.execute("DROP INDEX CONCURRENTLY IF EXISTS opslens.idx_ingestion_queue_errors")
+    conn = op.get_bind()
+    conn.execution_options(isolation_level="AUTOCOMMIT")
+    conn.execute(op.inline_literal("DROP INDEX CONCURRENTLY IF EXISTS opslens.idx_ingestion_queue_processed_at"))
+    conn.execute(op.inline_literal("DROP INDEX CONCURRENTLY IF EXISTS opslens.idx_canonical_docs_log_cleanup"))
+    conn.execute(op.inline_literal("DROP INDEX CONCURRENTLY IF EXISTS opslens.idx_ingestion_queue_errors"))
