@@ -232,6 +232,68 @@ def _delete_qdrant_embeddings(tenant_id: str, days: int) -> int:
         return 0
 
 
+async def _delete_staging_queue(db, days: int) -> int:
+    """
+    Delete processed rows from opslens.ingestion_queue older than `days`.
+    Only touches rows where processed_at IS NOT NULL — unprocessed rows are
+    always retained regardless of age so nothing is silently lost.
+    """
+    if not days:
+        return 0
+    try:
+        cutoff = _cutoff(days)
+        result = await db.execute(
+            sa.text("""
+                DELETE FROM opslens.ingestion_queue
+                WHERE processed_at IS NOT NULL
+                  AND processed_at <= :cutoff
+            """),
+            {"cutoff": cutoff},
+        )
+        deleted = result.rowcount or 0
+        if deleted:
+            logger.info("staging_queue: deleted %d processed rows older than %d days", deleted, days)
+        return deleted
+    except Exception as exc:
+        logger.warning("staging_queue cleanup failed: %s", exc)
+        return 0
+
+
+async def _delete_canonical_documents(db, tenant_id: str, days: int) -> int:
+    """
+    Delete old log-type canonical_documents for a tenant.
+    Only removes source_types that are log sources (elasticsearch, datadog,
+    cloudwatch, gcp, splunk, azuremonitor) — never touches contextual sources
+    (jira, slack, github) which are governed by embedding_days in Qdrant.
+    """
+    if not days:
+        return 0
+    try:
+        cutoff = _cutoff(days)
+        result = await db.execute(
+            sa.text("""
+                DELETE FROM opslens.canonical_documents
+                WHERE tenant_id = :tid
+                  AND source_type IN (
+                      'elasticsearch','datadog','cloudwatch',
+                      'gcp','splunk','azuremonitor'
+                  )
+                  AND source_created_at <= :cutoff
+            """),
+            {"tid": tenant_id, "cutoff": cutoff},
+        )
+        deleted = result.rowcount or 0
+        if deleted:
+            logger.info(
+                "canonical_documents: deleted %d log-source rows for tenant=%s older than %d days",
+                deleted, tenant_id, days,
+            )
+        return deleted
+    except Exception as exc:
+        logger.warning("canonical_documents cleanup failed for tenant=%s: %s", tenant_id, exc)
+        return 0
+
+
 # ── Main Celery task ──────────────────────────────────────────────────────────
 
 @shared_task(
@@ -255,47 +317,108 @@ def run_cleanup(self, tenant_id: str | None = None):
 async def _run_cleanup_async(tenant_id: str | None) -> dict:
     from apps.worker.db import AsyncSession
     from apps.api.models.retention import RetentionPolicy
+    from apps.api.config import settings as _cfg
 
+    # ── Default TTLs ──────────────────────────────────────────────────────────
+    # These are applied to any tenant that has no RetentionPolicy row in the DB.
+    # Cleanup always runs — it never silently skips because a policy is missing.
+    _DEFAULTS = {
+        "log_scan_history_days": 90,
+        "timeline_event_days":   180,
+        "rrt_brief_days":        365,
+        "audit_log_days":        730,
+        "chat_session_days":     90,
+        "insight_days":          90,
+        "embedding_days":        180,
+    }
+
+    # ── Step 1: Load explicit per-tenant policies ─────────────────────────────
+    policy_map: dict[str, object] = {}
     async with AsyncSession() as db:
         query = sa.select(RetentionPolicy).where(RetentionPolicy.is_active == True)
         if tenant_id:
             query = query.where(RetentionPolicy.tenant_id == tenant_id)
-
         result = await db.execute(query)
-        policies = result.scalars().all()
+        for p in result.scalars().all():
+            policy_map[str(p.tenant_id)] = p
 
-    if not policies:
-        logger.info("retention: no active policies found")
-        return {"status": "no_policies"}
+    # ── Step 2: Discover ALL tenant IDs that have data ────────────────────────
+    # This ensures cleanup runs even for tenants with no RetentionPolicy row.
+    async with AsyncSession() as db:
+        if tenant_id:
+            all_tenant_ids = [tenant_id]
+        else:
+            rows = await db.execute(
+                sa.text("""
+                    SELECT DISTINCT tenant_id::text FROM opslens.canonical_documents
+                    UNION
+                    SELECT DISTINCT tenant_id::text FROM opslens.log_scan_history
+                    UNION
+                    SELECT DISTINCT tenant_id::text FROM opslens.timeline_events
+                """)
+            )
+            all_tenant_ids = [r[0] for r in rows.fetchall()]
 
+    if not all_tenant_ids:
+        logger.info("retention: no tenant data found — nothing to clean up")
+        return {"status": "no_data"}
+
+    logger.info(
+        "retention: running cleanup for %d tenant(s) (%d with explicit policies, %d using defaults)",
+        len(all_tenant_ids),
+        len(policy_map),
+        len(all_tenant_ids) - len(policy_map),
+    )
+
+    # ── Step 3: Always clean up the staging queue first (shared table) ────────
+    staging_deleted = 0
+    try:
+        async with AsyncSession() as db:
+            staging_deleted = await _delete_staging_queue(
+                db, _cfg.STAGING_QUEUE_RETENTION_DAYS
+            )
+            await db.commit()
+    except Exception as exc:
+        logger.warning("retention: staging queue cleanup failed: %s", exc)
+
+    # ── Step 4: Per-tenant cleanup ────────────────────────────────────────────
     summary: dict[str, dict] = {}
 
-    for policy in policies:
-        tid = policy.tenant_id
-        counts: dict[str, int] = {}
+    for tid in all_tenant_ids:
+        counts: dict[str, int] = {"staging_queue": staging_deleted if tid == all_tenant_ids[0] else 0}
         errors: list[str] = []
 
-        logger.info("retention: starting cleanup for tenant=%s", tid)
+        # Use explicit policy if available, otherwise fall back to defaults
+        policy = policy_map.get(str(tid))
+        ttl = lambda field: getattr(policy, field) if policy else _DEFAULTS[field]  # noqa: E731
+
+        logger.info(
+            "retention: cleaning tenant=%s (policy=%s)",
+            tid, "explicit" if policy else "default",
+        )
 
         try:
             async with AsyncSession() as db:
                 counts["log_scan_history"] = await _delete_log_scan_history(
-                    db, tid, policy.log_scan_history_days
+                    db, tid, ttl("log_scan_history_days")
                 )
                 counts["timeline_events"] = await _delete_timeline_events(
-                    db, tid, policy.timeline_event_days
+                    db, tid, ttl("timeline_event_days")
                 )
                 counts["rrt_briefs"] = await _delete_rrt_briefs(
-                    db, tid, policy.rrt_brief_days
+                    db, tid, ttl("rrt_brief_days")
                 )
                 counts["audit_logs"] = await _delete_audit_logs(
-                    db, tid, policy.audit_log_days
+                    db, tid, ttl("audit_log_days")
                 )
                 counts["chat_sessions"] = await _delete_chat_sessions(
-                    db, tid, policy.chat_session_days
+                    db, tid, ttl("chat_session_days")
                 )
                 counts["insights"] = await _delete_insights(
-                    db, tid, policy.insight_days
+                    db, tid, ttl("insight_days")
+                )
+                counts["canonical_log_docs"] = await _delete_canonical_documents(
+                    db, tid, ttl("log_scan_history_days")
                 )
                 await db.commit()
 
@@ -303,9 +426,9 @@ async def _run_cleanup_async(tenant_id: str | None) -> dict:
             logger.exception("retention: DB cleanup failed for tenant=%s: %s", tid, exc)
             errors.append(str(exc))
 
-        # Qdrant cleanup (separate — doesn't use the same AsyncSession)
+        # Qdrant cleanup (separate connection — doesn't share AsyncSession)
         try:
-            counts["qdrant_vectors"] = _delete_qdrant_embeddings(tid, policy.embedding_days)
+            counts["qdrant_vectors"] = _delete_qdrant_embeddings(tid, ttl("embedding_days"))
         except Exception as exc:
             logger.warning("retention: Qdrant cleanup failed for tenant=%s: %s", tid, exc)
             errors.append(f"qdrant: {exc}")
@@ -315,26 +438,32 @@ async def _run_cleanup_async(tenant_id: str | None) -> dict:
         if errors:
             notes += f" | Errors: {errors}"
 
-        # Update policy stats
-        try:
-            async with AsyncSession() as db:
-                await db.execute(
-                    sa.update(RetentionPolicy)
-                    .where(RetentionPolicy.id == policy.id)
-                    .values(
-                        last_run_at=datetime.now(tz=timezone.utc),
-                        last_deleted_rows=total_deleted,
-                        last_run_notes=notes[:500],
+        # Update policy stats only if this tenant has an explicit policy row
+        if policy:
+            try:
+                async with AsyncSession() as db:
+                    await db.execute(
+                        sa.update(RetentionPolicy)
+                        .where(RetentionPolicy.id == policy.id)
+                        .values(
+                            last_run_at=datetime.now(tz=timezone.utc),
+                            last_deleted_rows=total_deleted,
+                            last_run_notes=notes[:500],
+                        )
                     )
-                )
-                await db.commit()
-        except Exception:
-            pass
+                    await db.commit()
+            except Exception:
+                pass
 
         logger.info(
-            "retention: tenant=%s done — deleted %d rows total: %s",
-            tid, total_deleted, counts,
+            "retention: tenant=%s done (policy=%s) — deleted %d rows total: %s",
+            tid, "explicit" if policy else "default", total_deleted, counts,
         )
-        summary[tid] = {"deleted": counts, "total": total_deleted, "errors": errors}
+        summary[tid] = {
+            "deleted": counts,
+            "total": total_deleted,
+            "errors": errors,
+            "policy": "explicit" if policy else "default",
+        }
 
     return {"status": "ok", "tenants": summary}

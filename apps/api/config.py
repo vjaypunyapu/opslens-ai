@@ -177,6 +177,27 @@ class Settings(BaseSettings):
     # Default: 3600 (1 hour). Rotate SECRET_KEY to invalidate all sessions.
     INTERNAL_TOKEN_TTL_SECONDS: int = 3600
 
+    # ── Storage Optimisation ──────────────────────────────────────────────────
+    # Minimum log level to ingest into canonical_documents for log-type sources
+    # (elasticsearch, datadog, cloudwatch, gcp, splunk, azuremonitor).
+    # Contextual sources (slack, jira, github, gdrive, zendesk, hubspot) are
+    # always fully ingested regardless of this setting.
+    # Valid values (case-insensitive): DEBUG | INFO | WARNING | ERROR | CRITICAL
+    # Default: WARNING — drops DEBUG/INFO rows which are the bulk of log volume.
+    INGEST_LOG_MIN_LEVEL: str = "WARNING"
+
+    # Maximum characters stored in canonical_documents.content for log-type sources.
+    # Stack traces beyond this length are truncated (a suffix note is appended).
+    # Set to 0 to disable truncation.
+    # Default: 8000 — covers even long Java stack traces without wasting space.
+    INGEST_LOG_CONTENT_MAX_CHARS: int = 8000
+
+    # How many days to keep PROCESSED rows in opslens.ingestion_queue.
+    # Rows with processed_at IS NOT NULL older than this are deleted by the
+    # daily retention task. Set to 0 to retain forever.
+    # Default: 7 days — processed rows have no ongoing value.
+    STAGING_QUEUE_RETENTION_DAYS: int = 7
+
     # ── S3 Archive (optional — used by RetentionPolicy when archive_to_s3=true) ──
     AWS_ACCESS_KEY_ID: str | None = None
     AWS_SECRET_ACCESS_KEY: str | None = None

@@ -263,6 +263,179 @@ async def _save_and_embed(record: RawRecord, tenant_id: str) -> None:
         await db.commit()
 
 
+# ── Batch save + embed for log sources ───────────────────────────────────────
+# Log records (single short lines) don't benefit from the HyDE enrichment that
+# chunk_document applies to contextual sources (GitHub issues, Jira tickets).
+# Instead we use the simple _chunk_text helper + bulk API calls so that a 2000-
+# record CloudWatch sync stays well within the 4-minute soft time limit.
+#
+# Reduction vs. the per-record path:
+#   DB round-trips:       N SELECT + N INSERT + N UPDATE  →  1 + 1 + 1
+#   Embedding API calls:  N (one per record)              →  ceil(total_chunks / EMBED_BATCH)
+#   Qdrant upserts:       N (one per record)              →  ceil(total_points / 500)
+#   GPT-4o-mini calls:   N (HyDE per record)             →  0  (skipped for logs)
+
+_QDRANT_UPSERT_BATCH = 500  # Qdrant recommended max points per upsert request
+
+
+async def _batch_save_and_embed_logs(records: list[RawRecord], tenant_id: str) -> int:
+    """
+    Batch-optimised save + embed path for log source records.
+
+    Uses simple token chunking (no LLM enrichment) and collapses all DB and
+    embedding I/O into O(1) calls regardless of how many records are in the list.
+
+    Returns the number of *new* records saved (duplicates are skipped silently).
+    """
+    if not records:
+        return 0
+
+    tid = uuid.UUID(tenant_id)
+
+    # ── Step 1: compute content hashes and deduplicate within this batch ──────
+    # If the same log line appears twice in one fetch window, keep only the first.
+    seen_in_batch: set[str] = set()
+    hashed: list[tuple[str, RawRecord]] = []  # (content_hash, record)
+    for rec in records:
+        h = hashlib.sha256(rec.content.encode()).hexdigest()
+        if h not in seen_in_batch:
+            seen_in_batch.add(h)
+            hashed.append((h, rec))
+
+    all_hashes = [h for h, _ in hashed]
+
+    # ── Step 2: one SELECT to find already-stored hashes ─────────────────────
+    async with async_session_factory() as db:
+        rows = await db.execute(
+            sa.select(CanonicalDocument.content_hash).where(
+                CanonicalDocument.tenant_id == tid,
+                CanonicalDocument.content_hash.in_(all_hashes),
+            )
+        )
+        existing_hashes: set[str] = {row[0] for row in rows.all()}
+
+    # ── Step 3: build new doc objects for records not yet in the DB ───────────
+    new_rows: list[tuple[str, RawRecord, CanonicalDocument]] = []
+    for content_hash, rec in hashed:
+        if content_hash in existing_hashes:
+            continue
+        doc = CanonicalDocument(
+            id=uuid.uuid4(),
+            tenant_id=tid,
+            source_type=rec.source_type,
+            source_id=rec.source_id,
+            content_hash=content_hash,
+            title=rec.title,
+            content=rec.content,
+            author=rec.author,
+            url=rec.url,
+            doc_metadata=rec.metadata,
+            source_created_at=rec.created_at,
+            source_updated_at=rec.updated_at,
+            embedding_status="pending",
+            chunk_count=0,
+        )
+        new_rows.append((content_hash, rec, doc))
+
+    if not new_rows:
+        logger.info(
+            "batch_log_embed: all %d records already stored for tenant %s",
+            len(records), tenant_id,
+        )
+        return 0
+
+    # ── Step 4: bulk insert all new docs in one transaction ───────────────────
+    async with async_session_factory() as db:
+        db.add_all([doc for _, _, doc in new_rows])
+        await db.commit()
+
+    # ── Step 5: simple token chunking — no HyDE/LLM calls ────────────────────
+    # Log lines are typically 1 chunk each (< 512 tokens).  _chunk_text is a
+    # pure-Python tiktoken split — no network I/O.
+    all_texts: list[str] = []
+    all_meta: list[tuple[uuid.UUID, int, CanonicalDocument]] = []  # (doc_id, chunk_idx, doc)
+    doc_chunk_counts: dict[uuid.UUID, int] = {}
+
+    for _, rec, doc in new_rows:
+        chunks = _chunk_text(rec.content)
+        if not chunks:
+            chunks = [rec.content]  # always keep at least the raw content
+        doc_chunk_counts[doc.id] = len(chunks)
+        for idx, chunk_text in enumerate(chunks):
+            all_texts.append(chunk_text)
+            all_meta.append((doc.id, idx, doc))
+
+    # ── Step 6: embed all chunks — ceil(N/EMBED_BATCH) API calls total ────────
+    collection = f"opslens_{tenant_id}"
+    await _ensure_qdrant_collection(collection)
+
+    all_points: list[dict] = []
+    for batch_start in range(0, len(all_texts), EMBED_BATCH):
+        batch_texts = all_texts[batch_start: batch_start + EMBED_BATCH]
+        batch_meta  = all_meta[batch_start: batch_start + EMBED_BATCH]
+
+        if settings.LLM_PROVIDER == "ollama":
+            resp = await httpx.AsyncClient(timeout=60).post(
+                f"{settings.OLLAMA_URL}/api/embed",
+                json={"model": EMBED_MODEL, "input": batch_texts},
+            )
+            resp.raise_for_status()
+            vectors = resp.json()["embeddings"]
+        else:
+            resp = await _openai.embeddings.create(model=EMBED_MODEL, input=batch_texts)
+            vectors = [e.embedding for e in resp.data]
+
+        for i, vector in enumerate(vectors):
+            doc_id, chunk_idx, doc = batch_meta[i]
+            all_points.append({
+                "id": str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{doc_id}:{chunk_idx}")),
+                "vector": vector,
+                "payload": {
+                    "page_content": batch_texts[i],
+                    "metadata": {
+                        "tenant_id":   tenant_id,
+                        "document_id": str(doc_id),
+                        "chunk_index": chunk_idx,
+                        "chunk_type":  "log_line",
+                        "source_type": doc.source_type,
+                        "title":       doc.title or "",
+                        "url":         doc.url or "",
+                        "author":      doc.author or "",
+                        "created_at":  doc.source_created_at.isoformat() if doc.source_created_at else None,
+                    },
+                },
+            })
+
+    # ── Step 7: bulk upsert to Qdrant in batches of _QDRANT_UPSERT_BATCH ─────
+    for batch_start in range(0, len(all_points), _QDRANT_UPSERT_BATCH):
+        batch = all_points[batch_start: batch_start + _QDRANT_UPSERT_BATCH]
+        await _upsert_qdrant_points(collection, batch)
+
+    logger.info(
+        "batch_log_embed: upserted %d vectors (%d docs) to %s",
+        len(all_points), len(new_rows), collection,
+    )
+
+    # ── Step 8: bulk update embedding_status + chunk_count in one transaction ─
+    async with async_session_factory() as db:
+        for _, _, doc in new_rows:
+            await db.execute(
+                sa.update(CanonicalDocument)
+                .where(CanonicalDocument.id == doc.id)
+                .values(
+                    embedding_status="done",
+                    chunk_count=doc_chunk_counts.get(doc.id, 0),
+                )
+            )
+        await db.commit()
+
+    logger.info(
+        "batch_log_embed: saved %d new records for tenant %s (%d duplicates skipped)",
+        len(new_rows), tenant_id, len(records) - len(new_rows),
+    )
+    return len(new_rows)
+
+
 # ── GitHub fetcher ────────────────────────────────────────────────────────────
 async def _fetch_github(creds: dict, tenant_id: str, integration_id: str) -> int:
     token = creds.get("access_token", "")
@@ -566,13 +739,575 @@ async def _fetch_hubspot(creds: dict, tenant_id: str, integration_id: str) -> in
     return len(records)
 
 
+# ── Elasticsearch fetcher ─────────────────────────────────────────────────────
+async def _fetch_elasticsearch(creds: dict, tenant_id: str, integration_id: str, since: datetime | None = None) -> int:
+    """
+    Pulls ERROR/WARNING+ logs from Elasticsearch using the Search API.
+    Supports both API-key auth and basic (username/password) auth.
+    Uses search_after for efficient, stateless pagination.
+    Only fetches logs newer than `since` (integration.last_synced_at).
+    """
+    url = creds.get("url", "").rstrip("/")
+    api_key = creds.get("api_key", "")
+    username = creds.get("username", "")
+    password = creds.get("password", "")
+    index = creds.get("index", "logs-*,filebeat-*,logstash-*")
+
+    if not url:
+        raise ValueError("Elasticsearch url missing from credentials")
+
+    headers: dict = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"ApiKey {api_key}"
+
+    auth = (username, password) if (username and password and not api_key) else None
+
+    # Only fetch logs at WARNING level or above to keep storage lean
+    level_filter = ["WARNING", "WARN", "ERROR", "CRITICAL", "FATAL", "ALERT", "EMERGENCY"]
+    since_dt = since or datetime.now(tz=timezone.utc).replace(hour=0, minute=0, second=0)
+
+    query: dict = {
+        "size": 500,
+        "sort": [{"@timestamp": "asc"}, {"_id": "asc"}],
+        "query": {
+            "bool": {
+                "must": [
+                    {"range": {"@timestamp": {"gt": since_dt.isoformat()}}},
+                    {"terms": {"log.level": level_filter}},
+                ]
+            }
+        },
+        "_source": ["@timestamp", "message", "log.level", "service.name", "host.name", "error.type", "trace.id"],
+    }
+
+    records: list[RawRecord] = []
+    search_after: list | None = None
+    max_pages = 20  # safety cap — 10,000 records per sync cycle
+
+    # If the cluster uses a self-signed cert, customers can supply ca_cert (path
+    # or False to disable verification). Default is True (verify against system CAs).
+    ssl_verify = creds.get("ca_cert", True)
+    async with httpx.AsyncClient(headers=headers, auth=auth, timeout=30, verify=ssl_verify) as client:
+        for _ in range(max_pages):
+            if search_after:
+                query["search_after"] = search_after
+
+            resp = await client.post(f"{url}/{index}/_search", json=query)
+            if resp.status_code == 404:
+                break  # index doesn't exist yet
+            resp.raise_for_status()
+
+            hits = resp.json().get("hits", {}).get("hits", [])
+            if not hits:
+                break
+
+            for hit in hits:
+                src = hit.get("_source", {})
+                ts_raw = src.get("@timestamp", "")
+                try:
+                    ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+                except Exception:
+                    ts = datetime.now(tz=timezone.utc)
+
+                level = (
+                    src.get("log", {}).get("level")
+                    or src.get("level")
+                    or "ERROR"
+                ).upper()
+                message = src.get("message", "").strip()
+                service = src.get("service", {}).get("name", "") if isinstance(src.get("service"), dict) else src.get("service", "")
+
+                if not message:
+                    continue
+
+                records.append(RawRecord(
+                    source_type="elasticsearch",
+                    source_id=hit["_id"],
+                    title=f"[{level}] {service + ': ' if service else ''}{message[:120]}",
+                    content=message[:8000],
+                    author=service or src.get("host", {}).get("name", "") if isinstance(src.get("host"), dict) else "",
+                    url="",
+                    created_at=ts,
+                    updated_at=ts,
+                    metadata={"level": level, "service": service, "index": hit.get("_index", ""), "trace_id": src.get("trace", {}).get("id", "")},
+                ))
+
+            search_after = hits[-1].get("sort")
+            if len(hits) < 500:
+                break
+
+    logger.info("Elasticsearch direct sync: %d records for tenant %s", len(records), tenant_id)
+    return await _batch_save_and_embed_logs(records, tenant_id)
+
+
+# ── Datadog fetcher ───────────────────────────────────────────────────────────
+async def _fetch_datadog(creds: dict, tenant_id: str, integration_id: str, since: datetime | None = None) -> int:
+    """
+    Pulls logs from the Datadog Logs API v2.
+    Only fetches ERROR/WARN+ severity. Paginates via cursor.
+    """
+    api_key = creds.get("api_key", "")
+    app_key = creds.get("app_key", "")
+    site = creds.get("site", "datadoghq.com")  # e.g. datadoghq.eu for EU customers
+
+    if not api_key:
+        raise ValueError("Datadog api_key missing from credentials")
+
+    since_dt = since or datetime.now(tz=timezone.utc).replace(hour=0, minute=0, second=0)
+    now_dt = datetime.now(tz=timezone.utc)
+
+    headers = {
+        "DD-API-KEY": api_key,
+        "Content-Type": "application/json",
+    }
+    if app_key:
+        headers["DD-APPLICATION-KEY"] = app_key
+
+    body: dict = {
+        "filter": {
+            "from": since_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "to": now_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "query": "status:(error OR warn OR critical)",
+        },
+        "sort": "timestamp",
+        "page": {"limit": 1000},
+    }
+
+    records: list[RawRecord] = []
+    cursor: str | None = None
+    max_pages = 10
+
+    async with httpx.AsyncClient(headers=headers, timeout=30) as client:
+        for _ in range(max_pages):
+            if cursor:
+                body["page"]["cursor"] = cursor
+
+            resp = await client.post(f"https://api.{site}/api/v2/logs/events/search", json=body)
+            resp.raise_for_status()
+            data = resp.json()
+
+            for log in data.get("data", []):
+                attrs = log.get("attributes", {})
+                status = attrs.get("status", "error").upper()
+                message = attrs.get("message", "").strip()
+                service = attrs.get("service", "")
+                ts_raw = attrs.get("timestamp", "")
+
+                try:
+                    ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+                except Exception:
+                    ts = datetime.now(tz=timezone.utc)
+
+                if not message:
+                    continue
+
+                records.append(RawRecord(
+                    source_type="datadog",
+                    source_id=log.get("id", ""),
+                    title=f"[{status}] {service + ': ' if service else ''}{message[:120]}",
+                    content=message[:8000],
+                    author=service or attrs.get("host", ""),
+                    url="",
+                    created_at=ts,
+                    updated_at=ts,
+                    metadata={"status": status, "service": service, "host": attrs.get("host", ""), "tags": attrs.get("tags", [])},
+                ))
+
+            meta = data.get("meta", {})
+            cursor = meta.get("page", {}).get("after")
+            if not cursor or len(data.get("data", [])) < 1000:
+                break
+
+    logger.info("Datadog direct sync: %d records for tenant %s", len(records), tenant_id)
+    return await _batch_save_and_embed_logs(records, tenant_id)
+
+
+# ── CloudWatch fetcher ────────────────────────────────────────────────────────
+def _fetch_cloudwatch_sync(creds: dict, since_ms: int, now_ms: int) -> list[dict]:
+    """
+    Pure-sync worker that runs in a thread pool executor so the boto3 blocking
+    calls (describe_log_groups, filter_log_events) never stall the event loop.
+    Returns raw event dicts — timestamps, messages, log group names.
+    """
+    import boto3  # type: ignore
+
+    access_key = creds["aws_access_key_id"]
+    secret_key = creds["aws_secret_access_key"]
+    region = creds.get("region", "us-east-1")
+    log_groups_raw = creds.get("log_groups", "")
+
+    client = boto3.client(
+        "logs",
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
+        region_name=region,
+    )
+
+    if log_groups_raw:
+        log_groups = [g.strip() for g in log_groups_raw.split(",") if g.strip()]
+    else:
+        resp = client.describe_log_groups(limit=20)
+        log_groups = [g["logGroupName"] for g in resp.get("logGroups", [])]
+
+    filter_pattern = "?ERROR ?Exception ?CRITICAL ?FATAL ?Error ?exception"
+    raw_events: list[dict] = []
+
+    for log_group in log_groups:
+        kwargs: dict = {
+            "logGroupName": log_group,
+            "startTime": since_ms,
+            "endTime": now_ms,
+            "filterPattern": filter_pattern,
+            "limit": 1000,
+        }
+        while True:
+            try:
+                response = client.filter_log_events(**kwargs)
+            except client.exceptions.ResourceNotFoundException:
+                break
+            for event in response.get("events", []):
+                raw_events.append({**event, "_log_group": log_group, "_region": region})
+            next_token = response.get("nextToken")
+            if not next_token or len(raw_events) >= 5000:
+                break
+            kwargs["nextToken"] = next_token
+
+    return raw_events
+
+
+async def _fetch_cloudwatch(creds: dict, tenant_id: str, integration_id: str, since: datetime | None = None) -> int:
+    """
+    Polls AWS CloudWatch Logs for ERROR/WARN+ entries using boto3.
+    boto3 is synchronous, so we offload the entire I/O work to a thread-pool
+    executor — this keeps the asyncio event loop free while the AWS calls block.
+    """
+    import asyncio
+
+    access_key = creds.get("aws_access_key_id", "")
+    secret_key = creds.get("aws_secret_access_key", "")
+    if not access_key or not secret_key:
+        raise ValueError("CloudWatch aws_access_key_id / aws_secret_access_key missing from credentials")
+
+    since_dt = since or datetime.now(tz=timezone.utc).replace(hour=0, minute=0, second=0)
+    since_ms = int(since_dt.timestamp() * 1000)
+    now_ms   = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
+
+    # Run all blocking boto3 calls in the default thread-pool executor
+    loop = asyncio.get_event_loop()
+    raw_events: list[dict] = await loop.run_in_executor(
+        None, _fetch_cloudwatch_sync, creds, since_ms, now_ms
+    )
+
+    records: list[RawRecord] = []
+    for event in raw_events:
+        message = event.get("message", "").strip()
+        if not message:
+            continue
+        ts = datetime.fromtimestamp(event["timestamp"] / 1000, tz=timezone.utc)
+        log_group = event["_log_group"]
+        region    = event["_region"]
+        source_id = event.get("eventId", f"{log_group}:{event['timestamp']}")
+        records.append(RawRecord(
+            source_type="cloudwatch",
+            source_id=source_id,
+            title=f"[ERROR] {log_group}: {message[:100]}",
+            content=message[:8000],
+            author=log_group,
+            url="",
+            created_at=ts,
+            updated_at=ts,
+            metadata={"log_group": log_group, "log_stream": event.get("logStreamName", ""), "region": region},
+        ))
+
+    logger.info("CloudWatch direct sync: %d records for tenant %s", len(records), tenant_id)
+    return await _batch_save_and_embed_logs(records, tenant_id)
+
+
+# ── GCP Logging fetcher ───────────────────────────────────────────────────────
+async def _fetch_gcp_logging(creds: dict, tenant_id: str, integration_id: str, since: datetime | None = None) -> int:
+    """
+    Pulls logs from Google Cloud Logging REST API using a service account JSON key.
+    Filters for severity >= WARNING. Paginates via pageToken.
+    """
+    import json as _json
+    import google.auth  # type: ignore
+    import google.auth.transport.requests  # type: ignore
+    from google.oauth2 import service_account  # type: ignore
+
+    sa_json_raw = creds.get("service_account_json", "")
+    project_id = creds.get("project_id", "")
+
+    if not sa_json_raw:
+        raise ValueError("GCP service_account_json missing from credentials")
+
+    sa_info = _json.loads(sa_json_raw)
+    if not project_id:
+        project_id = sa_info.get("project_id", "")
+
+    credentials = service_account.Credentials.from_service_account_info(
+        sa_info, scopes=["https://www.googleapis.com/auth/logging.read"]
+    )
+
+    # credentials.refresh() uses the synchronous `requests` library under the
+    # hood, which would block the event loop.  Run it in a thread-pool executor.
+    import asyncio as _asyncio
+
+    def _refresh_token() -> str:
+        auth_req = google.auth.transport.requests.Request()
+        credentials.refresh(auth_req)
+        return credentials.token
+
+    loop = _asyncio.get_event_loop()
+    token: str = await loop.run_in_executor(None, _refresh_token)
+
+    since_dt = since or datetime.now(tz=timezone.utc).replace(hour=0, minute=0, second=0)
+    since_rfc = since_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    filter_str = (
+        f'resource.type!="" AND severity>=WARNING AND timestamp>="{since_rfc}"'
+    )
+
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    records: list[RawRecord] = []
+    page_token: str | None = None
+    max_pages = 10
+
+    async with httpx.AsyncClient(headers=headers, timeout=30) as client:
+        for _ in range(max_pages):
+            body: dict = {
+                "resourceNames": [f"projects/{project_id}"],
+                "filter": filter_str,
+                "orderBy": "timestamp asc",
+                "pageSize": 1000,
+            }
+            if page_token:
+                body["pageToken"] = page_token
+
+            resp = await client.post("https://logging.googleapis.com/v2/entries:list", json=body)
+            resp.raise_for_status()
+            data = resp.json()
+
+            for entry in data.get("entries", []):
+                ts_raw = entry.get("timestamp", "")
+                try:
+                    ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+                except Exception:
+                    ts = datetime.now(tz=timezone.utc)
+
+                severity = entry.get("severity", "DEFAULT")
+                payload = entry.get("textPayload") or str(entry.get("jsonPayload", "")) or str(entry.get("protoPayload", ""))
+                resource = entry.get("resource", {})
+                service = resource.get("labels", {}).get("service_name", resource.get("type", ""))
+                log_name = entry.get("logName", "")
+
+                if not payload:
+                    continue
+
+                records.append(RawRecord(
+                    source_type="gcp",
+                    source_id=entry.get("insertId", f"{log_name}:{ts_raw}"),
+                    title=f"[{severity}] {service + ': ' if service else ''}{payload[:120]}",
+                    content=payload[:8000],
+                    author=service,
+                    url="",
+                    created_at=ts,
+                    updated_at=ts,
+                    metadata={"severity": severity, "service": service, "log_name": log_name, "project_id": project_id},
+                ))
+
+            page_token = data.get("nextPageToken")
+            if not page_token:
+                break
+
+    logger.info("GCP Logging direct sync: %d records for tenant %s", len(records), tenant_id)
+    return await _batch_save_and_embed_logs(records, tenant_id)
+
+
+# ── Splunk fetcher ────────────────────────────────────────────────────────────
+async def _fetch_splunk(creds: dict, tenant_id: str, integration_id: str, since: datetime | None = None) -> int:
+    """
+    Pulls logs from Splunk via the REST Search API (POST /services/search/jobs/export).
+    Authenticates with a Splunk auth token.
+    """
+    url = creds.get("url", "").rstrip("/")
+    token = creds.get("auth_token", "")
+    index = creds.get("index", "main")
+
+    if not url or not token:
+        raise ValueError("Splunk url and auth_token required in credentials")
+
+    since_dt = since or datetime.now(tz=timezone.utc).replace(hour=0, minute=0, second=0)
+    earliest = since_dt.strftime("%m/%d/%Y:%H:%M:%S")
+
+    spl = (
+        f'search index={index} (log_level=ERROR OR log_level=WARN OR log_level=CRITICAL '
+        f'OR level=ERROR OR level=WARN OR severity=ERROR OR severity=WARN) '
+        f'earliest="{earliest}" | head 2000 | fields _time, log_level, level, severity, message, host, source'
+    )
+
+    headers = {"Authorization": f"Splunk {token}"}
+    records: list[RawRecord] = []
+
+    # Splunk on-prem often uses self-signed certs. Customers can supply
+    # ca_cert (path) or False to disable. Default is True (system CAs).
+    ssl_verify = creds.get("ca_cert", True)
+    async with httpx.AsyncClient(headers=headers, timeout=60, verify=ssl_verify) as client:
+        resp = await client.post(
+            f"{url}/services/search/jobs/export",
+            data={"search": spl, "output_mode": "json", "count": 0},
+        )
+        if resp.status_code == 401:
+            raise ValueError("Splunk authentication failed — check auth_token")
+        resp.raise_for_status()
+
+        for line in resp.text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                import json as _json
+                obj = _json.loads(line)
+            except Exception:
+                continue
+
+            result = obj.get("result", {})
+            message = result.get("message", "").strip()
+            if not message:
+                continue
+
+            level = result.get("log_level") or result.get("level") or result.get("severity") or "ERROR"
+            ts_raw = result.get("_time", "")
+            try:
+                ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+            except Exception:
+                ts = datetime.now(tz=timezone.utc)
+
+            records.append(RawRecord(
+                source_type="splunk",
+                source_id=f"{index}:{ts_raw}:{hashlib.sha256(message.encode()).hexdigest()[:16]}",
+                title=f"[{level.upper()}] {result.get('host', '')}: {message[:100]}",
+                content=message[:8000],
+                author=result.get("host", ""),
+                url="",
+                created_at=ts,
+                updated_at=ts,
+                metadata={"level": level, "host": result.get("host", ""), "source": result.get("source", ""), "index": index},
+            ))
+
+    logger.info("Splunk direct sync: %d records for tenant %s", len(records), tenant_id)
+    return await _batch_save_and_embed_logs(records, tenant_id)
+
+
+# ── Azure Monitor fetcher ─────────────────────────────────────────────────────
+async def _fetch_azure_monitor(creds: dict, tenant_id: str, integration_id: str, since: datetime | None = None) -> int:
+    """
+    Pulls logs from Azure Monitor Log Analytics workspace using the REST Query API.
+    Authenticates via client credentials (service principal).
+    """
+    azure_tenant = creds.get("azure_tenant_id", "")
+    client_id = creds.get("client_id", "")
+    client_secret = creds.get("client_secret", "")
+    workspace_id = creds.get("workspace_id", "")
+    table = creds.get("table", "AzureDiagnostics")
+
+    if not all([azure_tenant, client_id, client_secret, workspace_id]):
+        raise ValueError("Azure credentials require: azure_tenant_id, client_id, client_secret, workspace_id")
+
+    # Get access token via client credentials grant
+    async with httpx.AsyncClient(timeout=15) as client:
+        token_resp = await client.post(
+            f"https://login.microsoftonline.com/{azure_tenant}/oauth2/v2.0/token",
+            data={
+                "grant_type": "client_credentials",
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "scope": "https://api.loganalytics.io/.default",
+            },
+        )
+        token_resp.raise_for_status()
+        access_token = token_resp.json()["access_token"]
+
+    since_dt = since or datetime.now(tz=timezone.utc).replace(hour=0, minute=0, second=0)
+    since_iso = since_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # KQL query — filter for errors only
+    kql = (
+        f"{table} "
+        f'| where TimeGenerated >= datetime("{since_iso}") '
+        f"| where Level in ('Error', 'Warning', 'Critical') or SeverityLevel in ('error', 'warning', 'critical') "
+        f"| project TimeGenerated, Level, Message, ResourceId, OperationName, Category "
+        f"| order by TimeGenerated asc "
+        f"| take 2000"
+    )
+
+    headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+    records: list[RawRecord] = []
+
+    async with httpx.AsyncClient(headers=headers, timeout=60) as client:
+        resp = await client.post(
+            f"https://api.loganalytics.io/v1/workspaces/{workspace_id}/query",
+            json={"query": kql},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        tables = data.get("tables", [])
+        if not tables:
+            return 0
+
+        tbl = tables[0]
+        cols = [c["name"] for c in tbl.get("columns", [])]
+
+        for row in tbl.get("rows", []):
+            entry = dict(zip(cols, row))
+            message = entry.get("Message", "").strip()
+            if not message:
+                continue
+
+            ts_raw = entry.get("TimeGenerated", "")
+            try:
+                ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+            except Exception:
+                ts = datetime.now(tz=timezone.utc)
+
+            level = entry.get("Level") or entry.get("SeverityLevel") or "Error"
+            resource = entry.get("ResourceId", "")
+
+            records.append(RawRecord(
+                source_type="azuremonitor",
+                source_id=f"{workspace_id}:{ts_raw}:{hashlib.sha256(message.encode()).hexdigest()[:16]}",
+                title=f"[{level}] {entry.get('OperationName', resource)[:80]}: {message[:80]}",
+                content=message[:8000],
+                author=resource,
+                url="",
+                created_at=ts,
+                updated_at=ts,
+                metadata={"level": level, "resource_id": resource, "operation": entry.get("OperationName", ""), "category": entry.get("Category", ""), "table": table},
+            ))
+
+    logger.info("Azure Monitor direct sync: %d records for tenant %s", len(records), tenant_id)
+    return await _batch_save_and_embed_logs(records, tenant_id)
+
+
 # ── Dispatch ──────────────────────────────────────────────────────────────────
 _FETCHERS = {
-    "github":  _fetch_github,
-    "jira":    _fetch_jira,
-    "slack":   _fetch_slack,
-    "hubspot": _fetch_hubspot,
+    "github":        _fetch_github,
+    "jira":          _fetch_jira,
+    "slack":         _fetch_slack,
+    "hubspot":       _fetch_hubspot,
+    # Log sources — polled directly, zero config required from customer
+    "elasticsearch": _fetch_elasticsearch,
+    "datadog":       _fetch_datadog,
+    "cloudwatch":    _fetch_cloudwatch,
+    "gcp":           _fetch_gcp_logging,
+    "splunk":        _fetch_splunk,
+    "azuremonitor":  _fetch_azure_monitor,
 }
+
+# Which source types are log sources (polled periodically vs. contextual one-time syncs)
+LOG_SOURCE_TYPES = frozenset({
+    "elasticsearch", "datadog", "cloudwatch", "gcp", "splunk", "azuremonitor",
+})
 
 
 async def run_direct_sync(integration_id: str, tenant_id: str) -> None:
@@ -611,12 +1346,20 @@ async def run_direct_sync(integration_id: str, tenant_id: str) -> None:
                 await db.commit()
                 return
 
+        # Capture last_synced_at for incremental log source fetches.
+        # For log sources this becomes the `since` parameter so we only
+        # pull new records, not re-process everything on every run.
+        last_synced_at = integration.last_synced_at
+
         integration.status = "pending"
         await db.commit()
 
     # Run the fetch (outside the session to avoid long-held connections)
     try:
-        count = await fetcher(raw_creds, str(tenant_id), integration_id)
+        # Log source fetchers accept a `since` kwarg for incremental sync.
+        # Contextual fetchers (github, jira, slack) ignore it safely.
+        since = last_synced_at if source_type in LOG_SOURCE_TYPES else None
+        count = await fetcher(raw_creds, str(tenant_id), integration_id, since=since)
     except Exception as exc:
         logger.exception("direct_sync failed for %s/%s: %s", source_type, integration_id, exc)
         async with async_session_factory() as db:

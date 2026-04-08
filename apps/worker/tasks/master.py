@@ -7,6 +7,7 @@ decoupled from individual tenant IDs.
 """
 from __future__ import annotations
 
+import random
 import sqlalchemy as sa
 from celery import shared_task
 from celery.utils.log import get_task_logger
@@ -75,6 +76,49 @@ def process_all_staging():
             process_staging_batch.delay(tenant_id, source_type)
             dispatched += 1
     return {"dispatched": dispatched}
+
+
+# ── Log source polling fan-out ────────────────────────────────────────────────
+@shared_task(name="logs.poll_all_log_sources")
+def poll_all_log_sources():
+    """
+    Periodically polls every active log-source integration (Elasticsearch,
+    Datadog, CloudWatch, GCP, Splunk, Azure Monitor) across all tenants.
+
+    This is the zero-config pull path — customers connect once via the UI
+    and OpsLens handles all polling automatically. No Airbyte, no SDK, no
+    webhook setup required on the customer's side.
+
+    Runs every 5 minutes via Celery Beat (same cadence as fast_scan).
+    Each integration is dispatched as an independent subtask so one slow
+    source doesn't block others.
+    """
+    from .log_source_poller import poll_log_source
+
+    async def _get_active_log_integrations():
+        from ..models.integration import Integration
+        from ..services.direct_sync_service import LOG_SOURCE_TYPES
+        async with AsyncSession() as db:
+            rows = await db.execute(
+                sa.select(Integration.id, Integration.tenant_id, Integration.source_type)
+                .where(
+                    Integration.status == "active",
+                    Integration.source_type.in_(list(LOG_SOURCE_TYPES)),
+                )
+            )
+            return [(str(r.id), str(r.tenant_id), r.source_type) for r in rows.all()]
+
+    integrations = _run_async(_get_active_log_integrations())
+    logger.info("Dispatching log source poll for %d active integrations", len(integrations))
+    for integration_id, tenant_id, source_type in integrations:
+        # Spread dispatches across the first 60 s of each 5-minute window to
+        # avoid hammering all external APIs simultaneously (thundering herd).
+        jitter = random.randint(0, 60)
+        poll_log_source.apply_async(
+            args=[integration_id, tenant_id, source_type],
+            countdown=jitter,
+        )
+    return {"dispatched": len(integrations)}
 
 
 # ── Fast log alert fan-out ────────────────────────────────────────────────────

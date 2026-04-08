@@ -40,6 +40,63 @@ EMBED_BATCH    = 100
 EMBED_MODEL    = "text-embedding-3-small"
 EMBED_DIMS     = 1536
 
+# ── Storage optimisation constants ───────────────────────────────────────────
+# Log-type source types that should be filtered by severity level.
+# Contextual sources (jira, slack, github, etc.) are never filtered.
+_LOG_SOURCE_TYPES = frozenset({
+    "elasticsearch", "datadog", "cloudwatch", "gcp", "splunk", "azuremonitor",
+})
+
+# Severity ranking — used to enforce INGEST_LOG_MIN_LEVEL.
+_LEVEL_RANK: dict[str, int] = {
+    "DEBUG":    10,
+    "TRACE":    10,
+    "INFO":     20,
+    "NOTICE":   25,
+    "WARNING":  30,
+    "WARN":     30,
+    "ERROR":    40,
+    "CRITICAL": 50,
+    "FATAL":    50,
+    "ALERT":    50,
+    "EMERGENCY":60,
+}
+
+def _min_level_rank() -> int:
+    """Return the numeric rank for the configured INGEST_LOG_MIN_LEVEL."""
+    level = (settings.INGEST_LOG_MIN_LEVEL or "WARNING").upper().strip()
+    return _LEVEL_RANK.get(level, _LEVEL_RANK["WARNING"])
+
+
+def _should_ingest(record: "RawRecord") -> bool:
+    """
+    Returns False for log-type records whose severity is below the configured
+    minimum level. Always returns True for contextual sources (Jira, Slack, etc.).
+    """
+    if record.source_type not in _LOG_SOURCE_TYPES:
+        return True  # contextual source — always ingest
+    level = str(record.metadata.get("level") or record.metadata.get("status") or "INFO").upper()
+    rank = _LEVEL_RANK.get(level, _LEVEL_RANK["INFO"])
+    return rank >= _min_level_rank()
+
+
+def _truncate_log_content(record: "RawRecord") -> "RawRecord":
+    """
+    For log-type sources, cap content at INGEST_LOG_CONTENT_MAX_CHARS characters.
+    Appends a truncation notice so engineers know the full message was longer.
+    Does nothing for contextual sources or when the limit is disabled (0).
+    """
+    max_chars = settings.INGEST_LOG_CONTENT_MAX_CHARS
+    if not max_chars or record.source_type not in _LOG_SOURCE_TYPES:
+        return record
+    if len(record.content) <= max_chars:
+        return record
+    record.content = (
+        record.content[:max_chars]
+        + f"\n… [truncated — {len(record.content) - max_chars} chars omitted]"
+    )
+    return record
+
 
 # ── Data models ──────────────────────────────────────────────────────────────
 @dataclass
@@ -854,6 +911,24 @@ async def _process_staging_batch(tenant_id: str, source_type: str, limit: int) -
                     effective_normalizer = JiraCommentNormalizer
 
                 record: RawRecord = effective_normalizer.normalise(raw)
+
+                # ── Storage optimisation ──────────────────────────────────
+                # 1. Drop log records below the configured minimum severity.
+                if not _should_ingest(record):
+                    skipped += 1
+                    await db.execute(
+                        sa.text(
+                            "UPDATE opslens.ingestion_queue SET processed_at=now() "
+                            "WHERE id=:qid"
+                        ),
+                        {"qid": queue_id},
+                    )
+                    continue
+
+                # 2. Truncate oversized log content before storing.
+                record = _truncate_log_content(record)
+                # ─────────────────────────────────────────────────────────
+
                 chash = content_hash(record)
 
                 # Check for existing doc with same hash — skip if unchanged

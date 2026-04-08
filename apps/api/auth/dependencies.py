@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 import uuid as _uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Annotated
 
 import sqlalchemy as sa
@@ -171,6 +172,38 @@ async def _provision_user(db, tenant_uuid_str: str, external_id: str, email: str
         sa.select(sa.func.count()).select_from(User).where(User.tenant_id == tenant_uuid_obj)
     )
     user_count = count_result.scalar_one()
+
+    # ── Invite-only enforcement (non-first users) ──────────────────────────────
+    # The very first user in a tenant is the workspace owner provisioned by
+    # OpsLens when onboarding a new customer — they bypass the invite check.
+    # Every subsequent user must have a valid, unexpired, unused invite for
+    # their email address.  This prevents public self-registration entirely.
+    if user_count > 0:
+        from ..db.models import PendingInvite
+
+        email_normalised = email.strip().lower()
+        invite_result = await db.execute(
+            sa.select(PendingInvite).where(
+                PendingInvite.tenant_id == tenant_uuid_obj,
+                sa.func.lower(PendingInvite.email) == email_normalised,
+                PendingInvite.accepted_at == None,  # noqa: E711
+                PendingInvite.expires_at > datetime.now(tz=timezone.utc),
+            )
+        )
+        valid_invite = invite_result.scalar_one_or_none()
+        if not valid_invite:
+            logger.warning(
+                "Registration blocked: no valid invite for email '%s' in tenant %s",
+                email_normalised, tenant_uuid_str,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "Access by invitation only. "
+                    "Ask your workspace admin to send you an invite link."
+                ),
+            )
+
     role = "admin" if user_count == 0 else "member"
 
     user = User(

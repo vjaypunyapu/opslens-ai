@@ -70,6 +70,15 @@ app.conf.beat_schedule = {
         "task": "logs.fast_scan_all_tenants",
         "schedule": crontab(minute=f"*/{settings.LOG_FAST_ALERT_CRON_MINUTES}"),
     },
+    # Log source poller — directly pulls ERROR/WARN+ logs from Elasticsearch,
+    # Datadog, CloudWatch, GCP Logging, Splunk, and Azure Monitor on behalf of
+    # each tenant. Zero configuration required from customers — they connect
+    # once via the UI and OpsLens polls automatically using last_synced_at as
+    # an incremental cursor so each run only fetches NEW records.
+    "log-source-poller": {
+        "task": "logs.poll_all_log_sources",
+        "schedule": crontab(minute=f"*/{settings.LOG_FAST_ALERT_CRON_MINUTES}"),
+    },
     # Data retention cleanup — daily at 02:00 UTC
     # Deletes rows older than each tenant's RetentionPolicy thresholds
     "retention-cleanup": {
