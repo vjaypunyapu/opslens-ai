@@ -1,6 +1,8 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  serverExternalPackages: ["@clerk/nextjs", "@clerk/backend", "@clerk/shared"],
+  experimental: {
+    serverComponentsExternalPackages: ["@clerk/nextjs", "@clerk/backend", "@clerk/shared"],
+  },
   async rewrites() {
     return [
       {
