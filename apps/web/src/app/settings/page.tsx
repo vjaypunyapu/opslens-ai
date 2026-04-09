@@ -4,7 +4,7 @@ import { useAuth } from "@clerk/nextjs";
 import {
   Settings, Users, Building2, User, Trash2,
   Plus, Shield, CheckCircle, AlertTriangle, RefreshCw,
-  Mail, Copy, Clock, Send,
+  Mail, Copy, Clock, Send, Save,
 } from "lucide-react";
 import { ApiError } from "@/lib/api";
 
