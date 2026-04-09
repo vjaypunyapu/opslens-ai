@@ -4,6 +4,10 @@ import { Toaster } from "sonner";
 import { ThemeProvider } from "@/contexts/ThemeContext";
 import "./globals.css";
 
+// All routes require authentication and ClerkProvider needs a live router
+// context — static pre-rendering is not possible or useful for this app.
+export const dynamic = "force-dynamic";
+
 export const metadata: Metadata = {
   title: "OpsLens AI — Operational Intelligence Copilot",
   description: "Ask questions about your business operations in plain English.",
