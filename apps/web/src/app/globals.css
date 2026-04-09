@@ -59,6 +59,16 @@
   ::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 999px; }
   ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
 }
+/* ── Clerk: hide "Don't have an account? Sign up" footer on sign-in page ── */
+/* OpsLens is invite-only. Targets all known Clerk v5 footer class variants. */
+.cl-footer,
+.cl-footerAction,
+.cl-card__footer,
+[data-localization-key="signIn.start.actionText"],
+[data-localization-key="signIn.start.actionLink"] {
+  display: none !important;
+}
+
 @layer components {
   .prose-chat { @apply text-sm leading-relaxed; }
   .prose-chat p { @apply mb-3 last:mb-0; }
