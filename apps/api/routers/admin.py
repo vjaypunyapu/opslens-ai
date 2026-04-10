@@ -497,8 +497,10 @@ async def create_invite(
         )
     )
     inviter = inviter_result.scalar_one_or_none()
-    invited_by_name = (inviter.name if inviter and inviter.name else None) or \
-                      (inviter.email if inviter else ctx.user_id)
+    # Use name if set; fall back to email only if it looks real (not the @unknown.local placeholder)
+    _inviter_email = (inviter.email if inviter else "") or ""
+    _real_email = _inviter_email if (_inviter_email and "unknown.local" not in _inviter_email) else None
+    invited_by_name = (inviter.name if inviter and inviter.name else None) or _real_email or "A workspace admin"
 
     email_sent = await send_invite_email(
         to_email=body.email,
@@ -593,8 +595,10 @@ async def resend_invite(
         )
     )
     inviter = inviter_result.scalar_one_or_none()
-    invited_by_name = (inviter.name if inviter and inviter.name else None) or \
-                      (inviter.email if inviter else ctx.user_id)
+    # Use name if set; fall back to email only if it looks real (not the @unknown.local placeholder)
+    _inviter_email = (inviter.email if inviter else "") or ""
+    _real_email = _inviter_email if (_inviter_email and "unknown.local" not in _inviter_email) else None
+    invited_by_name = (inviter.name if inviter and inviter.name else None) or _real_email or "A workspace admin"
 
     hours_remaining = max(
         1,
