@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
+import { useAuth } from "@clerk/nextjs";
 import { Suspense } from "react";
 
 /**
@@ -14,14 +15,24 @@ import { Suspense } from "react";
  * If the token is missing or invalid, shows a clear error message.
  */
 function JoinInner() {
-  const params   = useSearchParams();
-  const router   = useRouter();
-  const token    = params.get("token");
+  const params              = useSearchParams();
+  const router              = useRouter();
+  const token               = params.get("token");
+  const { isLoaded, isSignedIn, getToken } = useAuth();
 
   const [status, setStatus] = useState<"loading" | "success" | "error">("loading");
   const [message, setMessage] = useState("");
 
   useEffect(() => {
+    // Wait for Clerk to finish loading
+    if (!isLoaded) return;
+
+    // Not signed in — send to sign-in, preserving the token so we come back here
+    if (!isSignedIn) {
+      router.replace(`/sign-in?redirect_url=${encodeURIComponent(`/join?token=${token}`)}`);
+      return;
+    }
+
     if (!token) {
       setStatus("error");
       setMessage("No invite token found. Please use the link from your invite email.");
@@ -30,9 +41,13 @@ function JoinInner() {
 
     async function redeem() {
       try {
+        const jwt = await getToken();
         const res = await fetch(`/api/v1/admin/invites/${token}/redeem`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${jwt}`,
+          },
         });
 
         if (res.ok) {
@@ -54,7 +69,7 @@ function JoinInner() {
     }
 
     redeem();
-  }, [token, router]);
+  }, [token, router, isLoaded, isSignedIn, getToken]);
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-brand-navy">
