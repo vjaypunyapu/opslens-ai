@@ -273,3 +273,91 @@ async def require_member(request: Request, db=Depends(get_db)) -> TenantContext:
 async def require_admin(request: Request, db=Depends(get_db)) -> TenantContext:
     """Require the 'admin' role."""
     return await _build_ctx(request, db, min_role="admin")
+
+
+async def require_invite_token(
+    invite_id: str,
+    request: Request,
+    db=Depends(get_db),
+) -> TenantContext:
+    """
+    Lightweight dependency for POST /invites/{invite_id}/redeem.
+
+    The standard require_member dependency calls _provision_user which checks for
+    a valid pending invite matching the user's email. But Clerk JWTs don't include
+    the email claim by default, so new users' emails fall back to
+    user_id@unknown.local — which never matches the invite email, creating a
+    chicken-and-egg deadlock where a new user can never redeem their invite.
+
+    This dependency breaks the deadlock by:
+    1. Validating that the invite token exists and belongs to a real tenant.
+    2. Provisioning the user directly into that tenant, skipping the email check,
+       because the invite token itself is sufficient proof of authorisation.
+    3. Returning a TenantContext scoped to the invite's tenant.
+    """
+    import sqlalchemy as sa_
+    from ..db.models import PendingInvite, User, Tenant
+    import uuid as _uuid_mod
+    from datetime import datetime, timezone
+
+    user_id = getattr(request.state, "user_id", "")
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated.")
+
+    # 1. Look up the invite to determine the correct tenant
+    try:
+        invite_uuid = _uuid_mod.UUID(invite_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid invite token format.")
+
+    invite_result = await db.execute(
+        sa_.select(PendingInvite).where(
+            PendingInvite.id == invite_uuid,
+            PendingInvite.accepted_at == None,  # noqa: E711
+        )
+    )
+    invite = invite_result.scalar_one_or_none()
+    if not invite:
+        raise HTTPException(status_code=404, detail="Invite not found or already used.")
+
+    if invite.expires_at and invite.expires_at < datetime.now(tz=timezone.utc):
+        raise HTTPException(status_code=410, detail="Invite link has expired.")
+
+    tenant_uuid_str = str(invite.tenant_id)
+
+    # 2. Provision user into the invite's tenant — skip email invite check
+    #    because the invite token IS the proof of authorisation.
+    email = getattr(request.state, "email", "") or f"{user_id}@unknown.local"
+
+    # Check if already exists
+    existing = await db.execute(
+        sa_.select(User.role).where(
+            User.tenant_id == invite.tenant_id,
+            User.external_id == user_id,
+        )
+    )
+    existing_role = existing.scalar_one_or_none()
+
+    if existing_role is None:
+        # Create the user directly, bypassing the email-invite check
+        new_user = User(
+            id=_uuid_mod.uuid4(),
+            tenant_id=invite.tenant_id,
+            external_id=user_id,
+            email=email,
+            role=invite.role or "member",
+        )
+        db.add(new_user)
+        try:
+            await db.commit()
+        except Exception:
+            await db.rollback()
+
+    role = existing_role or invite.role or "member"
+
+    return TenantContext(
+        tenant_id=tenant_uuid_str,
+        user_id=user_id,
+        role=role,
+        company_name=getattr(request.state, "company_name", "your company"),
+    )

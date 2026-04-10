@@ -35,7 +35,7 @@ import sqlalchemy as sa
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from ..auth.dependencies import TenantContext, require_admin, require_member
+from ..auth.dependencies import TenantContext, require_admin, require_member, require_invite_token
 from ..db.session import get_db
 from ..db.models import Team, TeamMember, TeamResourcePermission, User, PendingInvite
 from ..utils.logging import get_logger
@@ -639,7 +639,7 @@ async def resend_invite(
 @router.post("/invites/{invite_id}/redeem", status_code=status.HTTP_200_OK)
 async def redeem_invite(
     invite_id: str,
-    ctx: Annotated[TenantContext, Depends(require_member)],
+    ctx: Annotated[TenantContext, Depends(require_invite_token)],
     db=Depends(get_db),
 ):
     """
@@ -647,6 +647,9 @@ async def redeem_invite(
     - Sets the user's tenant role to the role specified in the invite.
     - Adds the user to the specified team with the specified team role.
     - Marks the invite as accepted.
+
+    Uses require_invite_token (not require_member) so new users who have no DB
+    row yet can redeem without hitting the email-invite provisioning gate.
     """
     result = await db.execute(
         sa.select(PendingInvite).where(
