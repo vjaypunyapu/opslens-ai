@@ -1,7 +1,7 @@
 "use client";
 
 import { SignUp } from "@clerk/nextjs";
-import { useSearchParams } from "next/navigation";
+import { useSearchParams, usePathname } from "next/navigation";
 import Link from "next/link";
 import { Suspense } from "react";
 
@@ -9,18 +9,23 @@ import { Suspense } from "react";
  * Sign-up is invite-only.
  *
  * - If the URL contains ?token=<invite_id>, show the Clerk sign-up flow.
- *   After completing sign-up, the frontend /join page will call
- *   POST /api/v1/admin/invites/{token}/redeem to activate the membership.
+ *   Clerk stores its own flow state, so sub-paths like /sign-up/verify-email-address
+ *   also render the SignUp component unconditionally (the token is gone from
+ *   the URL at that point but Clerk has already started the flow).
  *
- * - If there is no token, show an "access by invitation only" message and
- *   a link back to sign-in.  This prevents public self-registration while
- *   keeping the Clerk route intact for invited users.
+ * - If there is no token AND we are exactly at /sign-up (not a Clerk sub-path),
+ *   show the "access by invitation only" gate.
  */
 function SignUpInner() {
-  const params = useSearchParams();
-  const token = params.get("token");
+  const params   = useSearchParams();
+  const pathname = usePathname();
+  const token    = params.get("token");
 
-  if (!token) {
+  // Any sub-path under /sign-up (e.g. /sign-up/verify-email-address,
+  // /sign-up/continue) means the user is mid-flow — show Clerk widget.
+  const isSubPath = pathname !== "/sign-up";
+
+  if (!token && !isSubPath) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-brand-navy">
         <div className="flex flex-col items-center gap-6 text-center max-w-sm px-6">
@@ -49,8 +54,10 @@ function SignUpInner() {
     );
   }
 
-  // Token present — valid invite flow. After Clerk sign-up the app will
-  // redirect to /join?token=<token> to call the redeem endpoint.
+  // Token present, or user is mid-Clerk-flow (sub-path). Render the Clerk
+  // widget. forceRedirectUrl is only set when we have the token.
+  const redirectUrl = token ? `/join?token=${token}` : undefined;
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-brand-navy">
       <div className="flex flex-col items-center gap-6">
@@ -59,8 +66,8 @@ function SignUpInner() {
           <p className="text-white/60 text-sm mt-1">Create your account</p>
         </div>
         <SignUp
-          forceRedirectUrl={`/join?token=${token}`}
-          fallbackRedirectUrl={`/join?token=${token}`}
+          forceRedirectUrl={redirectUrl}
+          fallbackRedirectUrl={redirectUrl ?? "/chat"}
         />
       </div>
     </div>
