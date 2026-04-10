@@ -9,6 +9,8 @@ export default function SignInPage() {
           <p className="text-white/60 text-sm mt-1">Operational Intelligence Copilot</p>
         </div>
         <SignIn
+          forceRedirectUrl="/chat"
+          fallbackRedirectUrl="/chat"
           appearance={{
             elements: {
               // Hide the "Don't have an account? Sign up" footer link.
