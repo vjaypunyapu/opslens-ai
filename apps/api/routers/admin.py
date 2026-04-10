@@ -557,6 +557,27 @@ async def list_pending_invites(
     ]
 
 
+@router.delete("/invites/{invite_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def revoke_invite(
+    invite_id: str,
+    ctx: Annotated[TenantContext, Depends(require_admin)],
+    db=Depends(get_db),
+):
+    """Revoke (delete) a pending invite. Has no effect on already-accepted invites."""
+    result = await db.execute(
+        sa.select(PendingInvite).where(
+            PendingInvite.id == uuid.UUID(invite_id),
+            PendingInvite.tenant_id == ctx.tenant_uuid,
+            PendingInvite.accepted_at == None,  # noqa: E711
+        )
+    )
+    invite = result.scalar_one_or_none()
+    if not invite:
+        raise HTTPException(status_code=404, detail="Invite not found or already accepted")
+    await db.delete(invite)
+    await db.commit()
+
+
 @router.post("/invites/{invite_id}/resend", status_code=status.HTTP_200_OK)
 async def resend_invite(
     invite_id: str,
