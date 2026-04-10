@@ -8,7 +8,6 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.111-green.svg)](https://fastapi.tiangolo.com/)
 
 ---
-
 ## Architecture
 
 ```
