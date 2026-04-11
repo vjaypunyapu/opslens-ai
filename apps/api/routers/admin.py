@@ -543,6 +543,24 @@ async def list_pending_invites(
         .order_by(PendingInvite.expires_at.desc())
     )
     invites = result.scalars().all()
+
+    # Batch-resolve inviter display names so the UI never shows @unknown.local
+    inviter_ids = list({str(i.invited_by) for i in invites if i.invited_by})
+    inviter_map: dict[str, str] = {}
+    if inviter_ids:
+        inviter_rows = await db.execute(
+            sa.select(User).where(
+                User.tenant_id == ctx.tenant_uuid,
+                User.external_id.in_(inviter_ids),
+            )
+        )
+        for u in inviter_rows.scalars().all():
+            _email = u.email or ""
+            _real_email = _email if (_email and "unknown.local" not in _email) else None
+            inviter_map[u.external_id] = (
+                u.name if u.name else None
+            ) or _real_email or "A workspace admin"
+
     return [
         PendingInviteOut(
             invite_id=str(i.id),
@@ -550,7 +568,7 @@ async def list_pending_invites(
             role=i.role,
             invite_url=f"{settings.APP_URL}/sign-up?token={i.id}",
             expires_at=i.expires_at.isoformat(),
-            invited_by=str(i.invited_by),
+            invited_by=inviter_map.get(str(i.invited_by), "A workspace admin"),
             created_at=i.created_at.isoformat() if hasattr(i, "created_at") else "",
         )
         for i in invites

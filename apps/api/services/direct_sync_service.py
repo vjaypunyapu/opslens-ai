@@ -1289,24 +1289,208 @@ async def _fetch_azure_monitor(creds: dict, tenant_id: str, integration_id: str,
     return await _batch_save_and_embed_logs(records, tenant_id)
 
 
+# ── Zendesk ──────────────────────────────────────────────────────────────────
+async def _fetch_zendesk(creds: dict, tenant_id: str, integration_id: str) -> int:
+    """
+    Fetch recent Zendesk tickets and comments.
+    Creds: subdomain, email, api_token
+    """
+    subdomain = creds.get("subdomain", "").strip().rstrip(".zendesk.com")
+    email     = creds.get("email", "").strip()
+    api_token = creds.get("api_token", "").strip()
+
+    if not subdomain or not email or not api_token:
+        raise ValueError("Zendesk credentials missing: subdomain, email, and api_token are required.")
+
+    base_url = f"https://{subdomain}.zendesk.com/api/v2"
+    auth     = (f"{email}/token", api_token)
+    records: list[RawRecord] = []
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        url: str | None = f"{base_url}/tickets.json?sort_by=created_at&sort_order=desc&per_page=100"
+        pages = 0
+        while url and pages < 5:
+            resp = await client.get(url, auth=auth)
+            if resp.status_code == 401:
+                raise ValueError("Zendesk authentication failed — check email and API token.")
+            resp.raise_for_status()
+            data = resp.json()
+            for ticket in data.get("tickets", []):
+                tid_str   = str(ticket.get("id", ""))
+                subject   = ticket.get("subject") or f"Ticket #{tid_str}"
+                body      = ticket.get("description") or ""
+                status_   = ticket.get("status", "")
+                priority  = ticket.get("priority") or "normal"
+                requester = str(ticket.get("requester_id", ""))
+                created   = _parse_dt(ticket.get("created_at"))
+                updated   = _parse_dt(ticket.get("updated_at"))
+
+                records.append(RawRecord(
+                    source_type="zendesk",
+                    source_id=f"ticket-{tid_str}",
+                    title=f"[{priority.upper()}] {subject}",
+                    content=f"Status: {status_}\n\n{body}"[:8000],
+                    author=requester,
+                    url=f"https://{subdomain}.zendesk.com/agent/tickets/{tid_str}",
+                    created_at=created,
+                    updated_at=updated,
+                    metadata={"ticket_id": tid_str, "status": status_, "priority": priority},
+                ))
+            url   = data.get("next_page")
+            pages += 1
+
+    logger.info("Zendesk direct sync: %d tickets for tenant %s", len(records), tenant_id)
+    for rec in records:
+        try:
+            await _save_and_embed(rec, tenant_id)
+        except Exception as exc:
+            logger.warning("Skipping Zendesk record %s: %s", rec.source_id, exc)
+    return len(records)
+
+
+def _parse_dt(value: str | None) -> datetime:
+    """Parse ISO 8601 string to datetime, defaulting to now on failure."""
+    if not value:
+        return datetime.now(tz=timezone.utc)
+    try:
+        from datetime import datetime as _dt
+        return _dt.fromisoformat(value.replace("Z", "+00:00"))
+    except Exception:
+        return datetime.now(tz=timezone.utc)
+
+
+# ── Google Drive ──────────────────────────────────────────────────────────────
+async def _fetch_google_drive(creds: dict, tenant_id: str, integration_id: str) -> int:
+    """
+    Fetch Google Drive documents using a Service Account.
+    Creds: service_account_json (full JSON string)
+
+    Fetches the 200 most-recently-modified Docs/Sheets/Slides, exports them as
+    plain text and stores them for RAG.
+    """
+    import json as _json
+
+    sa_json_raw = creds.get("service_account_json", "").strip()
+    if not sa_json_raw:
+        raise ValueError("Google Drive credentials missing: service_account_json is required.")
+
+    try:
+        sa_info = _json.loads(sa_json_raw)
+    except Exception:
+        raise ValueError("service_account_json is not valid JSON.")
+
+    # Use google-auth + httpx to call Drive API with a service account
+    try:
+        import google.oauth2.service_account as _sa_mod
+        import google.auth.transport.requests as _ga_req
+        creds_obj = _sa_mod.Credentials.from_service_account_info(
+            sa_info,
+            scopes=["https://www.googleapis.com/auth/drive.readonly"],
+        )
+        # Refresh to get an access token
+        request = _ga_req.Request()
+        creds_obj.refresh(request)
+        access_token = creds_obj.token
+    except ImportError:
+        raise RuntimeError(
+            "google-auth package not installed. "
+            "Add 'google-auth' to requirements.txt to enable Google Drive sync."
+        )
+
+    records: list[RawRecord] = []
+    mime_export: dict[str, str] = {
+        "application/vnd.google-apps.document":     "text/plain",
+        "application/vnd.google-apps.spreadsheet":  "text/csv",
+        "application/vnd.google-apps.presentation": "text/plain",
+    }
+
+    async with httpx.AsyncClient(timeout=60, headers={"Authorization": f"Bearer {access_token}"}) as client:
+        # List recent files
+        list_resp = await client.get(
+            "https://www.googleapis.com/drive/v3/files",
+            params={
+                "pageSize": 200,
+                "orderBy": "modifiedTime desc",
+                "q": "trashed = false",
+                "fields": "files(id,name,mimeType,modifiedTime,createdTime,webViewLink,owners)",
+            },
+        )
+        if list_resp.status_code == 401:
+            raise ValueError("Google Drive authentication failed — check service account JSON.")
+        list_resp.raise_for_status()
+
+        for file in list_resp.json().get("files", []):
+            file_id   = file["id"]
+            name      = file.get("name", "Untitled")
+            mime_type = file.get("mimeType", "")
+            export_mime = mime_export.get(mime_type)
+
+            if not export_mime:
+                continue  # skip non-text-exportable files (PDFs, images, etc.)
+
+            try:
+                export_resp = await client.get(
+                    f"https://www.googleapis.com/drive/v3/files/{file_id}/export",
+                    params={"mimeType": export_mime},
+                    timeout=30,
+                )
+                if not export_resp.is_success:
+                    continue
+                content = export_resp.text[:8000]
+            except Exception:
+                continue
+
+            owner  = (file.get("owners") or [{}])[0].get("emailAddress", "")
+            created = _parse_dt(file.get("createdTime"))
+            updated = _parse_dt(file.get("modifiedTime"))
+
+            records.append(RawRecord(
+                source_type="google_drive",
+                source_id=file_id,
+                title=name,
+                content=content,
+                author=owner,
+                url=file.get("webViewLink", ""),
+                created_at=created,
+                updated_at=updated,
+                metadata={"mime_type": mime_type, "file_id": file_id},
+            ))
+
+    logger.info("Google Drive direct sync: %d files for tenant %s", len(records), tenant_id)
+    for rec in records:
+        try:
+            await _save_and_embed(rec, tenant_id)
+        except Exception as exc:
+            logger.warning("Skipping Google Drive record %s: %s", rec.source_id, exc)
+    return len(records)
+
+
 # ── Dispatch ──────────────────────────────────────────────────────────────────
 _FETCHERS = {
     "github":        _fetch_github,
     "jira":          _fetch_jira,
     "slack":         _fetch_slack,
     "hubspot":       _fetch_hubspot,
+    "zendesk":       _fetch_zendesk,
+    "google_drive":  _fetch_google_drive,
     # Log sources — polled directly, zero config required from customer
     "elasticsearch": _fetch_elasticsearch,
     "datadog":       _fetch_datadog,
     "cloudwatch":    _fetch_cloudwatch,
+    # Accept both the short key (legacy) and the canonical UI key
     "gcp":           _fetch_gcp_logging,
+    "gcp_logging":   _fetch_gcp_logging,
     "splunk":        _fetch_splunk,
     "azuremonitor":  _fetch_azure_monitor,
+    "azure_monitor": _fetch_azure_monitor,
 }
 
 # Which source types are log sources (polled periodically vs. contextual one-time syncs)
 LOG_SOURCE_TYPES = frozenset({
-    "elasticsearch", "datadog", "cloudwatch", "gcp", "splunk", "azuremonitor",
+    "elasticsearch", "datadog", "cloudwatch",
+    "gcp", "gcp_logging",
+    "splunk",
+    "azuremonitor", "azure_monitor",
 })
 
 
