@@ -34,8 +34,9 @@ router = APIRouter()
 logger = get_logger(__name__)
 
 SUPPORTED_SOURCES = {
-    "slack", "gdrive", "jira", "zendesk", "github", "hubspot",
+    "slack", "gdrive", "google_drive", "jira", "zendesk", "github", "hubspot",
     "elasticsearch", "datadog", "cloudwatch", "splunk", "azure_monitor", "gcp_logging",
+    "railway",
 }
 
 
@@ -44,8 +45,8 @@ class ConnectRequest(BaseModel):
     source_type: str = Field(
         ...,
         description=(
-            "One of: slack | gdrive | jira | zendesk | github | hubspot | "
-            "elasticsearch | datadog | cloudwatch | splunk | azure_monitor | gcp_logging"
+            "One of: slack | google_drive | jira | zendesk | github | hubspot | "
+            "elasticsearch | datadog | cloudwatch | splunk | azure_monitor | gcp_logging | railway"
         ),
     )
     config: dict = Field(default_factory=dict, description="Source-specific config")

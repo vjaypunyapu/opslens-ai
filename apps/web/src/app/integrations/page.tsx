@@ -103,7 +103,9 @@ function CredentialsModal({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const missing = fields.filter((f) => !values[f.key]?.trim());
+    // Skip fields whose label contains "(optional)" — they are not required
+    const requiredFields = fields.filter((f) => !f.label.toLowerCase().includes("optional"));
+    const missing = requiredFields.filter((f) => !values[f.key]?.trim());
     if (missing.length) {
       toast.error(`Please fill in: ${missing.map((f) => f.label).join(", ")}`);
       return;
