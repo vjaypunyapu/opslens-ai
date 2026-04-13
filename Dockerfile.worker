@@ -5,11 +5,12 @@ WORKDIR /build
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential libpq-dev \
+    libxml2-dev libxmlsec1-dev libxmlsec1-openssl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 RUN pip install --upgrade pip && \
-    pip wheel --no-cache-dir --no-deps --wheel-dir /build/wheels -r requirements.txt
+    pip wheel --no-cache-dir --wheel-dir /build/wheels -r requirements.txt
 
 # ─── Runtime stage ────────────────────────────────────────────────────────────
 FROM python:3.11-slim AS runtime
@@ -26,7 +27,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /build/wheels /wheels
-RUN pip install --no-cache /wheels/*
+COPY --from=builder /build/requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache --no-index --find-links=/wheels -r /tmp/requirements.txt
 
 COPY apps/ apps/
 COPY migrations/ migrations/
