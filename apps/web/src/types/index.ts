@@ -21,7 +21,8 @@ export type SourceType =
   | "cloudwatch"
   | "splunk"
   | "azure_monitor"
-  | "gcp_logging";
+  | "gcp_logging"
+  | "railway";
 export type AlertOperator = "gt" | "gte" | "lt" | "lte" | "eq" | "contains";
 
 // ─── Chat ─────────────────────────────────────────────────────────────────────

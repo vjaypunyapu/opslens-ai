@@ -41,6 +41,7 @@ export const SOURCE_TYPE_LABELS: Record<SourceType, string> = {
   splunk:        "Splunk",
   azure_monitor: "Azure Monitor",
   gcp_logging:   "GCP Logging",
+  railway:       "Railway",
 };
 
 export const SOURCE_TYPE_ICONS: Record<SourceType, string> = {
@@ -56,4 +57,5 @@ export const SOURCE_TYPE_ICONS: Record<SourceType, string> = {
   splunk:        "🔦",
   azure_monitor: "🔷",
   gcp_logging:   "🌐",
+  railway:       "🚂",
 };

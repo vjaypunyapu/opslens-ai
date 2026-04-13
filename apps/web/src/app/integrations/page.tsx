@@ -76,6 +76,12 @@ const CREDENTIAL_FIELDS: Record<string, CredentialField[]> = {
       hint: "Paste the GCP service account JSON key" },
     { key: "project_id", label: "GCP Project ID", placeholder: "my-gcp-project" },
   ],
+  railway: [
+    { key: "api_token",  label: "API Token",   placeholder: "Paste your Railway API token", type: "password",
+      hint: "Generate at railway.app → Account Settings → Tokens" },
+    { key: "project_id", label: "Project ID (optional)", placeholder: "Leave blank to sync all projects",
+      hint: "Copy from your Railway project URL: railway.app/project/<project-id>" },
+  ],
 };
 
 // ── Credentials Modal ─────────────────────────────────────────────────────────
@@ -218,6 +224,7 @@ const COLLAB_SOURCES: { type: SourceType; description: string }[] = [
 ];
 
 const LOG_SOURCES: { type: SourceType; description: string }[] = [
+  { type: "railway",       description: "Deployment logs & crash reports" },
   { type: "elasticsearch", description: "Search & log analytics (ELK stack)" },
   { type: "datadog",       description: "Metrics, logs, APM traces" },
   { type: "cloudwatch",    description: "AWS logs, alarms, metrics" },

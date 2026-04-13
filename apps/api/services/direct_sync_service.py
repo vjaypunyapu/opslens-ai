@@ -1465,6 +1465,165 @@ async def _fetch_google_drive(creds: dict, tenant_id: str, integration_id: str) 
     return len(records)
 
 
+# ── Railway fetcher ───────────────────────────────────────────────────────────
+async def _fetch_railway(creds: dict, tenant_id: str, integration_id: str, since: datetime | None = None) -> int:
+    """
+    Pulls deployment logs from Railway's GraphQL v2 API.
+    Fetches the N most recent deployments per service and indexes their
+    build/runtime logs as searchable records.
+
+    Credentials: api_token (required), project_id (optional — blank = all projects)
+    """
+    api_token  = creds.get("api_token", "").strip()
+    project_id = creds.get("project_id", "").strip()  # optional filter
+    if not api_token:
+        raise ValueError("Railway credentials incomplete (need api_token)")
+
+    since_dt   = since or (datetime.now(tz=timezone.utc) - timedelta(days=3))
+    headers    = {"Authorization": f"Bearer {api_token}", "Content-Type": "application/json"}
+    gql_url    = "https://backboard.railway.app/graphql/v2"
+    records: list[RawRecord] = []
+
+    async with httpx.AsyncClient(headers=headers, timeout=30) as client:
+
+        # ── Step 1: discover projects ──────────────────────────────────────
+        if project_id:
+            # Fetch a single project by ID
+            proj_query = """
+            query($id: String!) {
+              project(id: $id) {
+                id name
+                services { edges { node { id name } } }
+              }
+            }"""
+            resp = await client.post(gql_url, json={"query": proj_query, "variables": {"id": project_id}})
+            resp.raise_for_status()
+            proj_data = resp.json().get("data", {}).get("project")
+            projects  = [proj_data] if proj_data else []
+        else:
+            proj_query = """
+            query {
+              projects {
+                edges {
+                  node {
+                    id name
+                    services { edges { node { id name } } }
+                  }
+                }
+              }
+            }"""
+            resp = await client.post(gql_url, json={"query": proj_query})
+            resp.raise_for_status()
+            edges    = resp.json().get("data", {}).get("projects", {}).get("edges", [])
+            projects = [e["node"] for e in edges]
+
+        if not projects:
+            logger.warning("Railway: no projects found for tenant %s", tenant_id)
+            return 0
+
+        # ── Step 2: per service, fetch recent deployments + logs ───────────
+        depl_query = """
+        query($projectId: String!, $serviceId: String!) {
+          deployments(input: {projectId: $projectId, serviceId: $serviceId}) {
+            edges {
+              node { id status createdAt url }
+            }
+          }
+        }"""
+
+        log_query = """
+        query($deploymentId: String!) {
+          deploymentLogs(deploymentId: $deploymentId) {
+            timestamp message severity
+          }
+        }"""
+
+        for project in projects:
+            p_id   = project.get("id", "")
+            p_name = project.get("name", "unknown-project")
+            services = [e["node"] for e in project.get("services", {}).get("edges", [])]
+
+            for svc in services:
+                s_id   = svc.get("id", "")
+                s_name = svc.get("name", "unknown-service")
+
+                # Fetch deployments
+                dresp = await client.post(
+                    gql_url,
+                    json={"query": depl_query, "variables": {"projectId": p_id, "serviceId": s_id}},
+                )
+                if not dresp.is_success:
+                    logger.warning("Railway: deployments fetch failed for %s/%s — %s", p_name, s_name, dresp.text[:200])
+                    continue
+
+                deployments = [
+                    e["node"]
+                    for e in dresp.json().get("data", {}).get("deployments", {}).get("edges", [])
+                ]
+
+                for depl in deployments[:5]:  # last 5 deployments per service
+                    d_id     = depl.get("id", "")
+                    d_status = depl.get("status", "UNKNOWN")
+                    d_url    = depl.get("url") or ""
+                    created_raw = depl.get("createdAt", "")
+                    try:
+                        d_created = datetime.fromisoformat(created_raw.replace("Z", "+00:00"))
+                    except Exception:
+                        d_created = datetime.now(tz=timezone.utc)
+
+                    if d_created < since_dt:
+                        continue  # skip old deployments on incremental sync
+
+                    # Fetch logs for this deployment
+                    lresp = await client.post(
+                        gql_url,
+                        json={"query": log_query, "variables": {"deploymentId": d_id}},
+                    )
+                    if not lresp.is_success:
+                        logger.warning("Railway: log fetch failed for deployment %s — %s", d_id, lresp.text[:200])
+                        continue
+
+                    log_lines = lresp.json().get("data", {}).get("deploymentLogs", []) or []
+
+                    # Group all log lines into a single record per deployment
+                    filtered_lines = []
+                    for line in log_lines:
+                        msg = (line.get("message") or "").strip()
+                        sev = (line.get("severity") or "").upper()
+                        if not msg:
+                            continue
+                        prefix = f"[{sev}] " if sev and sev != "UNSPECIFIED" else ""
+                        filtered_lines.append(f"{prefix}{msg}")
+
+                    if not filtered_lines and d_status not in ("FAILED", "CRASHED"):
+                        continue  # skip deployments with no useful log lines
+
+                    content = "\n".join(filtered_lines[:500])  # cap at 500 lines
+                    status_emoji = {"SUCCESS": "✅", "FAILED": "❌", "CRASHED": "💥"}.get(d_status, "🔄")
+                    title = f"{status_emoji} [{d_status}] {p_name}/{s_name} — {d_created.strftime('%Y-%m-%d %H:%M UTC')}"
+
+                    records.append(RawRecord(
+                        source_type="railway",
+                        source_id=f"deployment:{d_id}",
+                        title=title,
+                        content=content or f"Deployment {d_status} — no log output captured.",
+                        author=s_name,
+                        url=d_url,
+                        created_at=d_created,
+                        updated_at=d_created,
+                        metadata={
+                            "project": p_name,
+                            "service": s_name,
+                            "status": d_status,
+                            "deployment_id": d_id,
+                            "log_lines": len(filtered_lines),
+                        },
+                    ))
+
+    logger.info("Railway direct sync: %d deployment records for tenant %s", len(records), tenant_id)
+    return await _batch_save_and_embed_logs(records, tenant_id)
+
+
 # ── Dispatch ──────────────────────────────────────────────────────────────────
 _FETCHERS = {
     "github":        _fetch_github,
@@ -1473,7 +1632,7 @@ _FETCHERS = {
     "hubspot":       _fetch_hubspot,
     "zendesk":       _fetch_zendesk,
     "google_drive":  _fetch_google_drive,
-    # Log sources — polled directly, zero config required from customer
+    # Log sources — polled periodically for errors/events
     "elasticsearch": _fetch_elasticsearch,
     "datadog":       _fetch_datadog,
     "cloudwatch":    _fetch_cloudwatch,
@@ -1483,6 +1642,7 @@ _FETCHERS = {
     "splunk":        _fetch_splunk,
     "azuremonitor":  _fetch_azure_monitor,
     "azure_monitor": _fetch_azure_monitor,
+    "railway":       _fetch_railway,
 }
 
 # Which source types are log sources (polled periodically vs. contextual one-time syncs)
@@ -1491,6 +1651,7 @@ LOG_SOURCE_TYPES = frozenset({
     "gcp", "gcp_logging",
     "splunk",
     "azuremonitor", "azure_monitor",
+    "railway",
 })
 
 
