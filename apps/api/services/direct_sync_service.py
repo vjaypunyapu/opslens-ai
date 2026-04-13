@@ -1541,9 +1541,12 @@ async def run_direct_sync(integration_id: str, tenant_id: str) -> None:
     # Run the fetch (outside the session to avoid long-held connections)
     try:
         # Log source fetchers accept a `since` kwarg for incremental sync.
-        # Contextual fetchers (github, jira, slack) ignore it safely.
-        since = last_synced_at if source_type in LOG_SOURCE_TYPES else None
-        count = await fetcher(raw_creds, str(tenant_id), integration_id, since=since)
+        # Contextual fetchers (github, jira, slack, etc.) do not accept it.
+        if source_type in LOG_SOURCE_TYPES:
+            since = last_synced_at
+            count = await fetcher(raw_creds, str(tenant_id), integration_id, since=since)
+        else:
+            count = await fetcher(raw_creds, str(tenant_id), integration_id)
     except Exception as exc:
         logger.exception("direct_sync failed for %s/%s: %s", source_type, integration_id, exc)
         async with async_session_factory() as db:
