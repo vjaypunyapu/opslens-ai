@@ -2,7 +2,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { UserButton } from "@clerk/nextjs";
-import { MessageSquare, Lightbulb, Bell, Plug, BarChart2, Settings, AlertTriangle, Shield, FileText, Route, Sun, Moon } from "lucide-react";
+import { MessageSquare, Lightbulb, Bell, BellOff, Plug, BarChart2, Settings, AlertTriangle, Shield, FileText, Route, Sun, Moon } from "lucide-react";
 import { useTheme } from "@/contexts/ThemeContext";
 
 const NAV = [
@@ -11,6 +11,7 @@ const NAV = [
   { href: "/incidents",    label: "Incidents",    icon: AlertTriangle },
   { href: "/rrt-briefs",     label: "RRT Briefs",     icon: FileText },
   { href: "/routing-rules",  label: "Routing Rules",  icon: Route },
+  { href: "/known-issues",   label: "Suppressions",   icon: BellOff },
   { href: "/insights",       label: "Insights",       icon: Lightbulb },
   { href: "/alerts",       label: "Alerts",       icon: Bell },
   { href: "/integrations", label: "Integrations", icon: Plug },

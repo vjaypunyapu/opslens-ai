@@ -499,6 +499,51 @@ export const demoApi = {
     }>("/log-ops/seed-demo/status", { token }),
 };
 
+// ── Known Issues (alert suppression) ─────────────────────────────────────────
+export interface KnownIssue {
+  id: string;
+  signature: string | null;
+  match_pattern: string | null;
+  description: string | null;
+  suppressed_by: string | null;
+  suppress_until: string | null;
+  jira_ticket_key: string | null;
+  is_active: boolean;
+  hit_count: number;
+  last_hit_at: string | null;
+  created_at: string;
+}
+
+export interface CreateKnownIssueData {
+  signature?: string;
+  match_pattern?: string;
+  description?: string;
+  suppress_until?: string;   // ISO datetime or null for permanent
+  jira_ticket_key?: string;
+}
+
+export const knownIssuesApi = {
+  list: (token: string) =>
+    request<KnownIssue[]>("/log-ops/known-issues", { token }),
+
+  create: (token: string, data: CreateKnownIssueData) =>
+    request<KnownIssue>("/log-ops/known-issues", {
+      method: "POST",
+      body: JSON.stringify(data),
+      token,
+    }),
+
+  update: (token: string, id: string, data: Partial<CreateKnownIssueData> & { is_active?: boolean }) =>
+    request<KnownIssue>(`/log-ops/known-issues/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+      token,
+    }),
+
+  delete: (token: string, id: string) =>
+    request<void>(`/log-ops/known-issues/${id}`, { method: "DELETE", token }),
+};
+
 export const routingRulesApi = {
   list: (token: string) =>
     request<RoutingRule[]>("/log-ops/routing-rules", { token }),
