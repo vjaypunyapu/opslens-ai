@@ -1621,7 +1621,84 @@ async def _fetch_railway(creds: dict, tenant_id: str, integration_id: str, since
                     ))
 
     logger.info("Railway direct sync: %d deployment records for tenant %s", len(records), tenant_id)
-    return await _batch_save_and_embed_logs(records, tenant_id)
+    saved = await _batch_save_and_embed_logs(records, tenant_id)
+
+    # ── Incident trigger: fire RRT brief for FAILED/CRASHED deployments ────────
+    # This puts Railway onto the same real-time incident path as fast_scan,
+    # so a crashed deploy → Slack alert + enrichment + RRT brief automatically.
+    _trigger_railway_incidents(records, tenant_id)
+
+    return saved
+
+
+def _trigger_railway_incidents(records: list["RawRecord"], tenant_id: str) -> None:
+    """
+    For any Railway deployment that FAILED or CRASHED, fire the same
+    enrich_and_alert task used by the fast_scan pipeline so incidents and
+    RRT briefs are generated automatically — not just stored for RAG.
+    """
+    bad_statuses = {"FAILED", "CRASHED"}
+    for rec in records:
+        status = rec.metadata.get("status", "")
+        if status not in bad_statuses:
+            continue
+
+        project = rec.metadata.get("project", "unknown")
+        service = rec.metadata.get("service", "unknown")
+        d_id    = rec.metadata.get("deployment_id", "")
+
+        # Build an ErrorGroup-compatible dict for the enrichment task
+        first_line   = f"Railway {status}: {project}/{service} deployment failed"
+        sample_lines = [first_line]
+        # Add the first few log lines as context if available
+        for line in (rec.content or "").splitlines()[:4]:
+            if line.strip():
+                sample_lines.append(line.strip())
+
+        error_group_dict = {
+            "signature":    f"railway:{d_id[:10]}",
+            "first_line":   first_line,
+            "count":        1,
+            "sample_lines": sample_lines[:5],
+        }
+
+        try:
+            from apps.worker.tasks.log_fast_alert import enrich_and_alert
+            from apps.api.config import settings
+
+            fallback_webhook = (
+                getattr(settings, "LOG_FAST_ALERT_SLACK_WEBHOOK", None)
+                or getattr(settings, "LOG_SCAN_SLACK_WEBHOOK", None)
+            )
+
+            if not fallback_webhook:
+                logger.info(
+                    "Railway incident for %s/%s: no Slack webhook configured — "
+                    "skipping alert (record still stored in Qdrant for chat/alerts)",
+                    project, service,
+                )
+                continue
+
+            enrich_and_alert.delay(
+                tenant_id=tenant_id,
+                error_group_dict=error_group_dict,
+                webhook_url=fallback_webhook,
+                routing_targets=None,  # let enrich_and_alert resolve routing rules
+                error_count=1,
+                window_minutes=0,
+            )
+            logger.info(
+                "Railway incident triggered for %s/%s (deployment %s) — "
+                "dispatched enrich_and_alert + RRT brief for tenant %s",
+                project, service, d_id, tenant_id,
+            )
+        except Exception as exc:
+            # Non-fatal: the record is already stored; alert failure shouldn't
+            # block the sync from completing successfully.
+            logger.warning(
+                "Railway incident dispatch failed for %s/%s: %s (non-fatal)",
+                project, service, exc,
+            )
 
 
 # ── Dispatch ──────────────────────────────────────────────────────────────────
