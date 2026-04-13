@@ -11,7 +11,9 @@ from __future__ import annotations
 import hashlib
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+import hashlib as _hashlib
+import re as _re
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import urllib.parse as _urlparse
@@ -278,12 +280,21 @@ async def _save_and_embed(record: RawRecord, tenant_id: str) -> None:
 _QDRANT_UPSERT_BATCH = 500  # Qdrant recommended max points per upsert request
 
 
-async def _batch_save_and_embed_logs(records: list[RawRecord], tenant_id: str) -> int:
+async def _batch_save_and_embed_logs(
+    records: list[RawRecord],
+    tenant_id: str,
+    trigger_incidents: bool = True,
+) -> int:
     """
     Batch-optimised save + embed path for log source records.
 
     Uses simple token chunking (no LLM enrichment) and collapses all DB and
     embedding I/O into O(1) calls regardless of how many records are in the list.
+
+    When trigger_incidents=True (default), after embedding, newly stored records
+    are scanned for CRITICAL/ERROR patterns and enrich_and_alert is dispatched
+    for any groups above the threshold — wiring ALL log sources into the same
+    live incident/RRT-brief pipeline as fast_scan.
 
     Returns the number of *new* records saved (duplicates are skipped silently).
     """
@@ -429,11 +440,21 @@ async def _batch_save_and_embed_logs(records: list[RawRecord], tenant_id: str) -
             )
         await db.commit()
 
+    new_record_count = len(new_rows)
     logger.info(
         "batch_log_embed: saved %d new records for tenant %s (%d duplicates skipped)",
-        len(new_rows), tenant_id, len(records) - len(new_rows),
+        new_record_count, tenant_id, len(records) - new_record_count,
     )
-    return len(new_rows)
+
+    # ── Live incident detection on genuinely new records ─────────────────────
+    # Only scan records that weren't already in the DB (deduplication already
+    # ran above) — avoids re-firing incidents for records seen on previous polls.
+    if trigger_incidents and new_record_count > 0:
+        new_recs = [rec for _, rec, _ in new_rows]
+        source_type = new_recs[0].source_type if new_recs else "unknown"
+        _trigger_log_source_incidents(new_recs, tenant_id, source_type)
+
+    return new_record_count
 
 
 # ── GitHub fetcher ────────────────────────────────────────────────────────────
@@ -1621,84 +1642,139 @@ async def _fetch_railway(creds: dict, tenant_id: str, integration_id: str, since
                     ))
 
     logger.info("Railway direct sync: %d deployment records for tenant %s", len(records), tenant_id)
-    saved = await _batch_save_and_embed_logs(records, tenant_id)
-
-    # ── Incident trigger: fire RRT brief for FAILED/CRASHED deployments ────────
-    # This puts Railway onto the same real-time incident path as fast_scan,
-    # so a crashed deploy → Slack alert + enrichment + RRT brief automatically.
-    _trigger_railway_incidents(records, tenant_id)
-
-    return saved
+    return await _batch_save_and_embed_logs(records, tenant_id)  # incident trigger included
 
 
-def _trigger_railway_incidents(records: list["RawRecord"], tenant_id: str) -> None:
+# ── Universal log-source incident trigger ─────────────────────────────────────
+# Shared by ALL external log source fetchers (Datadog, ELK, CloudWatch, GCP,
+# Splunk, Azure Monitor, Railway, …).  After each periodic poll embeds new
+# records, this scans them for CRITICAL/ERROR patterns and fires the same
+# enrich_and_alert → RRT-brief pipeline that fast_scan uses for Docker logs.
+# This closes the gap where log sources fed chat/alert-rules but bypassed
+# the real-time incident detection path entirely.
+
+_INCIDENT_RE = _re.compile(
+    r"(ERROR|CRITICAL|EXCEPTION|Traceback \(most recent|"
+    r"raise\s+\w+Error|unhandled exception|task failed|"
+    r"OOM|killed|segfault|500 Internal|FAILED|CRASHED)",
+    _re.IGNORECASE,
+)
+
+
+def _trigger_log_source_incidents(
+    records: list["RawRecord"],
+    tenant_id: str,
+    source_type: str,
+) -> None:
     """
-    For any Railway deployment that FAILED or CRASHED, fire the same
-    enrich_and_alert task used by the fast_scan pipeline so incidents and
-    RRT briefs are generated automatically — not just stored for RAG.
+    Scan newly synced log records for critical error patterns.
+    Groups matching lines by error signature (deduplication), then fires
+    enrich_and_alert.delay() for each new group — triggering Slack alerts,
+    RAG enrichment, and RRT brief generation.
+
+    Mirrors the logic in fast_scan but operates on freshly polled API records
+    rather than local Docker container output.
     """
-    bad_statuses = {"FAILED", "CRASHED"}
+    if not records:
+        return
+
+    # Collect all critical lines across all records
+    groups: dict[str, dict] = {}
     for rec in records:
-        status = rec.metadata.get("status", "")
-        if status not in bad_statuses:
-            continue
+        content = rec.content or ""
+        lines = content.splitlines()
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            if _INCIDENT_RE.search(line):
+                # Grab traceback context (indented lines following the error)
+                block = [line]
+                j = i + 1
+                while j < len(lines) and (
+                    lines[j].startswith("  ") or lines[j].startswith("\t")
+                    or ("Error:" in lines[j] and not lines[j].startswith("20"))
+                ):
+                    block.append(lines[j])
+                    j += 1
 
-        project = rec.metadata.get("project", "unknown")
-        service = rec.metadata.get("service", "unknown")
-        d_id    = rec.metadata.get("deployment_id", "")
+                key_line = block[-1]
+                # Strip timestamps so the same error at different times deduplicates
+                clean = _re.sub(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}[.\d]*[Z]?", "", key_line).strip()
+                sig = f"{source_type}:{_hashlib.md5(clean[:120].encode()).hexdigest()[:10]}"
 
-        # Build an ErrorGroup-compatible dict for the enrichment task
-        first_line   = f"Railway {status}: {project}/{service} deployment failed"
-        sample_lines = [first_line]
-        # Add the first few log lines as context if available
-        for line in (rec.content or "").splitlines()[:4]:
-            if line.strip():
-                sample_lines.append(line.strip())
+                if sig in groups:
+                    groups[sig]["count"] += 1
+                else:
+                    groups[sig] = {
+                        "signature":    sig,
+                        "first_line":   key_line[:300],
+                        "count":        1,
+                        "sample_lines": block[:5],
+                        "source_label": f"{source_type}/{rec.metadata.get('service') or rec.metadata.get('container') or rec.metadata.get('project') or ''}".rstrip("/"),
+                    }
+                i = j
+            else:
+                i += 1
 
-        error_group_dict = {
-            "signature":    f"railway:{d_id[:10]}",
-            "first_line":   first_line,
-            "count":        1,
-            "sample_lines": sample_lines[:5],
-        }
+    if not groups:
+        return  # no critical lines in this batch — nothing to do
 
-        try:
-            from apps.worker.tasks.log_fast_alert import enrich_and_alert
-            from apps.api.config import settings
+    # Fire enrich_and_alert for each distinct error group
+    threshold = max(1, getattr(settings, "LOG_FAST_ALERT_THRESHOLD", 3))
+    try:
+        from apps.worker.tasks.log_fast_alert import enrich_and_alert  # type: ignore[import]
 
-            fallback_webhook = (
-                getattr(settings, "LOG_FAST_ALERT_SLACK_WEBHOOK", None)
-                or getattr(settings, "LOG_SCAN_SLACK_WEBHOOK", None)
+        fallback_webhook = (
+            getattr(settings, "LOG_FAST_ALERT_SLACK_WEBHOOK", None)
+            or getattr(settings, "LOG_SCAN_SLACK_WEBHOOK", None)
+        )
+        if not fallback_webhook:
+            logger.info(
+                "Log source incident scan (%s): found %d error group(s) for tenant %s "
+                "but no Slack webhook configured — records stored for chat/alert-rules only. "
+                "Set LOG_FAST_ALERT_SLACK_WEBHOOK to enable live incident alerting.",
+                source_type, len(groups), tenant_id,
             )
+            return
 
-            if not fallback_webhook:
-                logger.info(
-                    "Railway incident for %s/%s: no Slack webhook configured — "
-                    "skipping alert (record still stored in Qdrant for chat/alerts)",
-                    project, service,
-                )
-                continue
+        fired = 0
+        for g in groups.values():
+            if g["count"] < threshold:
+                continue  # below threshold — skip (avoid noise from single occurrences)
 
+            error_group_dict = {
+                "signature":    g["signature"],
+                "first_line":   g["first_line"],
+                "count":        g["count"],
+                "sample_lines": g["sample_lines"],
+            }
             enrich_and_alert.delay(
                 tenant_id=tenant_id,
                 error_group_dict=error_group_dict,
                 webhook_url=fallback_webhook,
-                routing_targets=None,  # let enrich_and_alert resolve routing rules
-                error_count=1,
-                window_minutes=0,
+                routing_targets=None,   # let enrich_and_alert resolve routing rules from DB
+                error_count=g["count"],
+                window_minutes=5,
             )
+            fired += 1
             logger.info(
-                "Railway incident triggered for %s/%s (deployment %s) — "
-                "dispatched enrich_and_alert + RRT brief for tenant %s",
-                project, service, d_id, tenant_id,
+                "Incident triggered from %s sync: sig=%s count=%d source=%s tenant=%s",
+                source_type, g["signature"], g["count"], g["source_label"], tenant_id,
             )
-        except Exception as exc:
-            # Non-fatal: the record is already stored; alert failure shouldn't
-            # block the sync from completing successfully.
-            logger.warning(
-                "Railway incident dispatch failed for %s/%s: %s (non-fatal)",
-                project, service, exc,
+
+        if fired:
+            logger.info(
+                "Log source incident scan (%s): fired %d / %d groups for tenant %s",
+                source_type, fired, len(groups), tenant_id,
             )
+
+    except Exception as exc:
+        # Non-fatal: records are already stored; alert failure should not
+        # propagate back and mark the integration as errored.
+        logger.warning(
+            "Log source incident trigger failed for %s (non-fatal): %s",
+            source_type, exc,
+        )
 
 
 # ── Dispatch ──────────────────────────────────────────────────────────────────
