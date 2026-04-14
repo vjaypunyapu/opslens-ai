@@ -132,7 +132,37 @@ def _parse_traceback_frames(lines: list[str]) -> list[dict]:
     return frames[-5:][::-1]
 
 
-# ── GitHub code context fetcher ───────────────────────────────────────────────
+# ── Source code context fetchers (GitHub + Bitbucket) ────────────────────────
+
+async def _fetch_code_context(
+    frames: list[dict],
+    tenant_id: str,
+    context_lines: int = 10,
+) -> list[dict]:
+    """
+    Try GitHub first for each frame; if GitHub has no active integration or
+    the file isn't found there, fall back to Bitbucket.
+
+    Returns a list of code_frame dicts (same schema for both sources).
+    """
+    if not frames:
+        return []
+
+    gh_frames = await _fetch_github_code_context(frames, tenant_id, context_lines)
+    if len(gh_frames) == len(frames):
+        # All frames resolved from GitHub — no need to query Bitbucket
+        return gh_frames
+
+    # Find which file paths weren't resolved yet
+    resolved_paths = {f["file"] for f in gh_frames}
+    remaining = [fr for fr in frames if fr["file"] not in resolved_paths]
+
+    if remaining:
+        bb_frames = await _fetch_bitbucket_code_context(remaining, tenant_id, context_lines)
+        return gh_frames + bb_frames
+
+    return gh_frames
+
 
 async def _fetch_github_code_context(
     frames: list[dict],
@@ -290,6 +320,144 @@ async def _fetch_github_code_context(
 
     except Exception as exc:
         logger.warning("GitHub code context fetch failed (non-fatal): %s", exc)
+        return []
+
+
+async def _fetch_bitbucket_code_context(
+    frames: list[dict],
+    tenant_id: str,
+    context_lines: int = 10,
+) -> list[dict]:
+    """
+    Fetch source code context from Bitbucket Cloud for stack frames not resolved
+    by GitHub.  Uses Basic Auth (username + app_password).
+
+    Returns the same code_frame dict schema as _fetch_github_code_context,
+    with `github_url` repurposed as `source_url` (permalink to bitbucket.org).
+    """
+    if not frames:
+        return []
+
+    try:
+        import sqlalchemy as sa
+        from apps.worker.db import AsyncSession
+        from apps.api.db.models import Integration
+        from apps.api.utils.crypto import decrypt_credentials
+
+        async with AsyncSession() as db:
+            result = await db.execute(
+                sa.select(Integration).where(
+                    Integration.tenant_id == tenant_id,
+                    Integration.source_type == "bitbucket",
+                    Integration.status == "active",
+                ).limit(1)
+            )
+            intg = result.scalar_one_or_none()
+
+        if not intg:
+            logger.info("No active Bitbucket integration for tenant=%s — skipping BB code context", tenant_id)
+            return []
+
+        creds     = decrypt_credentials(intg.credentials)
+        workspace = (creds.get("workspace") or "").strip()
+        username  = (creds.get("username") or "").strip()
+        app_pw    = (creds.get("app_password") or "").strip()
+        if not (workspace and username and app_pw):
+            return []
+
+        auth     = (username, app_pw)
+        base_url = "https://api.bitbucket.org/2.0"
+
+        # Discover repos in the workspace
+        async with httpx.AsyncClient(auth=auth, timeout=15) as client:
+            repos_resp = await client.get(
+                f"{base_url}/repositories/{workspace}",
+                params={"pagelen": 50, "fields": "values.slug"},
+            )
+            slugs = [r["slug"] for r in (repos_resp.json().get("values", []) if repos_resp.is_success else [])]
+
+        code_frames: list[dict] = []
+        ext_to_lang = {"py": "python", "js": "javascript", "ts": "typescript",
+                       "java": "java", "kt": "kotlin", "rb": "ruby",
+                       "go": "go", "rs": "rust", "cs": "csharp"}
+
+        async with httpx.AsyncClient(auth=auth, timeout=15) as client:
+            for frame in frames:
+                rel_path = frame["file"]
+                line_no  = frame["line"]
+
+                for slug in slugs:
+                    # Bitbucket src API: GET /2.0/repositories/{ws}/{slug}/src/HEAD/{path}
+                    src_resp = await client.get(
+                        f"{base_url}/repositories/{workspace}/{slug}/src/HEAD/{rel_path}",
+                    )
+                    if not src_resp.is_success:
+                        continue
+
+                    file_text  = src_resp.text
+                    all_lines  = file_text.splitlines()
+                    total      = len(all_lines)
+
+                    start          = max(0, line_no - context_lines - 1)
+                    end            = min(total, line_no + context_lines)
+                    snippet_lines  = all_lines[start:end]
+
+                    numbered = []
+                    for i, sl in enumerate(snippet_lines, start=start + 1):
+                        marker = "→ " if i == line_no else "  "
+                        numbered.append(f"{marker}{i:4d} | {sl}")
+                    snippet = "\n".join(numbered)
+
+                    # Last commit for this file
+                    commit_sha = commit_msg = commit_author = commit_url = ""
+                    commits_resp = await client.get(
+                        f"{base_url}/repositories/{workspace}/{slug}/commits",
+                        params={"path": rel_path, "pagelen": 1,
+                                "fields": "values.hash,values.message,values.author,values.links"},
+                    )
+                    if commits_resp.is_success:
+                        vals = commits_resp.json().get("values", [])
+                        if vals:
+                            c = vals[0]
+                            commit_sha    = c.get("hash", "")[:7]
+                            commit_url    = c.get("links", {}).get("html", {}).get("href", "")
+                            commit_msg    = (c.get("message") or "").splitlines()[0][:120]
+                            author_info   = c.get("author", {})
+                            commit_author = (
+                                author_info.get("user", {}).get("display_name")
+                                or author_info.get("raw", "")
+                            )
+
+                    ext      = rel_path.rsplit(".", 1)[-1] if "." in rel_path else ""
+                    language = ext_to_lang.get(ext, ext or "text")
+                    source_url = (
+                        f"https://bitbucket.org/{workspace}/{slug}/src/HEAD/{rel_path}#lines-{line_no}"
+                    )
+
+                    code_frames.append({
+                        "file":               rel_path,
+                        "line":               line_no,
+                        "function":           frame.get("function", ""),
+                        "repo":               f"{workspace}/{slug}",
+                        "snippet":            snippet,
+                        "language":           language,
+                        "last_commit_sha":    commit_sha,
+                        "last_commit_msg":    commit_msg,
+                        "last_commit_author": commit_author,
+                        "last_commit_url":    commit_url,
+                        "github_url":         source_url,  # field reused for the permalink
+                    })
+
+                    logger.info(
+                        "Code context (Bitbucket): found %s:%d in %s/%s (commit %s)",
+                        rel_path, line_no, workspace, slug, commit_sha,
+                    )
+                    break  # found in this repo — stop trying others
+
+        return code_frames
+
+    except Exception as exc:
+        logger.warning("Bitbucket code context fetch failed (non-fatal): %s", exc)
         return []
 
 
@@ -919,7 +1087,7 @@ def generate_rrt_brief(
         else:
             logger.info("RRT brief %s: no timeline events in pre-incident window", brief_id[:8])
 
-        # 1b. Parse stack trace → fetch actual source code from GitHub
+        # 1b. Parse stack trace → fetch actual source code (GitHub then Bitbucket)
         frames = _parse_traceback_frames(error_sample)
         code_frames: list[dict] = []
         if frames:
@@ -928,7 +1096,7 @@ def generate_rrt_brief(
                 brief_id[:8], len(frames),
             )
             code_frames = _run_async(
-                _fetch_github_code_context(frames, tenant_id)
+                _fetch_code_context(frames, tenant_id)
             )
             if code_frames:
                 logger.info(

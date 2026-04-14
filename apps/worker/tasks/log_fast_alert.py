@@ -328,7 +328,7 @@ def _enrich_with_rag(error_group: ErrorGroup, tenant_id: str) -> list[dict]:
             must=[
                 FieldCondition(
                     key="source_type",
-                    match=MatchAny(any=["jira", "slack", "github"]),
+                    match=MatchAny(any=["jira", "slack", "github", "bitbucket"]),
                 )
             ]
         )

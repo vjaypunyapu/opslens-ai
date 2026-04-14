@@ -556,6 +556,126 @@ async def _fetch_github(creds: dict, tenant_id: str, integration_id: str) -> int
     return len(records)
 
 
+# ── Bitbucket fetcher ─────────────────────────────────────────────────────────
+async def _fetch_bitbucket(creds: dict, tenant_id: str, integration_id: str) -> int:
+    """
+    Sync repos, pull requests, and recent commits from Bitbucket Cloud.
+    Credentials: workspace, username, app_password.
+    """
+    workspace    = (creds.get("workspace") or "").strip()
+    username     = (creds.get("username") or "").strip()
+    app_password = (creds.get("app_password") or "").strip()
+    if not (workspace and username and app_password):
+        raise ValueError("Bitbucket credentials incomplete (need workspace, username, app_password)")
+
+    base_url = "https://api.bitbucket.org/2.0"
+    auth     = (username, app_password)
+    records: list[RawRecord] = []
+
+    async with httpx.AsyncClient(auth=auth, timeout=30) as client:
+        # ── List repositories ──────────────────────────────────────────────
+        repos_resp = await client.get(
+            f"{base_url}/repositories/{workspace}",
+            params={"pagelen": 50, "sort": "-updated_on", "fields": "values.slug,values.full_name,values.description,values.language,values.updated_on,values.created_on,values.links,values.mainbranch"},
+        )
+        repos_resp.raise_for_status()
+        repos_data = repos_resp.json()
+        repos: list[dict] = repos_data.get("values", [])
+        logger.info("Bitbucket: workspace '%s' has %d repositories", workspace, len(repos))
+
+        for repo in repos[:20]:  # cap at 20 repos per sync
+            slug      = repo["slug"]
+            full_name = repo["full_name"]
+            repo_url  = repo.get("links", {}).get("html", {}).get("href", "")
+            repo_desc = repo.get("description") or ""
+            language  = repo.get("language") or "unknown"
+            updated   = repo.get("updated_on", "")
+            created   = repo.get("created_on", "")
+
+            def _parse_bb_dt(s: str) -> datetime:
+                """Parse Bitbucket ISO-8601 timestamp (may include microseconds)."""
+                s = s.rstrip("Z").split("+")[0][:26]
+                return datetime.fromisoformat(s).replace(tzinfo=timezone.utc)
+
+            records.append(RawRecord(
+                source_type="bitbucket",
+                source_id=f"repo:{full_name}",
+                title=f"Bitbucket Repo: {full_name}",
+                content=(
+                    f"Repository: {full_name}\n{repo_desc}\n"
+                    f"Language: {language}"
+                ),
+                author="",
+                url=repo_url,
+                created_at=_parse_bb_dt(created) if created else datetime.now(timezone.utc),
+                updated_at=_parse_bb_dt(updated) if updated else datetime.now(timezone.utc),
+                metadata={"workspace": workspace, "repo": slug},
+            ))
+
+            # ── Pull Requests ──────────────────────────────────────────────
+            pr_resp = await client.get(
+                f"{base_url}/repositories/{workspace}/{slug}/pullrequests",
+                params={"state": "OPEN,MERGED,DECLINED,SUPERSEDED", "pagelen": 30,
+                        "fields": "values.id,values.title,values.description,values.state,values.author,values.links,values.created_on,values.updated_on"},
+            )
+            if pr_resp.status_code == 200:
+                for pr in pr_resp.json().get("values", []):
+                    body    = pr.get("description") or ""
+                    content = f"{pr['title']}\n\n{body}".strip()
+                    if not content:
+                        continue
+                    records.append(RawRecord(
+                        source_type="bitbucket",
+                        source_id=f"pr:{full_name}:{pr['id']}",
+                        title=f"[PR #{pr['id']}] {pr['title']}",
+                        content=content,
+                        author=pr.get("author", {}).get("display_name", ""),
+                        url=pr.get("links", {}).get("html", {}).get("href", ""),
+                        created_at=_parse_bb_dt(pr["created_on"]),
+                        updated_at=_parse_bb_dt(pr["updated_on"]),
+                        metadata={"workspace": workspace, "repo": slug, "state": pr.get("state"), "type": "pull_request"},
+                    ))
+
+            # ── Recent Commits ─────────────────────────────────────────────
+            commits_resp = await client.get(
+                f"{base_url}/repositories/{workspace}/{slug}/commits",
+                params={"pagelen": 20,
+                        "fields": "values.hash,values.message,values.author,values.date,values.links"},
+            )
+            if commits_resp.status_code == 200:
+                for commit in commits_resp.json().get("values", []):
+                    msg = (commit.get("message") or "").strip()
+                    if not msg:
+                        continue
+                    commit_url  = commit.get("links", {}).get("html", {}).get("href", "")
+                    author_info = commit.get("author", {})
+                    author_name = (
+                        author_info.get("user", {}).get("display_name")
+                        or author_info.get("raw", "")
+                    )
+                    date_str    = commit.get("date", "")
+                    records.append(RawRecord(
+                        source_type="bitbucket",
+                        source_id=f"commit:{full_name}:{commit['hash'][:12]}",
+                        title=f"[Commit] {msg[:80]}",
+                        content=f"Commit {commit['hash'][:8]} in {full_name}\n{msg}",
+                        author=author_name,
+                        url=commit_url,
+                        created_at=_parse_bb_dt(date_str) if date_str else datetime.now(timezone.utc),
+                        updated_at=_parse_bb_dt(date_str) if date_str else datetime.now(timezone.utc),
+                        metadata={"workspace": workspace, "repo": slug, "sha": commit["hash"], "type": "commit"},
+                    ))
+
+    logger.info("Bitbucket direct sync: %d records for tenant %s", len(records), tenant_id)
+    for rec in records:
+        try:
+            await _save_and_embed(rec, tenant_id)
+        except Exception as exc:
+            logger.warning("Skipping Bitbucket record %s: %s", rec.source_id, exc)
+
+    return len(records)
+
+
 # ── Jira fetcher ──────────────────────────────────────────────────────────────
 async def _fetch_jira(creds: dict, tenant_id: str, integration_id: str) -> int:
     server_url = creds.get("server_url", "").rstrip("/")
@@ -1830,6 +1950,7 @@ def _trigger_log_source_incidents(
 # ── Dispatch ──────────────────────────────────────────────────────────────────
 _FETCHERS = {
     "github":        _fetch_github,
+    "bitbucket":     _fetch_bitbucket,
     "jira":          _fetch_jira,
     "slack":         _fetch_slack,
     "hubspot":       _fetch_hubspot,

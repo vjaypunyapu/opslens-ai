@@ -15,6 +15,7 @@ export type SourceType =
   | "google_drive"
   | "zendesk"
   | "github"
+  | "bitbucket"
   | "hubspot"
   | "elasticsearch"
   | "datadog"

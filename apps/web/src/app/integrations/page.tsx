@@ -31,6 +31,14 @@ const CREDENTIAL_FIELDS: Record<string, CredentialField[]> = {
       hint: "Generate at GitHub → Settings → Developer settings → Personal access tokens" },
     { key: "org",          label: "Organization or Username (optional)", placeholder: "e.g. my-org or johndoe", hint: "Your GitHub username or org name — NOT your email. Leave blank to sync your own repos." },
   ],
+  bitbucket: [
+    { key: "workspace",    label: "Workspace slug",  placeholder: "my-team",
+      hint: "The workspace slug from your Bitbucket URL: bitbucket.org/{workspace}" },
+    { key: "username",     label: "Username",         placeholder: "your-bitbucket-username",
+      hint: "Your Bitbucket account username (not email)" },
+    { key: "app_password", label: "App Password",     placeholder: "••••••••", type: "password",
+      hint: "Generate at Bitbucket → Personal settings → App passwords (needs Repositories: Read)" },
+  ],
   google_drive: [
     { key: "service_account_json", label: "Service Account JSON", placeholder: '{"type":"service_account",...}', type: "password",
       hint: "Paste the full JSON key file from Google Cloud Console → IAM → Service Accounts" },
@@ -222,6 +230,7 @@ const COLLAB_SOURCES: { type: SourceType; description: string }[] = [
   { type: "google_drive", description: "Docs, sheets, slides" },
   { type: "zendesk",      description: "Tickets, comments, CSAT" },
   { type: "github",       description: "Issues, PRs, releases" },
+  { type: "bitbucket",    description: "Repos, PRs, commit history" },
   { type: "hubspot",      description: "Deals, contacts, companies" },
 ];
 
