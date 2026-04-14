@@ -18,7 +18,7 @@ from typing import Annotated
 
 import httpx
 import sqlalchemy as sa
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from ..auth.dependencies import TenantContext, require_admin, require_viewer
@@ -306,9 +306,20 @@ class PushToJiraResponse(BaseModel):
     already_existed: bool
 
 
+async def _sync_jira_after_push(integration_id: str, tenant_id: str) -> None:
+    """Background task: re-sync Jira so the new ticket lands in Qdrant immediately."""
+    try:
+        from ..services.direct_sync_service import run_direct_sync
+        await run_direct_sync(integration_id, tenant_id)
+        logger.info("Background Jira sync completed after push-to-jira (tenant=%s)", tenant_id)
+    except Exception as exc:
+        logger.warning("Background Jira sync failed (non-fatal): %s", exc)
+
+
 @router.post("/{brief_id}/push-to-jira", response_model=PushToJiraResponse)
 async def push_to_jira(
     brief_id: str,
+    background_tasks: BackgroundTasks,
     ctx: Annotated[TenantContext, Depends(require_admin)],
     db=Depends(get_db),
 ):
@@ -447,6 +458,13 @@ async def push_to_jira(
         .values(jira_ticket_key=ticket_key, jira_ticket_url=ticket_url)
     )
     await db.commit()
+
+    # ── 8. Re-sync Jira in background so new ticket lands in Qdrant immediately ──
+    background_tasks.add_task(
+        _sync_jira_after_push,
+        str(integration.id),
+        str(ctx.tenant_uuid),
+    )
 
     logger.info("Jira ticket %s created for brief %s (tenant %s)", ticket_key, brief_id, ctx.tenant_uuid)
     return PushToJiraResponse(ticket_key=ticket_key, ticket_url=ticket_url, already_existed=False)
