@@ -140,28 +140,150 @@ async def _fetch_code_context(
     context_lines: int = 10,
 ) -> list[dict]:
     """
-    Try GitHub first for each frame; if GitHub has no active integration or
-    the file isn't found there, fall back to Bitbucket.
+    Resolve source code for each stack frame.  Tries three sources in order:
 
-    Returns a list of code_frame dicts (same schema for both sources).
+    1. GitHub  — if the tenant has an active GitHub integration
+    2. Bitbucket — if the tenant has an active Bitbucket integration
+    3. Local filesystem — reads /app/<frame.file> directly from the running
+       container.  This always works on Railway and requires no credentials,
+       making it the reliable fallback for the demo pipeline.
+
+    Returns a list of code_frame dicts (same schema for all three sources).
     """
     if not frames:
         return []
 
     gh_frames = await _fetch_github_code_context(frames, tenant_id, context_lines)
-    if len(gh_frames) == len(frames):
-        # All frames resolved from GitHub — no need to query Bitbucket
-        return gh_frames
 
-    # Find which file paths weren't resolved yet
     resolved_paths = {f["file"] for f in gh_frames}
     remaining = [fr for fr in frames if fr["file"] not in resolved_paths]
 
     if remaining:
         bb_frames = await _fetch_bitbucket_code_context(remaining, tenant_id, context_lines)
-        return gh_frames + bb_frames
+        gh_frames = gh_frames + bb_frames
+        resolved_paths = {f["file"] for f in gh_frames}
+        remaining = [fr for fr in frames if fr["file"] not in resolved_paths]
+
+    if remaining:
+        local_frames = _fetch_local_code_context(remaining, context_lines)
+        gh_frames = gh_frames + local_frames
 
     return gh_frames
+
+
+def _fetch_local_code_context(
+    frames: list[dict],
+    context_lines: int = 10,
+) -> list[dict]:
+    """
+    Read source files directly from the local container filesystem.
+
+    Works for any Railway deployment — the app code lives at /app/ and the
+    traceback paths (after stripping /app/) are repo-relative.  No credentials
+    or network calls needed.
+
+    Returns the same code_frame dict schema as the GitHub / Bitbucket fetchers,
+    with github_url set to the relative path (no permalink available).
+    """
+    import os
+
+    # Candidate root directories (tried in order)
+    ROOTS = ["/app", "/code", "/srv", "/usr/src/app", os.getcwd()]
+
+    ext_to_lang = {
+        "py": "python", "js": "javascript", "ts": "typescript",
+        "java": "java", "kt": "kotlin", "rb": "ruby",
+        "go": "go", "rs": "rust", "cs": "csharp",
+    }
+
+    code_frames: list[dict] = []
+
+    for frame in frames:
+        rel_path = frame["file"]
+        line_no  = frame["line"]
+
+        abs_path: str | None = None
+
+        # 1. Try rel_path as-is (already absolute)
+        if os.path.isabs(rel_path) and os.path.isfile(rel_path):
+            abs_path = rel_path
+        else:
+            # 2. Try each root prefix
+            for root in ROOTS:
+                candidate = os.path.join(root, rel_path)
+                if os.path.isfile(candidate):
+                    abs_path = candidate
+                    break
+
+        if not abs_path:
+            logger.debug("Local code context: file not found on disk: %s", rel_path)
+            continue
+
+        try:
+            with open(abs_path, "r", errors="replace") as fh:
+                all_lines = fh.readlines()
+        except OSError as exc:
+            logger.debug("Local code context: cannot read %s: %s", abs_path, exc)
+            continue
+
+        total = len(all_lines)
+        start = max(0, line_no - context_lines - 1)
+        end   = min(total, line_no + context_lines)
+
+        numbered = []
+        for i, sl in enumerate(all_lines[start:end], start=start + 1):
+            marker = "→ " if i == line_no else "  "
+            numbered.append(f"{marker}{i:4d} | {sl.rstrip()}")
+        snippet = "\n".join(numbered)
+
+        ext      = rel_path.rsplit(".", 1)[-1] if "." in rel_path else ""
+        language = ext_to_lang.get(ext, ext or "text")
+
+        # Try to get last git commit for this file
+        commit_sha = commit_msg = commit_author = commit_url = ""
+        try:
+            import subprocess
+            git_root = subprocess.check_output(
+                ["git", "-C", os.path.dirname(abs_path), "rev-parse", "--show-toplevel"],
+                stderr=subprocess.DEVNULL, text=True,
+            ).strip()
+            git_rel = os.path.relpath(abs_path, git_root)
+            log_out = subprocess.check_output(
+                ["git", "-C", git_root, "log", "--oneline", "-1", "--", git_rel],
+                stderr=subprocess.DEVNULL, text=True,
+            ).strip()
+            if log_out:
+                commit_sha = log_out[:7]
+                commit_msg = log_out[8:128]
+                # Author
+                author_out = subprocess.check_output(
+                    ["git", "-C", git_root, "log", "--format=%an", "-1", "--", git_rel],
+                    stderr=subprocess.DEVNULL, text=True,
+                ).strip()
+                commit_author = author_out
+        except Exception:
+            pass  # git not available or not a git repo — fine
+
+        code_frames.append({
+            "file":               rel_path,
+            "line":               line_no,
+            "function":           frame.get("function", ""),
+            "repo":               "local",
+            "snippet":            snippet,
+            "language":           language,
+            "last_commit_sha":    commit_sha,
+            "last_commit_msg":    commit_msg,
+            "last_commit_author": commit_author,
+            "last_commit_url":    commit_url,
+            "github_url":         "",   # no permalink for local reads
+        })
+
+        logger.info(
+            "Code context (local): resolved %s:%d from %s (commit %s)",
+            rel_path, line_no, abs_path, commit_sha or "unknown",
+        )
+
+    return code_frames
 
 
 async def _fetch_github_code_context(

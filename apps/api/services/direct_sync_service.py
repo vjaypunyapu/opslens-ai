@@ -1832,7 +1832,21 @@ _NOISE_RE = _re.compile(
     # Health / metrics pings
     r"health.?check|healthcheck|/health|/ping|/readyz|/metrics|/livez|"
     r"GET /api/v1/health|POST /api/v1/health|"
-    r"200 OK.*health|health.*200 OK)",
+    r"200 OK.*health|health.*200 OK|"
+    # PostgreSQL internal noise — checkpoint, WAL, vacuum, autovacuum
+    r"checkpoint|LOG:.*checkpoint|pg_checkpoint|WAL.*checkpoint|"
+    r"checkpoint.*starting|checkpoint.*complete|"
+    r"autovacuum|pg_autovacuum|vacuum.*analyze|"
+    r"LOG:.*database system|LOG:.*recovery|LOG:.*redo|"
+    r"LOG:.*connection received|LOG:.*connection authorized|"
+    r"LOG:.*statement:|LOG:.*duration:|LOG:.*temporary file|"
+    # OpsLens-internal DB constraint / migration errors — these are OUR
+    # own infra operations leaking into the monitored log stream
+    r"opslens\.integrations|opslens\.rrt_briefs|opslens\.incidents|"
+    r"opslens\.canonical_documents|opslens\.tenants|"
+    r"integrations_source_type_check|CHECK constraint|"
+    r"alembic.*revision|alembic.*upgrade|alembic.*migration|"
+    r"Running migrations|Applying migration)",
     _re.IGNORECASE,
 )
 

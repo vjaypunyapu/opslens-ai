@@ -282,11 +282,17 @@ function BriefDetail({ brief, getToken, onClose, onStatusChange, onJiraPush }: {
                       <span style={{ color: "#94a3b8" }}> · {frame.function}()</span>
                     )}
                   </span>
-                  <a href={frame.github_url} target="_blank" rel="noreferrer"
-                    style={{ marginLeft: "auto", color: "#64748b", display: "flex", alignItems: "center", gap: "3px",
-                      fontSize: "11px", textDecoration: "none" }}>
-                    GitHub <ExternalLink size={10} />
-                  </a>
+                  {frame.github_url ? (
+                    <a href={frame.github_url} target="_blank" rel="noreferrer"
+                      style={{ marginLeft: "auto", color: "#64748b", display: "flex", alignItems: "center", gap: "3px",
+                        fontSize: "11px", textDecoration: "none" }}>
+                      {frame.repo === "local" ? "Local" : "GitHub"} <ExternalLink size={10} />
+                    </a>
+                  ) : (
+                    <span style={{ marginLeft: "auto", color: "#475569", fontSize: "11px" }}>
+                      {frame.repo === "local" ? "📁 container" : frame.repo}
+                    </span>
+                  )}
                 </div>
 
                 {/* Code snippet */}
