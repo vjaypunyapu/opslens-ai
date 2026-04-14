@@ -50,9 +50,9 @@ function StatusBadge({ status }: { status: string }) {
 
 // ── Brief detail panel ───────────────────────────────────────────────────────
 
-function BriefDetail({ brief, token, onClose, onStatusChange, onJiraPush }: {
+function BriefDetail({ brief, getToken, onClose, onStatusChange, onJiraPush }: {
   brief: RRTBrief;
-  token: string;
+  getToken: () => Promise<string | null>;
   onClose: () => void;
   onStatusChange: (id: string, status: string) => void;
   onJiraPush: (id: string, key: string, url: string) => void;
@@ -68,6 +68,8 @@ function BriefDetail({ brief, token, onClose, onStatusChange, onJiraPush }: {
   async function handleStatusChange(newStatus: string) {
     setSaving(true);
     try {
+      const token = await getToken();
+      if (!token) return;
       await rrtBriefsApi.update(token, brief.id, { status: newStatus });
       onStatusChange(brief.id, newStatus);
     } finally { setSaving(false); }
@@ -77,6 +79,8 @@ function BriefDetail({ brief, token, onClose, onStatusChange, onJiraPush }: {
     if (!updateText.trim()) return;
     setPosting(true);
     try {
+      const token = await getToken();
+      if (!token) return;
       const res = await rrtBriefsApi.postUpdate(token, brief.id, { update_text: updateText });
       setPostMsg(res.slack_notified ? "Posted to Slack ✓" : "Saved (no Slack webhook configured)");
       setUpdateText("");
@@ -89,6 +93,8 @@ function BriefDetail({ brief, token, onClose, onStatusChange, onJiraPush }: {
     setPushing(true);
     setJiraMsg(null);
     try {
+      const token = await getToken();
+      if (!token) { setJiraMsg("Not authenticated — please refresh the page"); return; }
       const res = await rrtBriefsApi.pushToJira(token, brief.id);
       onJiraPush(brief.id, res.ticket_key, res.ticket_url);
       setJiraMsg(res.already_existed ? `Already linked: ${res.ticket_key}` : `Ticket created: ${res.ticket_key}`);
@@ -296,7 +302,6 @@ export default function RRTBriefsPage() {
   const [statusFilter, setStatusFilter] = useState<string>("");
   const [selected, setSelected] = useState<RRTBrief | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [authToken, setAuthToken] = useState<string>("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -304,7 +309,6 @@ export default function RRTBriefsPage() {
     try {
       const token = await getToken();
       if (!token) return;
-      setAuthToken(token);
       const data = await rrtBriefsApi.list(token, {
         status: statusFilter || undefined,
         days: 14,
@@ -519,7 +523,7 @@ export default function RRTBriefsPage() {
       {selected && (
         <BriefDetail
           brief={selected}
-          token={authToken}
+          getToken={getToken}
           onClose={() => setSelected(null)}
           onStatusChange={handleStatusChange}
           onJiraPush={handleJiraPush}
