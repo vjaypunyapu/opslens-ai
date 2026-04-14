@@ -446,6 +446,112 @@ def _send_status_update_slack(
         logger.warning("Status update delivery failed: %s", exc)
 
 
+# ── Incident upsert ───────────────────────────────────────────────────────────
+async def _upsert_incident_from_brief(
+    tenant_id: str,
+    brief_id: str,
+    fields: dict,
+    related_items: list,
+    owner_team: str | None,
+    detected_at: datetime,
+    error_count: int,
+    error_signature: str,
+    timeline_events: list[dict],
+) -> None:
+    """
+    Create (or skip if duplicate) an Incident record from a freshly generated
+    RRT brief so the Incidents page stays in sync automatically.
+
+    Deduplication: if an Incident with the same error_signature was created
+    in the last 2 hours, we skip rather than create a duplicate.
+    """
+    try:
+        import sqlalchemy as sa
+        from apps.worker.db import AsyncSession
+        from apps.api.db.models import Incident
+
+        # Map error count → severity
+        if error_count >= 20:
+            severity = "p0"
+        elif error_count >= 10:
+            severity = "p1"
+        elif error_count >= 5:
+            severity = "p2"
+        elif error_count >= 2:
+            severity = "p3"
+        else:
+            severity = "p4"
+
+        async with AsyncSession() as db:
+            # Deduplicate: skip if same sig incident created recently
+            cutoff = detected_at - timedelta(hours=2)
+            dupe = await db.execute(
+                sa.select(Incident.id).where(
+                    Incident.tenant_id == tenant_id,
+                    Incident.created_at >= cutoff,
+                    Incident.title == fields.get("title", "")[:512],
+                ).limit(1)
+            )
+            if dupe.scalar_one_or_none():
+                logger.debug("Incident already exists for brief %s — skipping upsert", brief_id[:8])
+                return
+
+            # Map related items → contributing_factors and signals
+            contributing = [
+                f"[{r['source_type'].upper()}] {r['title']}"
+                for r in related_items[:5]
+            ]
+            signals = [
+                {
+                    "type": r["source_type"],
+                    "title": r["title"],
+                    "url": r.get("url", ""),
+                    "snippet": r.get("snippet", "")[:200],
+                    "score": r.get("score", 0),
+                }
+                for r in related_items[:10]
+            ]
+            # Link back to the RRT brief
+            signals.append({"type": "rrt_brief", "brief_id": brief_id})
+
+            # Map timeline events to Incident timeline format
+            timeline = [
+                {
+                    "time": ev.get("occurred", ""),
+                    "type": ev.get("type", "event"),
+                    "title": ev.get("title", ""),
+                    "actor": ev.get("actor", ""),
+                    "service": ev.get("service", ""),
+                    "url": ev.get("url", ""),
+                }
+                for ev in timeline_events[:15]
+            ]
+
+            incident = Incident(
+                id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                title=fields.get("title", "Untitled Incident")[:512],
+                description=fields.get("what_happened", ""),
+                status="open",
+                severity=severity,
+                service=owner_team,
+                started_at=detected_at,
+                timeline=timeline,
+                root_cause=fields.get("suspected_cause", ""),
+                contributing_factors=contributing,
+                recommendations=fields.get("next_actions", []),
+                signals=signals,
+            )
+            db.add(incident)
+            await db.commit()
+            logger.info(
+                "Incident created from RRT brief %s: title='%s' severity=%s tenant=%s",
+                brief_id[:8], incident.title[:60], severity, tenant_id,
+            )
+    except Exception as exc:
+        logger.warning("Failed to create Incident from RRT brief %s (non-fatal): %s", brief_id[:8], exc)
+
+
 # ── DB persistence ────────────────────────────────────────────────────────────
 async def _save_rrt_brief(
     tenant_id: str,
@@ -594,7 +700,7 @@ def generate_rrt_brief(
                     brief_id[:8], target.get("team_name"),
                 )
 
-        # 3. Persist to DB
+        # 3. Persist RRT brief to DB
         _run_async(_save_rrt_brief(
             tenant_id=tenant_id,
             brief_id=brief_id,
@@ -608,6 +714,20 @@ def generate_rrt_brief(
             channels_sent=channels_sent,
             slack_ts=slack_ts,
             slack_channel=slack_channel,
+        ))
+
+        # 4. Auto-create a linked Incident record so the Incidents page reflects
+        #    every detected issue without any manual action required
+        _run_async(_upsert_incident_from_brief(
+            tenant_id=tenant_id,
+            brief_id=brief_id,
+            fields=fields,
+            related_items=related_items,
+            owner_team=owner_team,
+            detected_at=detected_at,
+            error_count=error_count,
+            error_signature=error_signature,
+            timeline_events=timeline_events,
         ))
 
         return {

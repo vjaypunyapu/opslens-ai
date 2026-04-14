@@ -482,6 +482,37 @@ function IncidentDetail({
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
                   {incident.signals.map((sig, i) => {
+                    // Special render for rrt_brief link
+                    if (sig.type === "rrt_brief" && sig.brief_id) {
+                      return (
+                        <div key={i} style={{
+                          background: "rgba(20,184,166,0.06)",
+                          border: "1px solid rgba(20,184,166,0.2)",
+                          borderRadius: "10px", padding: "14px 16px",
+                          display: "flex", alignItems: "center", gap: "10px",
+                        }}>
+                          <FileText size={16} color="#2dd4bf" style={{ flexShrink: 0 }} />
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontSize: "12px", fontWeight: 600, color: "#2dd4bf", marginBottom: "2px" }}>
+                              RRT Brief generated for this incident
+                            </div>
+                            <div style={{ fontSize: "11px", color: "#64748b" }}>
+                              Full AI diagnosis, next actions, and Jira push available
+                            </div>
+                          </div>
+                          <a href="/rrt-briefs" style={{
+                            fontSize: "12px", color: "#2dd4bf", textDecoration: "none",
+                            display: "flex", alignItems: "center", gap: "4px",
+                            padding: "5px 12px", borderRadius: "6px",
+                            border: "1px solid rgba(20,184,166,0.3)",
+                            background: "rgba(20,184,166,0.1)",
+                          }}>
+                            View Brief <ExternalLink size={10} />
+                          </a>
+                        </div>
+                      );
+                    }
+
                     const SrcIcon = SOURCE_ICONS[sig.source_type] ?? Activity;
                     return (
                       <div key={i} style={{ background: "rgba(255,255,255,0.03)",
