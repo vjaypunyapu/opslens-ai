@@ -135,8 +135,8 @@ function BriefDetail({ brief, token, onClose, onStatusChange, onJiraPush }: {
           </button>
         </div>
 
-        {/* Status controls */}
-        <div style={{ display: "flex", gap: "8px", marginBottom: "24px" }}>
+        {/* Action bar — status + Jira */}
+        <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "24px", flexWrap: "wrap" }}>
           {["open", "investigating", "resolved"].map(s => (
             <button
               key={s}
@@ -154,7 +154,52 @@ function BriefDetail({ brief, token, onClose, onStatusChange, onJiraPush }: {
               }}
             >{s}</button>
           ))}
+
+          {/* Jira pill — right side of action bar */}
+          <div style={{ marginLeft: "auto" }}>
+            {brief.jira_ticket_key ? (
+              <a
+                href={brief.jira_ticket_url ?? "#"}
+                target="_blank"
+                rel="noreferrer"
+                style={{
+                  display: "inline-flex", alignItems: "center", gap: "6px",
+                  padding: "6px 12px", borderRadius: "6px", fontSize: "12px", fontWeight: 600,
+                  background: "rgba(99,102,241,0.15)", border: "1px solid rgba(99,102,241,0.35)",
+                  color: "#a5b4fc", textDecoration: "none",
+                }}
+              >
+                <Ticket size={12} />
+                {brief.jira_ticket_key}
+                <ExternalLink size={10} />
+              </a>
+            ) : (
+              <button
+                onClick={handlePushToJira}
+                disabled={pushing}
+                style={{
+                  display: "inline-flex", alignItems: "center", gap: "6px",
+                  padding: "6px 14px", borderRadius: "6px", fontSize: "12px", fontWeight: 600,
+                  background: "rgba(99,102,241,0.15)", border: "1px solid rgba(99,102,241,0.35)",
+                  color: "#a5b4fc", cursor: pushing ? "default" : "pointer",
+                  opacity: pushing ? 0.6 : 1,
+                }}
+              >
+                <Ticket size={12} />
+                {pushing ? "Creating…" : "Push to Jira"}
+              </button>
+            )}
+          </div>
         </div>
+
+        {/* Jira error message */}
+        {jiraMsg && !brief.jira_ticket_key && (
+          <div style={{
+            fontSize: "12px", color: "#f87171", marginBottom: "16px",
+            background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)",
+            borderRadius: "6px", padding: "8px 12px",
+          }}>{jiraMsg}</div>
+        )}
 
         {/* Main fields */}
         {cell("What Happened", brief.what_happened)}
@@ -237,57 +282,6 @@ function BriefDetail({ brief, token, onClose, onStatusChange, onJiraPush }: {
           >{posting ? "Posting…" : "Post Update"}</button>
         </div>
 
-        {/* Push to Jira */}
-        <div style={{
-          borderTop: "1px solid rgba(255,255,255,0.08)", paddingTop: "20px", marginTop: "8px",
-        }}>
-          <div style={{ fontSize: "11px", fontWeight: 600, color: "#64748b", textTransform: "uppercase",
-            letterSpacing: "0.08em", marginBottom: "12px" }}>Jira Ticket</div>
-
-          {brief.jira_ticket_key ? (
-            <div style={{
-              display: "flex", alignItems: "center", gap: "10px",
-              background: "rgba(20,184,166,0.08)", border: "1px solid rgba(20,184,166,0.25)",
-              borderRadius: "8px", padding: "10px 14px",
-            }}>
-              <Ticket size={14} color="#2dd4bf" />
-              <span style={{ fontSize: "13px", fontWeight: 600, color: "#2dd4bf" }}>
-                {brief.jira_ticket_key}
-              </span>
-              {brief.jira_ticket_url && (
-                <a
-                  href={brief.jira_ticket_url}
-                  target="_blank"
-                  rel="noreferrer"
-                  style={{ marginLeft: "auto", color: "#64748b", display: "flex", alignItems: "center", gap: "4px",
-                    fontSize: "12px", textDecoration: "none" }}
-                >
-                  Open <ExternalLink size={11} />
-                </a>
-              )}
-            </div>
-          ) : (
-            <>
-              <button
-                onClick={handlePushToJira}
-                disabled={pushing}
-                style={{
-                  display: "flex", alignItems: "center", gap: "7px",
-                  padding: "8px 18px", borderRadius: "8px",
-                  background: "rgba(99,102,241,0.15)", border: "1px solid rgba(99,102,241,0.35)",
-                  color: "#a5b4fc", fontSize: "13px", fontWeight: 600, cursor: "pointer",
-                  opacity: pushing ? 0.6 : 1,
-                }}
-              >
-                <Ticket size={14} />
-                {pushing ? "Creating…" : "Push to Jira"}
-              </button>
-              {jiraMsg && (
-                <div style={{ fontSize: "12px", color: "#f87171", marginTop: "8px" }}>{jiraMsg}</div>
-              )}
-            </>
-          )}
-        </div>
       </div>
     </div>
   );
@@ -500,13 +494,24 @@ export default function RRTBriefsPage() {
             </div>
           )}
 
-          {/* Related items count */}
-          {brief.related_items.length > 0 && (
-            <div style={{ marginTop: "10px", fontSize: "11px", color: "#475569", display: "flex", gap: "12px" }}>
+          {/* Footer meta */}
+          <div style={{ marginTop: "10px", fontSize: "11px", color: "#475569", display: "flex", gap: "12px", alignItems: "center" }}>
+            {brief.related_items.length > 0 && (
               <span><Zap size={10} style={{ marginRight: "4px" }} />{brief.related_items.length} related items</span>
-              {brief.error_sample && <span style={{ fontFamily: "monospace" }}>sig: {brief.error_signature?.slice(0, 8)}…</span>}
-            </div>
-          )}
+            )}
+            {brief.error_signature && (
+              <span style={{ fontFamily: "monospace" }}>sig: {brief.error_signature.slice(0, 8)}…</span>
+            )}
+            {brief.jira_ticket_key && (
+              <span style={{
+                marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: "4px",
+                color: "#a5b4fc", background: "rgba(99,102,241,0.12)",
+                border: "1px solid rgba(99,102,241,0.25)", borderRadius: "4px", padding: "1px 7px",
+              }}>
+                <Ticket size={10} /> {brief.jira_ticket_key}
+              </span>
+            )}
+          </div>
         </div>
       ))}
 
