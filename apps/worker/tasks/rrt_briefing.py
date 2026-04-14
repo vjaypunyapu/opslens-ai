@@ -347,8 +347,14 @@ async def _fetch_github_code_context(
                 "https://api.github.com/user/repos",
                 params={"per_page": 100, "sort": "updated", "affiliation": "owner,collaborator"},
             )
+            if not repos_resp.is_success:
+                logger.warning(
+                    "GitHub repos list failed: status=%s body=%s",
+                    repos_resp.status_code, repos_resp.text[:200],
+                )
             repos = repos_resp.json() if repos_resp.is_success else []
             repo_names = [r["full_name"] for r in repos if isinstance(r, dict)]
+            logger.info("GitHub code context: found %d accessible repos: %s", len(repo_names), repo_names[:5])
 
         code_frames: list[dict] = []
 
@@ -356,6 +362,7 @@ async def _fetch_github_code_context(
             for frame in frames:
                 rel_path = frame["file"]
                 line_no = frame["line"]
+                found_in_repo = False
 
                 # Try each repo until we find the file
                 for full_name in repo_names:
@@ -363,6 +370,10 @@ async def _fetch_github_code_context(
                         f"https://api.github.com/repos/{full_name}/contents/{rel_path}",
                     )
                     if not content_resp.is_success:
+                        logger.debug(
+                            "GitHub: %s not found in %s (status=%s)",
+                            rel_path, full_name, content_resp.status_code,
+                        )
                         continue
 
                     content_data = content_resp.json()
@@ -436,12 +447,20 @@ async def _fetch_github_code_context(
                         "Code context: found %s:%d in repo %s (last commit: %s by %s)",
                         rel_path, line_no, full_name, commit_sha, commit_author,
                     )
+                    found_in_repo = True
                     break  # found the file — don't try other repos
+
+                if not found_in_repo:
+                    logger.warning(
+                        "GitHub code context: file '%s' not found in any of %d repos — "
+                        "will fall through to local filesystem fallback",
+                        rel_path, len(repo_names),
+                    )
 
         return code_frames
 
     except Exception as exc:
-        logger.warning("GitHub code context fetch failed (non-fatal): %s", exc)
+        logger.warning("GitHub code context fetch failed (non-fatal): %s", exc, exc_info=True)
         return []
 
 
@@ -1324,23 +1343,39 @@ def generate_rrt_brief(
             logger.info("RRT brief %s: no timeline events in pre-incident window", brief_id[:8])
 
         # 1b. Parse stack trace → fetch actual source code (GitHub then Bitbucket)
+        logger.info(
+            "RRT brief %s: error_sample has %d lines: %r",
+            brief_id[:8], len(error_sample),
+            [l[:80] for l in error_sample[:6]],
+        )
         frames = _parse_traceback_frames(error_sample)
         code_frames: list[dict] = []
         if frames:
             logger.info(
-                "RRT brief %s: parsed %d app code frames from stack trace",
+                "RRT brief %s: parsed %d app code frames: %s",
                 brief_id[:8], len(frames),
+                [(f["file"], f["line"]) for f in frames],
             )
             code_frames = _run_async(
                 _fetch_code_context(frames, tenant_id)
             )
             if code_frames:
                 logger.info(
-                    "RRT brief %s: fetched code context for %d/%d frames",
+                    "RRT brief %s: fetched code context for %d/%d frames (sources: %s)",
                     brief_id[:8], len(code_frames), len(frames),
+                    [f.get("repo") or f.get("source") for f in code_frames],
+                )
+            else:
+                logger.warning(
+                    "RRT brief %s: code context fetch returned EMPTY — GitHub/Bitbucket/local all failed",
+                    brief_id[:8],
                 )
         else:
-            logger.info("RRT brief %s: no parseable app frames in stack trace", brief_id[:8])
+            logger.warning(
+                "RRT brief %s: no parseable app frames in stack trace — "
+                "sample_lines did not contain 'File \"...\", line N' patterns",
+                brief_id[:8],
+            )
 
         # 1c. LLM: generate structured fields (with code + timeline context)
         fields = _generate_brief_fields(
