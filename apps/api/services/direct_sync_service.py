@@ -1660,6 +1660,25 @@ _INCIDENT_RE = _re.compile(
     _re.IGNORECASE,
 )
 
+# Lines that match _INCIDENT_RE but are just normal infrastructure lifecycle
+# noise — Railway/Gunicorn/uvicorn startup-shutdown cycle, signal handling,
+# healthcheck pings, etc.  These should never trigger an incident brief.
+_NOISE_RE = _re.compile(
+    r"(Application shutdown complete|Waiting for application shutdown|"
+    r"Shutting down gracefully|Shutdown complete|"
+    r"Process terminated with ID|Worker exiting|worker exiting|"
+    r"Booting worker with pid|Arbiter booted|"
+    r"Handling signal:|uvicorn.*Finished server process|"
+    r"Application startup complete|Started server process|"
+    r"Waiting for connections|Uvicorn running on|"
+    r"INFO:.*shutdown|INFO:.*startup|INFO:.*Waiting|"
+    r"\[INFO\].*shutdown|\[INFO\].*startup|"
+    r"health.?check|healthcheck|/health|/ping|/readyz|"
+    r"GET /api/v1/health|POST /api/v1/health|"
+    r"railway.*deploy|deploy.*railway|deployment.*complete)",
+    _re.IGNORECASE,
+)
+
 
 def _trigger_log_source_incidents(
     records: list["RawRecord"],
@@ -1686,7 +1705,7 @@ def _trigger_log_source_incidents(
         i = 0
         while i < len(lines):
             line = lines[i]
-            if _INCIDENT_RE.search(line):
+            if _INCIDENT_RE.search(line) and not _NOISE_RE.search(line):
                 # Grab traceback context (indented lines following the error)
                 block = [line]
                 j = i + 1
@@ -1720,7 +1739,7 @@ def _trigger_log_source_incidents(
         return  # no critical lines in this batch — nothing to do
 
     # Fire enrich_and_alert for each distinct error group
-    threshold = max(1, getattr(settings, "LOG_FAST_ALERT_THRESHOLD", 3))
+    threshold = max(2, getattr(settings, "LOG_FAST_ALERT_THRESHOLD", 3))
     try:
         from apps.worker.tasks.log_fast_alert import enrich_and_alert  # type: ignore[import]
 
@@ -1737,10 +1756,41 @@ def _trigger_log_source_incidents(
             )
             return
 
+        # Load signatures of recent RRT briefs so we don't re-fire the same one
+        cooldown_hours = max(1, getattr(settings, "LOG_INCIDENT_COOLDOWN_HOURS", 2))
+        recent_sigs: set[str] = set()
+        try:
+            from apps.api.models.rrt_brief import RRTBrief as _RRTBrief
+            from apps.worker.db import AsyncSession as _AsyncSession
+            import asyncio as _asyncio
+
+            async def _load_recent_sigs() -> set[str]:
+                cutoff = datetime.now(timezone.utc) - timedelta(hours=cooldown_hours)
+                async with _AsyncSession() as _db:
+                    rows = await _db.execute(
+                        sa.select(_RRTBrief.error_signature).where(
+                            _RRTBrief.tenant_id == tenant_id,
+                            _RRTBrief.created_at >= cutoff,
+                            _RRTBrief.error_signature.isnot(None),
+                        )
+                    )
+                    return {r[0] for r in rows.fetchall()}
+
+            recent_sigs = _asyncio.get_event_loop().run_until_complete(_load_recent_sigs())
+        except Exception as _ce:
+            logger.debug("Could not load recent brief sigs (non-fatal): %s", _ce)
+
         fired = 0
         for g in groups.values():
             if g["count"] < threshold:
                 continue  # below threshold — skip (avoid noise from single occurrences)
+
+            if g["signature"] in recent_sigs:
+                logger.debug(
+                    "Skipping incident for sig=%s — brief already created within last %dh",
+                    g["signature"], cooldown_hours,
+                )
+                continue
 
             error_group_dict = {
                 "signature":    g["signature"],
