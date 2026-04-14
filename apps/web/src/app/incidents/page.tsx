@@ -807,6 +807,196 @@ function SimulateAlertModal({ onClose, onSimulate }: {
 }
 
 
+// ─── Demo Scenario Modal ──────────────────────────────────────────────────────
+
+const LIVE_SCENARIOS = [
+  { id: "alert_rule_null_condition", label: "Alert Rule: NullPointerError", emoji: "🔴",
+    desc: "alerts.py crashes when a rule's conditions list is None — data migration gap." },
+  { id: "qdrant_embedding_mismatch", label: "Vector Store: Dimension Mismatch", emoji: "🟠",
+    desc: "Qdrant upsert fails after embedding model upgrade — collection not re-created." },
+  { id: "jira_sync_token_expired", label: "Jira Sync: Token Expired", emoji: "🔑",
+    desc: "Jira sync fails with 401 after token rotation — retries 3×, raises JiraAuthError." },
+  { id: "rrt_brief_llm_timeout", label: "RRT Brief: LLM API Timeout", emoji: "⏱️",
+    desc: "Brief generation times out — socket.timeout from LLM gateway, brief never saved." },
+  { id: "db_migration_column_missing", label: "DB: Column Does Not Exist", emoji: "🗄️",
+    desc: "INSERT into rrt_briefs fails — migration ran on dev but not prod." },
+];
+
+function DemoScenarioModal({ onClose }: { onClose: () => void }) {
+  const { getToken } = useAuth();
+  const [selectedId, setSelectedId] = useState(LIVE_SCENARIOS[0].id);
+  const [repeat, setRepeat] = useState(8);
+  const [step, setStep] = useState<"pick" | "firing" | "syncing" | "done" | "error">("pick");
+  const [result, setResult] = useState<{ title: string; error_type: string; logged: number } | null>(null);
+  const [syncResult, setSyncResult] = useState<{ records_added: number | null } | null>(null);
+  const [errMsg, setErrMsg] = useState<string | null>(null);
+
+  async function handleRun() {
+    setStep("firing");
+    setErrMsg(null);
+    try {
+      const token = await getToken();
+      if (!token) { setStep("error"); setErrMsg("Not authenticated"); return; }
+      const r = await demoApi.runScenario(token, selectedId, repeat);
+      setResult({ title: r.title, error_type: r.error_type, logged: r.logged });
+      setStep("syncing");
+      // Immediately force-sync Railway so OpsLens picks up the errors now
+      const s = await demoApi.forceSync(token, "railway");
+      setSyncResult({ records_added: s.records_added });
+      setStep("done");
+    } catch (e: unknown) {
+      setStep("error");
+      setErrMsg(e instanceof Error ? e.message : "Failed");
+    }
+  }
+
+  return (
+    <div style={{
+      position: "fixed", inset: 0, zIndex: 50,
+      background: "rgba(0,0,0,0.7)", backdropFilter: "blur(6px)",
+      display: "flex", alignItems: "center", justifyContent: "center", padding: "1rem",
+    }}>
+      <div style={{
+        background: "#1e293b", border: "1px solid rgba(255,255,255,0.1)",
+        borderRadius: "1rem", padding: "1.75rem", width: "100%", maxWidth: "520px",
+        boxShadow: "0 25px 60px rgba(0,0,0,0.6)",
+      }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "1.25rem" }}>
+          <div>
+            <h2 style={{ color: "#f1f5f9", fontSize: "1rem", fontWeight: 700, margin: 0 }}>
+              🎬 Live Demo Scenario
+            </h2>
+            <p style={{ color: "#64748b", fontSize: "0.75rem", margin: "4px 0 0" }}>
+              Runs <strong style={{ color: "#94a3b8" }}>real buggy code</strong> in your API, captures the actual stack trace, logs it to Railway, then force-syncs so OpsLens generates the RRT brief in seconds.
+            </p>
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "#64748b", cursor: "pointer", padding: "4px" }}>
+            <X size={18} />
+          </button>
+        </div>
+
+        {step === "pick" && (
+          <>
+            <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: "1.25rem" }}>
+              {LIVE_SCENARIOS.map(s => (
+                <label key={s.id} style={{
+                  display: "flex", alignItems: "flex-start", gap: "12px", padding: "12px 14px",
+                  borderRadius: "8px", cursor: "pointer",
+                  background: selectedId === s.id ? "rgba(20,184,166,0.1)" : "rgba(255,255,255,0.03)",
+                  border: `1px solid ${selectedId === s.id ? "rgba(20,184,166,0.4)" : "rgba(255,255,255,0.07)"}`,
+                  transition: "all 0.15s",
+                }}>
+                  <input type="radio" name="scenario" value={s.id} checked={selectedId === s.id}
+                    onChange={() => setSelectedId(s.id)}
+                    style={{ marginTop: "3px", accentColor: "#14b8a6" }} />
+                  <div>
+                    <div style={{ color: "#f1f5f9", fontSize: "13px", fontWeight: 600 }}>
+                      {s.emoji} {s.label}
+                    </div>
+                    <div style={{ color: "#64748b", fontSize: "12px", marginTop: "2px" }}>{s.desc}</div>
+                  </div>
+                </label>
+              ))}
+            </div>
+
+            <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "1.25rem" }}>
+              <label style={{ color: "#94a3b8", fontSize: "13px", whiteSpace: "nowrap" }}>
+                Log repeat count:
+              </label>
+              <input type="number" min={3} max={50} value={repeat}
+                onChange={e => setRepeat(Number(e.target.value))}
+                style={{
+                  width: "80px", padding: "6px 10px", borderRadius: "6px",
+                  background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.15)",
+                  color: "#f1f5f9", fontSize: "13px", textAlign: "center",
+                }} />
+              <span style={{ color: "#475569", fontSize: "12px" }}>≥ 6 to exceed detection threshold</span>
+            </div>
+
+            <div style={{ display: "flex", gap: "10px", justifyContent: "flex-end" }}>
+              <button onClick={onClose} style={{
+                padding: "10px 20px", borderRadius: "8px",
+                background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)",
+                color: "#94a3b8", fontSize: "14px", cursor: "pointer",
+              }}>Cancel</button>
+              <button onClick={handleRun} style={{
+                padding: "10px 22px", borderRadius: "8px",
+                background: "#ef4444", border: "none", color: "#fff",
+                fontSize: "14px", fontWeight: 700, cursor: "pointer",
+                display: "flex", alignItems: "center", gap: "8px",
+              }}>
+                <Play size={14} /> Fire Scenario
+              </button>
+            </div>
+          </>
+        )}
+
+        {(step === "firing" || step === "syncing") && (
+          <div style={{ textAlign: "center", padding: "2rem 0" }}>
+            <Loader2 size={32} style={{ color: "#14b8a6", animation: "spin 1s linear infinite", marginBottom: "16px" }} />
+            <div style={{ color: "#f1f5f9", fontSize: "15px", fontWeight: 600 }}>
+              {step === "firing" ? "Running buggy code & logging tracebacks…" : "Force-syncing Railway logs into OpsLens…"}
+            </div>
+            <div style={{ color: "#64748b", fontSize: "13px", marginTop: "6px" }}>
+              {step === "firing" ? `Executing scenario and logging ${repeat}× to Railway` : "Fetching logs, triggering incident detection pipeline"}
+            </div>
+          </div>
+        )}
+
+        {step === "done" && result && (
+          <div>
+            <div style={{ background: "rgba(34,197,94,0.1)", border: "1px solid rgba(34,197,94,0.3)",
+              borderRadius: "8px", padding: "16px", marginBottom: "14px" }}>
+              <div style={{ color: "#4ade80", fontWeight: 700, fontSize: "14px", marginBottom: "8px" }}>
+                ✓ Scenario fired & logs ingested
+              </div>
+              <div style={{ color: "#94a3b8", fontSize: "13px", display: "flex", flexDirection: "column", gap: "4px" }}>
+                <span>📋 <strong style={{ color: "#f1f5f9" }}>{result.title}</strong></span>
+                <span>💥 Real exception: <code style={{ color: "#f87171", fontSize: "12px" }}>{result.error_type}</code></span>
+                <span>📝 Logged <strong style={{ color: "#f1f5f9" }}>{result.logged}×</strong> to Railway</span>
+                {syncResult && <span>📥 Synced <strong style={{ color: "#f1f5f9" }}>{syncResult.records_added ?? "?"}</strong> records from Railway</span>}
+              </div>
+            </div>
+            <div style={{ background: "rgba(167,139,250,0.08)", border: "1px solid rgba(167,139,250,0.2)",
+              borderRadius: "8px", padding: "14px", marginBottom: "16px", fontSize: "13px", color: "#a78bfa" }}>
+              ⏳ OpsLens is processing the error spike now. An RRT brief should appear in <strong>~30–60 seconds</strong>.
+            </div>
+            <div style={{ display: "flex", gap: "10px", justifyContent: "flex-end" }}>
+              <button onClick={onClose} style={{
+                padding: "10px 20px", borderRadius: "8px",
+                background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)",
+                color: "#94a3b8", fontSize: "14px", cursor: "pointer" }}>Close</button>
+              <a href="/rrt-briefs" style={{
+                padding: "10px 22px", borderRadius: "8px",
+                background: "rgba(167,139,250,0.2)", border: "1px solid rgba(167,139,250,0.4)",
+                color: "#c4b5fd", fontSize: "14px", fontWeight: 700, cursor: "pointer",
+                textDecoration: "none", display: "flex", alignItems: "center", gap: "8px" }}>
+                <FileText size={14} /> View RRT Briefs →
+              </a>
+            </div>
+          </div>
+        )}
+
+        {step === "error" && (
+          <div>
+            <div style={{ background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.3)",
+              borderRadius: "8px", padding: "14px", marginBottom: "16px", color: "#f87171", fontSize: "13px" }}>
+              {errMsg || "Something went wrong. Check the Railway logs for details."}
+            </div>
+            <div style={{ textAlign: "right" }}>
+              <button onClick={() => setStep("pick")} style={{
+                padding: "10px 20px", borderRadius: "8px",
+                background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)",
+                color: "#94a3b8", fontSize: "14px", cursor: "pointer" }}>← Back</button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
 // ─── Main Page ───────────────────────────────────────────────────────────────
 
 export default function IncidentsPage() {
@@ -820,6 +1010,7 @@ export default function IncidentsPage() {
   const [selected, setSelected] = useState<Incident | null>(null);
   const [showNew, setShowNew] = useState(false);
   const [showSimulate, setShowSimulate] = useState(false);
+  const [showScenario, setShowScenario] = useState(false);
   const [seeding, setSeeding] = useState(false);
   const [seedMsg, setSeedMsg] = useState<string | null>(null);
   const [seedStatus, setSeedStatus] = useState<null | { db_documents: { found: number; expected: number; done: number; pending: number; details: {source_id:string; source_type:string; embedding_status:string; chunk_count:number|null}[] }; qdrant: { url: string; reachable: boolean; collection: string; vector_count: number; error: string|null }; ready_for_demo: boolean; next_step: string }>(null);
@@ -984,6 +1175,14 @@ export default function IncidentsPage() {
                 color: "#2dd4bf", fontSize: "13px", fontWeight: 600, cursor: "pointer",
                 display: "flex", alignItems: "center", gap: "8px" }}>
               <Zap size={14} /> Simulate Alert
+            </button>
+            <button onClick={() => setShowScenario(true)}
+              title="Run a real code scenario that generates a live traceback, logs it to Railway, and triggers the full RRT brief pipeline"
+              style={{ padding: "10px 18px", borderRadius: "8px",
+                background: "rgba(239,68,68,0.13)", border: "1px solid rgba(239,68,68,0.35)",
+                color: "#f87171", fontSize: "13px", fontWeight: 600, cursor: "pointer",
+                display: "flex", alignItems: "center", gap: "8px" }}>
+              <Play size={14} /> Live Demo
             </button>
             <button onClick={() => setShowNew(true)}
               style={{ padding: "10px 18px", borderRadius: "8px",
@@ -1204,6 +1403,9 @@ export default function IncidentsPage() {
           onClose={() => setShowSimulate(false)}
           onSimulate={handleSimulate}
         />
+      )}
+      {showScenario && (
+        <DemoScenarioModal onClose={() => setShowScenario(false)} />
       )}
       {showNew && (
         <NewIncidentModal onClose={() => setShowNew(false)} onCreate={handleCreate} />

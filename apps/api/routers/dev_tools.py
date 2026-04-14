@@ -13,11 +13,17 @@ Endpoints:
                              Railway captures it; OpsLens polls and alerts.
     POST /dev/force-sync   — Immediately sync a Railway (or any) integration
                              without waiting for the 5-minute poll cycle.
+    POST /dev/scenario     — Run a named demo scenario that executes REAL buggy
+                             code paths, captures the live Python traceback, and
+                             logs it N times so OpsLens can detect and alert.
+                             GitHub code context will find the exact source lines.
+    GET  /dev/scenarios    — List all available demo scenarios with descriptions.
 """
 from __future__ import annotations
 
 import asyncio
 import traceback
+import uuid
 from typing import Annotated
 
 import sqlalchemy as sa
@@ -31,6 +37,359 @@ from ..utils.logging import get_logger
 logger = get_logger(__name__)
 
 router = APIRouter()
+
+
+# ── Demo scenarios — real buggy code paths ────────────────────────────────────
+
+def _scenario_alert_rule_null_condition() -> str:
+    """
+    Simulates a bug in the alerts module: an AlertRule is loaded from DB
+    with a None conditions list (data-migration gap), and the evaluator
+    tries to iterate it → TypeError deep in the rule evaluation stack.
+    """
+    from ..models.alert import AlertRule
+
+    # Simulate a rule object with a None conditions field (corrupt DB row)
+    corrupt_rule = AlertRule.__new__(AlertRule)
+    object.__setattr__(corrupt_rule, "id", uuid.uuid4())
+    object.__setattr__(corrupt_rule, "name", "P0 Payment Failures")
+    object.__setattr__(corrupt_rule, "conditions", None)   # <-- the bug
+
+    def evaluate_conditions(rule: AlertRule) -> bool:
+        """Inner evaluator — crashes on None conditions."""
+        for condition in rule.conditions:                  # <-- TypeError here
+            field = condition.get("field")
+            if condition.get("operator") == "gt":
+                return float(condition.get("value", 0)) > 0
+        return False
+
+    def dispatch_alert_rule(rule: AlertRule) -> None:
+        """Alert dispatcher — calls evaluator."""
+        result = evaluate_conditions(rule)
+        if result:
+            logger.info("Alert rule '%s' triggered", rule.name)
+
+    dispatch_alert_rule(corrupt_rule)
+    return ""  # never reached
+
+
+def _scenario_qdrant_embedding_mismatch() -> str:
+    """
+    Simulates a dimension mismatch when storing a vector in Qdrant:
+    the embedding model was swapped from 1536-dim to 3072-dim but the
+    collection was not recreated → VectorStoreError on upsert.
+    """
+    import numpy as np
+
+    EXPECTED_DIM = 1536
+    ACTUAL_DIM   = 3072   # new model, collection not migrated
+
+    class VectorStoreError(RuntimeError):
+        pass
+
+    def _validate_vector_dimensions(vec: list[float], collection: str) -> None:
+        if len(vec) != EXPECTED_DIM:
+            raise VectorStoreError(
+                f"Vector dimension mismatch in collection '{collection}': "
+                f"expected {EXPECTED_DIM} got {len(vec)}. "
+                f"Re-create the collection or downgrade the embedding model."
+            )
+
+    def embed_and_store(text: str, collection: str = "opslens_tenant_prod") -> None:
+        # Simulate embedding with wrong-dimension model
+        fake_vector = list(np.random.randn(ACTUAL_DIM).astype(float))
+        _validate_vector_dimensions(fake_vector, collection)
+        # upsert would happen here
+        logger.info("Stored vector for: %s", text[:40])
+
+    def ingest_rrt_brief_embedding(brief_id: str) -> None:
+        text = f"RRT Brief {brief_id}: Payment gateway timeout spike detected in prod"
+        embed_and_store(text)
+
+    ingest_rrt_brief_embedding(str(uuid.uuid4())[:8])
+    return ""
+
+
+def _scenario_jira_sync_token_expired() -> str:
+    """
+    Simulates a Jira sync failure: the stored API token was rotated in
+    Atlassian but not updated in OpsLens — every sync call gets a 401.
+    The sync worker retries 3 times then raises a persistent auth error.
+    """
+    import httpx
+
+    class JiraAuthError(PermissionError):
+        pass
+
+    class JiraSyncWorker:
+        def __init__(self, server_url: str, email: str, token: str):
+            self.server_url = server_url
+            self.email      = email
+            self.token      = token
+            self._retry_count = 0
+
+        def _fetch_projects(self) -> list[dict]:
+            # Simulate expired token → always 401
+            raise httpx.HTTPStatusError(
+                "401 Unauthorized",
+                request=httpx.Request("GET", f"{self.server_url}/rest/api/3/project"),
+                response=httpx.Response(401),
+            )
+
+        def sync_with_retry(self, max_retries: int = 3) -> list[dict]:
+            for attempt in range(1, max_retries + 1):
+                try:
+                    return self._fetch_projects()
+                except httpx.HTTPStatusError as exc:
+                    self._retry_count += 1
+                    if exc.response.status_code == 401:
+                        if attempt == max_retries:
+                            raise JiraAuthError(
+                                f"Jira authentication failed after {max_retries} retries. "
+                                f"API token for {self.email} may have expired or been revoked. "
+                                f"Update credentials at Settings → Integrations → Jira."
+                            ) from exc
+            return []
+
+    worker = JiraSyncWorker(
+        server_url="https://acme-corp.atlassian.net",
+        email="ops-bot@acme.com",
+        token="ATATT3xFfGF0_EXPIRED_TOKEN",
+    )
+    worker.sync_with_retry()
+    return ""
+
+
+def _scenario_rrt_brief_llm_timeout() -> str:
+    """
+    Simulates the RRT brief generator timing out when the LLM backend is
+    slow under high load — the Celery task raises a socket timeout and the
+    brief is never saved, leaving the incident unresolved.
+    """
+    import socket
+
+    class LLMGatewayError(TimeoutError):
+        pass
+
+    class RRTBriefGenerator:
+        MODEL    = "gpt-4o"
+        TIMEOUT  = 30  # seconds
+
+        def _call_llm_api(self, prompt: str) -> dict:
+            raise socket.timeout(
+                f"[Errno 110] Connection timed out after {self.TIMEOUT}s "
+                f"while calling {self.MODEL} — LLM gateway overloaded"
+            )
+
+        def _build_prompt(self, error_log: str, context_docs: list[str]) -> str:
+            return (
+                f"You are an SRE. Given the following error and context, "
+                f"generate a structured RRT brief.\n\nError:\n{error_log}\n\n"
+                f"Context:\n" + "\n---\n".join(context_docs[:3])
+            )
+
+        def generate(self, error_log: str, context_docs: list[str]) -> dict:
+            prompt = self._build_prompt(error_log, context_docs)
+            try:
+                return self._call_llm_api(prompt)
+            except socket.timeout as exc:
+                raise LLMGatewayError(
+                    f"RRT brief generation failed: LLM API timeout. "
+                    f"Brief for incident will not be auto-generated. "
+                    f"Retry or generate manually."
+                ) from exc
+
+    gen = RRTBriefGenerator()
+    gen.generate(
+        error_log="CRITICAL: payment-service pod OOMKilled — 847 requests dropped",
+        context_docs=["Jira PAY-1234: High memory usage in payment pod", "Slack: #incidents — @oncall paged"],
+    )
+    return ""
+
+
+def _scenario_db_migration_column_missing() -> str:
+    """
+    Simulates a failed migration in production: alembic ran but the
+    'resolution_notes' column wasn't added due to a lock timeout, so
+    every INSERT to rrt_briefs raises ProgrammingError: column does not exist.
+    """
+    class ProgrammingError(Exception):
+        """sqlalchemy.exc.ProgrammingError stub."""
+
+    class RRTBriefRepository:
+        TABLE = "opslens.rrt_briefs"
+
+        def _build_insert(self, data: dict) -> str:
+            columns = ", ".join(data.keys())
+            placeholders = ", ".join(f":{k}" for k in data.keys())
+            return f"INSERT INTO {self.TABLE} ({columns}) VALUES ({placeholders})"
+
+        def _execute(self, sql: str, params: dict) -> None:
+            # Simulate column missing because migration 0007 failed to apply
+            if "resolution_notes" in params:
+                raise ProgrammingError(
+                    f'column "resolution_notes" of relation "rrt_briefs" does not exist\n'
+                    f'LINE 1: INSERT INTO opslens.rrt_briefs (..., resolution_notes) ...\n'
+                    f'HINT: Run `alembic upgrade head` to apply pending migrations.'
+                )
+
+        def save(self, brief_data: dict) -> None:
+            sql = self._build_insert(brief_data)
+            self._execute(sql, brief_data)
+            logger.info("Saved RRT brief: %s", brief_data.get("title"))
+
+    repo = RRTBriefRepository()
+    repo.save({
+        "id":               str(uuid.uuid4()),
+        "title":            "P1: Payment API timeout spike",
+        "what_happened":    "payment-service latency spiked to 8s p99",
+        "status":           "open",
+        "resolution_notes": "",   # <-- triggers the bug
+    })
+    return ""
+
+
+# Registry of all scenarios
+_SCENARIOS: dict[str, tuple[str, str, callable]] = {
+    "alert_rule_null_condition": (
+        "Alert Rule: NullPointerError on conditions",
+        "alerts.py evaluator crashes when a rule's conditions list is None (data migration gap).",
+        _scenario_alert_rule_null_condition,
+    ),
+    "qdrant_embedding_mismatch": (
+        "Vector Store: Embedding dimension mismatch",
+        "Qdrant upsert fails after embedding model upgrade — collection not re-created (1536 vs 3072 dims).",
+        _scenario_qdrant_embedding_mismatch,
+    ),
+    "jira_sync_token_expired": (
+        "Jira Sync: API token expired",
+        "Jira integration sync fails with 401 after token rotation — retries 3×, then raises JiraAuthError.",
+        _scenario_jira_sync_token_expired,
+    ),
+    "rrt_brief_llm_timeout": (
+        "RRT Brief Generator: LLM API timeout",
+        "Brief generation times out under high load — socket.timeout from LLM gateway, brief never saved.",
+        _scenario_rrt_brief_llm_timeout,
+    ),
+    "db_migration_column_missing": (
+        "Database: column does not exist (missing migration)",
+        "INSERT into rrt_briefs fails — migration 0007 applied on dev but not prod, column missing.",
+        _scenario_db_migration_column_missing,
+    ),
+}
+
+
+# ── /scenarios (list) ────────────────────────────────────────────────────────
+
+class ScenarioInfo(BaseModel):
+    id:          str
+    title:       str
+    description: str
+
+
+@router.get("/scenarios", response_model=list[ScenarioInfo])
+async def list_scenarios(
+    ctx: Annotated[TenantContext, Depends(require_admin)],
+):
+    """Return all available demo scenarios with their IDs and descriptions."""
+    return [
+        ScenarioInfo(id=k, title=v[0], description=v[1])
+        for k, v in _SCENARIOS.items()
+    ]
+
+
+# ── /scenario (run) ──────────────────────────────────────────────────────────
+
+class ScenarioRequest(BaseModel):
+    scenario: str = Field(
+        default="alert_rule_null_condition",
+        description=(
+            "Which demo scenario to run. "
+            "Call GET /dev/scenarios for the full list. "
+            "Available: alert_rule_null_condition, qdrant_embedding_mismatch, "
+            "jira_sync_token_expired, rrt_brief_llm_timeout, db_migration_column_missing"
+        ),
+    )
+    repeat: int = Field(
+        default=8,
+        ge=1,
+        le=50,
+        description="How many times to log the error. Must be > LOG_FAST_ALERT_THRESHOLD (default 5).",
+    )
+
+
+class ScenarioResponse(BaseModel):
+    scenario:    str
+    title:       str
+    logged:      int
+    error_type:  str
+    next_step:   str
+
+
+@router.post("/scenario", response_model=ScenarioResponse, status_code=202)
+async def run_scenario(
+    body: ScenarioRequest,
+    ctx: Annotated[TenantContext, Depends(require_admin)],
+):
+    """
+    Run a named demo scenario that executes **real Python code** designed to fail,
+    captures the live traceback, and writes it to stdout ``repeat`` times.
+
+    Unlike /crash (which logs a hand-crafted string), these scenarios run actual
+    buggy functions in your codebase — so the tracebacks reference real file paths
+    (routers/dev_tools.py) and real function names.  GitHub code context will find
+    and display the exact failing lines when OpsLens generates the RRT brief.
+
+    Workflow:
+      1. POST /dev/scenario  {"scenario": "alert_rule_null_condition", "repeat": 8}
+      2. POST /dev/force-sync {"source_type": "railway"}
+      3. Watch Slack + /rrt-briefs for the auto-generated brief (< 60 s)
+    """
+    entry = _SCENARIOS.get(body.scenario)
+    if not entry:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unknown scenario '{body.scenario}'. "
+                f"Valid choices: {', '.join(_SCENARIOS)}"
+            ),
+        )
+
+    title, description, fn = entry
+
+    # Execute the buggy function and capture the REAL Python traceback
+    real_tb = ""
+    error_type = "UnknownError"
+    try:
+        fn()
+        # If we reach here the scenario didn't raise — shouldn't happen
+        logger.warning("Scenario '%s' completed without error — check implementation", body.scenario)
+        real_tb = f"WARNING: scenario '{body.scenario}' did not raise an exception."
+    except Exception as exc:
+        real_tb   = traceback.format_exc()
+        error_type = type(exc).__name__
+
+    # Log the real traceback N times so Railway picks it up
+    header = f"[DEMO:{body.scenario}] {error_type}: {title}"
+    for i in range(body.repeat):
+        logger.error("%s\n%s", header, real_tb)
+        await asyncio.sleep(0.05)
+
+    logger.error(
+        "DEMO: scenario '%s' fired %d times — run POST /dev/force-sync to pull into OpsLens",
+        body.scenario, body.repeat,
+    )
+
+    return ScenarioResponse(
+        scenario=body.scenario,
+        title=title,
+        logged=body.repeat,
+        error_type=error_type,
+        next_step=(
+            "Call POST /api/v1/dev/force-sync {\"source_type\": \"railway\"} "
+            "to ingest these logs immediately and trigger the RRT brief pipeline."
+        ),
+    )
 
 
 # ── /crash ────────────────────────────────────────────────────────────────────

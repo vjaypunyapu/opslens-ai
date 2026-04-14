@@ -215,6 +215,9 @@ export interface Signal {
   timestamp: string;
   author: string;
   score: number;
+  // rrt_brief signals
+  type?: string;
+  brief_id?: string;
 }
 
 export const incidentsApi = {
@@ -518,6 +521,24 @@ export const demoApi = {
       ready_for_demo: boolean;
       next_step: string;
     }>("/log-ops/seed-demo/status", { token }),
+
+  listScenarios: (token: string) =>
+    request<{ id: string; title: string; description: string }[]>(
+      "/dev/scenarios",
+      { token },
+    ),
+
+  runScenario: (token: string, scenario: string, repeat = 8) =>
+    request<{ scenario: string; title: string; logged: number; error_type: string; next_step: string }>(
+      "/dev/scenario",
+      { method: "POST", token, body: JSON.stringify({ scenario, repeat }) },
+    ),
+
+  forceSync: (token: string, source_type = "railway") =>
+    request<{ synced: boolean; integration_id: string | null; source_type: string; records_added: number | null; message: string }>(
+      "/dev/force-sync",
+      { method: "POST", token, body: JSON.stringify({ source_type }) },
+    ),
 };
 
 // ── Known Issues (alert suppression) ─────────────────────────────────────────
