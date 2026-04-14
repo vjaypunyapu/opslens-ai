@@ -1712,8 +1712,12 @@ async def _fetch_railway(creds: dict, tenant_id: str, integration_id: str, since
                     except Exception:
                         d_created = datetime.now(tz=timezone.utc)
 
-                    if d_created < since_dt:
-                        continue  # skip old deployments on incremental sync
+                    # Always include ACTIVE/running deployments regardless of age
+                    # (a deployment started 2 weeks ago is still producing fresh logs).
+                    # Only skip old COMPLETED/FAILED/CRASHED deployments.
+                    is_active = d_status.upper() in ("SUCCESS", "ACTIVE", "DEPLOYING", "UNKNOWN")
+                    if not is_active and d_created < since_dt:
+                        continue  # skip stale terminal deployments
 
                     # Fetch logs for this deployment
                     lresp = await client.post(
@@ -1726,38 +1730,57 @@ async def _fetch_railway(creds: dict, tenant_id: str, integration_id: str, since
 
                     log_lines = lresp.json().get("data", {}).get("deploymentLogs", []) or []
 
-                    # Group all log lines into a single record per deployment
-                    filtered_lines = []
+                    # Build per-line strings
+                    all_lines = []
                     for line in log_lines:
                         msg = (line.get("message") or "").strip()
                         sev = (line.get("severity") or "").upper()
                         if not msg:
                             continue
                         prefix = f"[{sev}] " if sev and sev != "UNSPECIFIED" else ""
-                        filtered_lines.append(f"{prefix}{msg}")
+                        all_lines.append(f"{prefix}{msg}")
 
-                    if not filtered_lines and d_status not in ("FAILED", "CRASHED"):
+                    if not all_lines and d_status not in ("FAILED", "CRASHED"):
                         continue  # skip deployments with no useful log lines
 
-                    content = "\n".join(filtered_lines[:500])  # cap at 500 lines
+                    # ── CRITICAL: take the TAIL (most recent 500 lines) ────────
+                    # Railway returns logs oldest-first.  Truncating from the
+                    # front means new errors appended to a long-running deployment
+                    # are always visible; old noise from startup is discarded.
+                    # A new content_hash is produced whenever fresh lines arrive,
+                    # which triggers the incident scan on each sync.
+                    tail_lines = all_lines[-500:]
+                    content = "\n".join(tail_lines)
+
+                    # Include an approximate timestamp window in the title so each
+                    # sync that adds new lines produces a distinct content_hash
+                    # even if the deployment ID stays the same.
+                    now_tag = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M")
                     status_emoji = {"SUCCESS": "✅", "FAILED": "❌", "CRASHED": "💥"}.get(d_status, "🔄")
-                    title = f"{status_emoji} [{d_status}] {p_name}/{s_name} — {d_created.strftime('%Y-%m-%d %H:%M UTC')}"
+                    title = (
+                        f"{status_emoji} [{d_status}] {p_name}/{s_name} — "
+                        f"{d_created.strftime('%Y-%m-%d %H:%M UTC')} (synced {now_tag})"
+                    )
 
                     records.append(RawRecord(
                         source_type="railway",
-                        source_id=f"deployment:{d_id}",
+                        # Make source_id sync-time-scoped so each poll creates a
+                        # fresh record for the same deployment; the incident scanner
+                        # then sees the most recent log tail every time.
+                        source_id=f"deployment:{d_id}:{now_tag}",
                         title=title,
                         content=content or f"Deployment {d_status} — no log output captured.",
                         author=s_name,
                         url=d_url,
                         created_at=d_created,
-                        updated_at=d_created,
+                        updated_at=datetime.now(tz=timezone.utc),
                         metadata={
-                            "project": p_name,
-                            "service": s_name,
-                            "status": d_status,
+                            "project":       p_name,
+                            "service":       s_name,
+                            "status":        d_status,
                             "deployment_id": d_id,
-                            "log_lines": len(filtered_lines),
+                            "log_lines":     len(all_lines),
+                            "tail_lines":    len(tail_lines),
                         },
                     ))
 

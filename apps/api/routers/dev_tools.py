@@ -369,16 +369,23 @@ async def run_scenario(
         real_tb   = traceback.format_exc()
         error_type = type(exc).__name__
 
-    # Log the real traceback N times so Railway picks it up
+    # Log the real traceback N times so Railway captures them in deployment logs
     header = f"[DEMO:{body.scenario}] {error_type}: {title}"
     for i in range(body.repeat):
         logger.error("%s\n%s", header, real_tb)
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0.1)
 
     logger.error(
-        "DEMO: scenario '%s' fired %d times — run POST /dev/force-sync to pull into OpsLens",
+        "DEMO: scenario '%s' fired %d times — waiting for Railway log propagation before sync",
         body.scenario, body.repeat,
     )
+
+    # Railway's log API has a propagation delay — stdout lines written now
+    # don't appear in deploymentLogs until ~10–20 s later.  We wait here so
+    # that force-sync (called immediately by the frontend) sees the fresh lines.
+    await asyncio.sleep(20)
+
+    logger.info("DEMO: Railway log propagation wait complete — ready to sync")
 
     return ScenarioResponse(
         scenario=body.scenario,

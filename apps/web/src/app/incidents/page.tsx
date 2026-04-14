@@ -935,10 +935,12 @@ function DemoScenarioModal({ onClose }: { onClose: () => void }) {
           <div style={{ textAlign: "center", padding: "2rem 0" }}>
             <Loader2 size={32} style={{ color: "#14b8a6", animation: "spin 1s linear infinite", marginBottom: "16px" }} />
             <div style={{ color: "#f1f5f9", fontSize: "15px", fontWeight: 600 }}>
-              {step === "firing" ? "Running buggy code & logging tracebacks…" : "Force-syncing Railway logs into OpsLens…"}
+              {step === "firing" ? "Running scenario & waiting for Railway log propagation…" : "Force-syncing Railway logs into OpsLens…"}
             </div>
             <div style={{ color: "#64748b", fontSize: "13px", marginTop: "6px" }}>
-              {step === "firing" ? `Executing scenario and logging ${repeat}× to Railway` : "Fetching logs, triggering incident detection pipeline"}
+              {step === "firing"
+                ? `Logging ${repeat}× to stdout, then waiting ~20s for Railway's log API to catch up`
+                : "Fetching log tail, scanning for errors, triggering RRT brief pipeline"}
             </div>
           </div>
         )}
