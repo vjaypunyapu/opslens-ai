@@ -4,7 +4,7 @@ import { useAuth } from "@clerk/nextjs";
 import {
   FileText, RefreshCw, CheckCircle, AlertCircle,
   Clock, ChevronDown, ChevronUp, ExternalLink, Zap,
-  GitBranch, MessageSquare, Tag, X
+  GitBranch, MessageSquare, Tag, X, Ticket
 } from "lucide-react";
 import { rrtBriefsApi, RRTBrief } from "@/lib/api";
 
@@ -50,17 +50,20 @@ function StatusBadge({ status }: { status: string }) {
 
 // ── Brief detail panel ───────────────────────────────────────────────────────
 
-function BriefDetail({ brief, token, onClose, onStatusChange }: {
+function BriefDetail({ brief, token, onClose, onStatusChange, onJiraPush }: {
   brief: RRTBrief;
   token: string;
   onClose: () => void;
   onStatusChange: (id: string, status: string) => void;
+  onJiraPush: (id: string, key: string, url: string) => void;
 }) {
   const [saving, setSaving] = useState(false);
   const [notes, setNotes] = useState(brief.resolution_notes ?? "");
   const [updateText, setUpdateText] = useState("");
   const [posting, setPosting] = useState(false);
   const [postMsg, setPostMsg] = useState<string | null>(null);
+  const [pushing, setPushing] = useState(false);
+  const [jiraMsg, setJiraMsg] = useState<string | null>(null);
 
   async function handleStatusChange(newStatus: string) {
     setSaving(true);
@@ -80,6 +83,20 @@ function BriefDetail({ brief, token, onClose, onStatusChange }: {
       setTimeout(() => setPostMsg(null), 3000);
     } catch { setPostMsg("Failed to post update"); }
     finally { setPosting(false); }
+  }
+
+  async function handlePushToJira() {
+    setPushing(true);
+    setJiraMsg(null);
+    try {
+      const res = await rrtBriefsApi.pushToJira(token, brief.id);
+      onJiraPush(brief.id, res.ticket_key, res.ticket_url);
+      setJiraMsg(res.already_existed ? `Already linked: ${res.ticket_key}` : `Ticket created: ${res.ticket_key}`);
+    } catch (e: unknown) {
+      setJiraMsg(e instanceof Error ? e.message : "Failed to create Jira ticket");
+    } finally {
+      setPushing(false);
+    }
   }
 
   const cell = (label: string, value: string | null | undefined) =>
@@ -219,6 +236,58 @@ function BriefDetail({ brief, token, onClose, onStatusChange }: {
             }}
           >{posting ? "Posting…" : "Post Update"}</button>
         </div>
+
+        {/* Push to Jira */}
+        <div style={{
+          borderTop: "1px solid rgba(255,255,255,0.08)", paddingTop: "20px", marginTop: "8px",
+        }}>
+          <div style={{ fontSize: "11px", fontWeight: 600, color: "#64748b", textTransform: "uppercase",
+            letterSpacing: "0.08em", marginBottom: "12px" }}>Jira Ticket</div>
+
+          {brief.jira_ticket_key ? (
+            <div style={{
+              display: "flex", alignItems: "center", gap: "10px",
+              background: "rgba(20,184,166,0.08)", border: "1px solid rgba(20,184,166,0.25)",
+              borderRadius: "8px", padding: "10px 14px",
+            }}>
+              <Ticket size={14} color="#2dd4bf" />
+              <span style={{ fontSize: "13px", fontWeight: 600, color: "#2dd4bf" }}>
+                {brief.jira_ticket_key}
+              </span>
+              {brief.jira_ticket_url && (
+                <a
+                  href={brief.jira_ticket_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ marginLeft: "auto", color: "#64748b", display: "flex", alignItems: "center", gap: "4px",
+                    fontSize: "12px", textDecoration: "none" }}
+                >
+                  Open <ExternalLink size={11} />
+                </a>
+              )}
+            </div>
+          ) : (
+            <>
+              <button
+                onClick={handlePushToJira}
+                disabled={pushing}
+                style={{
+                  display: "flex", alignItems: "center", gap: "7px",
+                  padding: "8px 18px", borderRadius: "8px",
+                  background: "rgba(99,102,241,0.15)", border: "1px solid rgba(99,102,241,0.35)",
+                  color: "#a5b4fc", fontSize: "13px", fontWeight: 600, cursor: "pointer",
+                  opacity: pushing ? 0.6 : 1,
+                }}
+              >
+                <Ticket size={14} />
+                {pushing ? "Creating…" : "Push to Jira"}
+              </button>
+              {jiraMsg && (
+                <div style={{ fontSize: "12px", color: "#f87171", marginTop: "8px" }}>{jiraMsg}</div>
+              )}
+            </>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -260,6 +329,11 @@ export default function RRTBriefsPage() {
   function handleStatusChange(id: string, newStatus: string) {
     setBriefs(prev => prev.map(b => b.id === id ? { ...b, status: newStatus } : b));
     if (selected?.id === id) setSelected(prev => prev ? { ...prev, status: newStatus } : prev);
+  }
+
+  function handleJiraPush(id: string, key: string, url: string) {
+    setBriefs(prev => prev.map(b => b.id === id ? { ...b, jira_ticket_key: key, jira_ticket_url: url } : b));
+    if (selected?.id === id) setSelected(prev => prev ? { ...prev, jira_ticket_key: key, jira_ticket_url: url } : prev);
   }
 
   const counts = {
@@ -443,6 +517,7 @@ export default function RRTBriefsPage() {
           token={authToken}
           onClose={() => setSelected(null)}
           onStatusChange={handleStatusChange}
+          onJiraPush={handleJiraPush}
         />
       )}
 

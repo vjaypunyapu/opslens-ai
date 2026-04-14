@@ -59,6 +59,10 @@ class RRTBrief(Base):
     error_signature  = Column(String, nullable=True, index=True)
     error_sample     = Column(Text, nullable=True)             # first few log lines
 
+    # ── Jira integration ──────────────────────────────────────────────────────
+    jira_ticket_key  = Column(String, nullable=True)   # e.g. "OPS-42" — set when pushed to Jira
+    jira_ticket_url  = Column(String, nullable=True)   # full URL to the Jira issue
+
     # ── Delivery ──────────────────────────────────────────────────────────────
     slack_ts         = Column(String, nullable=True)   # message timestamp for threading
     slack_channel    = Column(String, nullable=True)   # channel ID for threading

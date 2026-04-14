@@ -399,6 +399,8 @@ export interface RRTBrief {
   resolution_notes: string | null;
   error_signature: string | null;
   error_sample: string | null;
+  jira_ticket_key: string | null;
+  jira_ticket_url: string | null;
   channels_sent: string[];
   created_at: string;
   updated_at: string;
@@ -437,6 +439,12 @@ export const rrtBriefsApi = {
     request<{ status: string; task_id: string; message: string; error_signature: string }>(
       "/rrt-briefs/generate",
       { method: "POST", body: JSON.stringify(data), token },
+    ),
+
+  pushToJira: (token: string, briefId: string) =>
+    request<{ ticket_key: string; ticket_url: string; already_existed: boolean }>(
+      `/rrt-briefs/${briefId}/push-to-jira`,
+      { method: "POST", token },
     ),
 
   delete: (token: string, id: string) =>

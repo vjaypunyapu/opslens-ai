@@ -16,6 +16,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
+import httpx
 import sqlalchemy as sa
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -50,6 +51,8 @@ class RRTBriefOut(BaseModel):
     error_signature:  str | None
     error_sample:     str | None
     channels_sent:    list[str]
+    jira_ticket_key:  str | None
+    jira_ticket_url:  str | None
     created_at:       str
     updated_at:       str
 
@@ -296,6 +299,159 @@ async def post_rrt_update(
     }
 
 
+# ── Push to Jira ──────────────────────────────────────────────────────────────
+class PushToJiraResponse(BaseModel):
+    ticket_key: str
+    ticket_url: str
+    already_existed: bool
+
+
+@router.post("/{brief_id}/push-to-jira", response_model=PushToJiraResponse)
+async def push_to_jira(
+    brief_id: str,
+    ctx: Annotated[TenantContext, Depends(require_admin)],
+    db=Depends(get_db),
+):
+    """
+    Create a Jira issue from this RRT brief using the tenant's connected
+    Jira integration credentials.  If a ticket was already created for this
+    brief, returns the existing key without creating a duplicate.
+
+    Requires: a Jira integration connected via Integrations → Jira.
+    """
+    # ── 1. Load brief ──────────────────────────────────────────────────────────
+    result = await db.execute(
+        sa.select(RRTBrief).where(
+            RRTBrief.id == brief_id,
+            RRTBrief.tenant_id == str(ctx.tenant_uuid),
+        )
+    )
+    brief: RRTBrief | None = result.scalar_one_or_none()
+    if not brief:
+        raise HTTPException(status_code=404, detail="Brief not found")
+
+    # ── 2. Already pushed? Return existing ticket ──────────────────────────────
+    if brief.jira_ticket_key and brief.jira_ticket_url:
+        return PushToJiraResponse(
+            ticket_key=brief.jira_ticket_key,
+            ticket_url=brief.jira_ticket_url,
+            already_existed=True,
+        )
+
+    # ── 3. Load Jira credentials from Integration table ────────────────────────
+    from ..db.models import Integration
+    from ..utils.crypto import decrypt_credentials
+
+    intg_result = await db.execute(
+        sa.select(Integration).where(
+            Integration.tenant_id == ctx.tenant_uuid,
+            Integration.source_type == "jira",
+            Integration.status == "active",
+        )
+    )
+    integration: Integration | None = intg_result.scalar_one_or_none()
+    if not integration:
+        raise HTTPException(
+            status_code=422,
+            detail="No active Jira integration found. Connect Jira first via Integrations → Jira.",
+        )
+
+    try:
+        creds = decrypt_credentials(integration.credentials)
+    except Exception:
+        raise HTTPException(status_code=422, detail="Failed to decrypt Jira credentials")
+
+    server_url = creds.get("server_url", "").rstrip("/")
+    email      = creds.get("email", "")
+    api_token  = creds.get("api_token", "")
+    project_key = creds.get("project_key", "")  # optional — default to first available
+
+    if not (server_url and email and api_token):
+        raise HTTPException(status_code=422, detail="Jira credentials incomplete (need server_url, email, api_token)")
+
+    # ── 4. Resolve project key if not stored in creds ──────────────────────────
+    auth = (email, api_token)
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+
+    async with httpx.AsyncClient(auth=auth, headers=headers, timeout=15) as client:
+        if not project_key:
+            proj_resp = await client.get(f"{server_url}/rest/api/3/project/search?maxResults=1")
+            if proj_resp.is_success:
+                projects = proj_resp.json().get("values", [])
+                project_key = projects[0]["key"] if projects else ""
+            if not project_key:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Could not determine Jira project key. Add 'project_key' to your Jira credentials.",
+                )
+
+        # ── 5. Build issue description ─────────────────────────────────────────
+        sections = []
+        if brief.what_happened:
+            sections.append(f"*What happened*\n{brief.what_happened}")
+        if brief.impact:
+            sections.append(f"*Impact*\n{brief.impact}")
+        if brief.suspected_cause:
+            sections.append(f"*Suspected cause*\n{brief.suspected_cause}")
+        if brief.next_actions:
+            steps = "\n".join(f"• {a}" for a in brief.next_actions)
+            sections.append(f"*Next actions*\n{steps}")
+        if brief.error_sample:
+            sections.append(f"*Error sample*\n{{code}}{brief.error_sample[:1000]}{{code}}")
+
+        description_text = "\n\n".join(sections)
+
+        # Jira Cloud uses Atlassian Document Format (ADF) for descriptions
+        adf_description = {
+            "version": 1,
+            "type": "doc",
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [{"type": "text", "text": description_text}],
+                }
+            ],
+        }
+
+        # ── 6. Create the Jira issue ───────────────────────────────────────────
+        priority_map = {"p0": "Highest", "p1": "High", "p2": "Medium", "p3": "Low", "p4": "Lowest"}
+        severity = getattr(brief, "severity", "p2") or "p2"
+
+        issue_body = {
+            "fields": {
+                "project":     {"key": project_key},
+                "summary":     f"[OpsLens] {brief.title}"[:255],
+                "description": adf_description,
+                "issuetype":   {"name": "Bug"},
+                "priority":    {"name": priority_map.get(severity, "Medium")},
+                "labels":      ["opslens", "incident"],
+            }
+        }
+
+        create_resp = await client.post(f"{server_url}/rest/api/3/issue", json=issue_body)
+        if not create_resp.is_success:
+            logger.error("Jira issue creation failed: %s — %s", create_resp.status_code, create_resp.text[:300])
+            raise HTTPException(
+                status_code=502,
+                detail=f"Jira returned {create_resp.status_code}: {create_resp.text[:200]}",
+            )
+
+        issue_data = create_resp.json()
+        ticket_key = issue_data["key"]
+        ticket_url = f"{server_url}/browse/{ticket_key}"
+
+    # ── 7. Persist the ticket key on the brief ─────────────────────────────────
+    await db.execute(
+        sa.update(RRTBrief)
+        .where(RRTBrief.id == brief_id)
+        .values(jira_ticket_key=ticket_key, jira_ticket_url=ticket_url)
+    )
+    await db.commit()
+
+    logger.info("Jira ticket %s created for brief %s (tenant %s)", ticket_key, brief_id, ctx.tenant_uuid)
+    return PushToJiraResponse(ticket_key=ticket_key, ticket_url=ticket_url, already_existed=False)
+
+
 # ── Delete brief ──────────────────────────────────────────────────────────────
 @router.delete("/{brief_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_rrt_brief(
@@ -363,6 +519,8 @@ def _to_out(r: RRTBrief) -> RRTBriefOut:
         error_signature=r.error_signature,
         error_sample=r.error_sample,
         channels_sent=list(r.channels_sent or []),
+        jira_ticket_key=r.jira_ticket_key,
+        jira_ticket_url=r.jira_ticket_url,
         created_at=r.created_at.isoformat(),
         updated_at=r.updated_at.isoformat(),
     )
