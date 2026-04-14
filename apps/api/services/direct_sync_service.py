@@ -1877,12 +1877,19 @@ def _trigger_log_source_incidents(
         while i < len(lines):
             line = lines[i]
             if _INCIDENT_RE.search(line) and not _NOISE_RE.search(line):
-                # Grab traceback context (indented lines following the error)
+                # Grab traceback context (indented lines following the error,
+                # plus Traceback header and chained-exception markers which are
+                # NOT indented but must be captured for frame extraction).
                 block = [line]
                 j = i + 1
                 while j < len(lines) and (
-                    lines[j].startswith("  ") or lines[j].startswith("\t")
+                    lines[j].startswith("  ")
+                    or lines[j].startswith("\t")
+                    or lines[j].startswith("Traceback (")
+                    or lines[j].startswith("During handling of")
+                    or lines[j].startswith("The above exception")
                     or ("Error:" in lines[j] and not lines[j].startswith("20"))
+                    or ("Exception:" in lines[j] and not lines[j].startswith("20"))
                 ):
                     block.append(lines[j])
                     j += 1
@@ -1899,7 +1906,7 @@ def _trigger_log_source_incidents(
                         "signature":    sig,
                         "first_line":   key_line[:300],
                         "count":        1,
-                        "sample_lines": block[:5],
+                        "sample_lines": block[:30],  # enough for full multi-frame traceback
                         "source_label": f"{source_type}/{rec.metadata.get('service') or rec.metadata.get('container') or rec.metadata.get('project') or ''}".rstrip("/"),
                     }
                 i = j

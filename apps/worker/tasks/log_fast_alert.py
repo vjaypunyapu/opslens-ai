@@ -242,12 +242,18 @@ def _extract_error_groups(lines: list[str]) -> list[ErrorGroup]:
     while i < len(lines):
         line = lines[i]
         if _CRITICAL_RE.search(line):
-            # Grab traceback context
+            # Grab traceback context (indented lines + Traceback header lines
+            # which are NOT indented but required for frame extraction)
             block = [line]
             j = i + 1
             while j < len(lines) and (
-                lines[j].startswith("  ") or lines[j].startswith("\t")
+                lines[j].startswith("  ")
+                or lines[j].startswith("\t")
+                or lines[j].startswith("Traceback (")
+                or lines[j].startswith("During handling of")
+                or lines[j].startswith("The above exception")
                 or ("Error:" in lines[j] and not lines[j].startswith("20"))
+                or ("Exception:" in lines[j] and not lines[j].startswith("20"))
             ):
                 block.append(lines[j])
                 j += 1
@@ -265,7 +271,7 @@ def _extract_error_groups(lines: list[str]) -> list[ErrorGroup]:
                     "signature": sig,
                     "first_line": key_line[:300],
                     "count": 1,
-                    "sample_lines": block[:5],
+                    "sample_lines": block[:30],  # enough for full multi-frame traceback
                 }
             i = j
         else:
