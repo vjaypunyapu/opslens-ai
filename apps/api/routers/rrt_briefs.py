@@ -53,6 +53,7 @@ class RRTBriefOut(BaseModel):
     channels_sent:    list[str]
     jira_ticket_key:  str | None
     jira_ticket_url:  str | None
+    code_frames:      list[dict]
     created_at:       str
     updated_at:       str
 
@@ -539,6 +540,7 @@ def _to_out(r: RRTBrief) -> RRTBriefOut:
         channels_sent=list(r.channels_sent or []),
         jira_ticket_key=r.jira_ticket_key,
         jira_ticket_url=r.jira_ticket_url,
+        code_frames=list(r.code_frames or []),
         created_at=r.created_at.isoformat(),
         updated_at=r.updated_at.isoformat(),
     )

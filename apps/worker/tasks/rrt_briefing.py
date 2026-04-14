@@ -34,7 +34,9 @@ Slack message structure:
 """
 from __future__ import annotations
 
+import base64
 import json
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import TypedDict
@@ -47,6 +49,248 @@ from apps.api.config import settings
 from apps.worker.async_utils import run_async as _run_async
 
 logger = get_task_logger(__name__)
+
+# ── Stack trace parsers ───────────────────────────────────────────────────────
+
+# Python:  File "/app/payments/handlers.py", line 87, in handle_request
+_PY_FRAME_RE = re.compile(
+    r'File "([^"]+)", line (\d+), in (\S+)'
+)
+# Node.js: at PaymentService.charge (/app/services/payment.js:134:18)
+#          at /app/worker/index.js:42:10
+_NODE_FRAME_RE = re.compile(
+    r'at (?:\S+ \()?([^\s()]+\.(?:js|ts|mjs|cjs)):(\d+):\d+\)?'
+)
+# Java/Kotlin: at com.acme.payments.PaymentService.charge(PaymentService.java:87)
+_JAVA_FRAME_RE = re.compile(
+    r'at [\w.$]+\.([\w$]+)\((\w+\.(?:java|kt|scala)):(\d+)\)'
+)
+
+# Paths to skip — stdlib, venv, bundled deps, not your code
+_SKIP_PATH_RE = re.compile(
+    r'(site-packages|dist-packages|/usr/lib/python|/usr/local/lib/python'
+    r'|\.venv|venv/|node_modules/|<frozen|<string|<stdin'
+    r'|celery/|asyncio/|starlette/|fastapi/|uvicorn/|httpx/)',
+    re.IGNORECASE,
+)
+
+# Common container path prefixes to strip to get repo-relative paths
+_PATH_PREFIXES = ["/app/", "/home/app/", "/usr/src/app/", "/code/", "/srv/", "./"]
+
+
+def _parse_traceback_frames(lines: list[str]) -> list[dict]:
+    """
+    Parse a stack trace and return a list of app-code frames:
+      [{"file": "payments/handlers.py", "line": 87, "function": "handle_request"}, ...]
+
+    Supports Python, Node.js, and Java/Kotlin.
+    Filters out stdlib, venv, and framework internals automatically.
+    """
+    frames: list[dict] = []
+    seen: set[str] = set()
+
+    for line in lines:
+        matched = None
+
+        m = _PY_FRAME_RE.search(line)
+        if m:
+            matched = {"file": m.group(1), "line": int(m.group(2)), "function": m.group(3)}
+
+        if not matched:
+            m = _NODE_FRAME_RE.search(line)
+            if m:
+                matched = {"file": m.group(1), "line": int(m.group(2)), "function": ""}
+
+        if not matched:
+            m = _JAVA_FRAME_RE.search(line)
+            if m:
+                matched = {"file": m.group(2), "line": int(m.group(3)), "function": m.group(1)}
+
+        if not matched:
+            continue
+
+        path = matched["file"]
+
+        # Skip non-app code
+        if _SKIP_PATH_RE.search(path):
+            continue
+
+        # Normalise to repo-relative path
+        for prefix in _PATH_PREFIXES:
+            if path.startswith(prefix):
+                path = path[len(prefix):]
+                break
+
+        dedup_key = f"{path}:{matched['line']}"
+        if dedup_key in seen:
+            continue
+        seen.add(dedup_key)
+
+        frames.append({"file": path, "line": matched["line"], "function": matched["function"]})
+
+    # Return innermost frames first (most relevant to the error), max 5
+    return frames[-5:][::-1]
+
+
+# ── GitHub code context fetcher ───────────────────────────────────────────────
+
+async def _fetch_github_code_context(
+    frames: list[dict],
+    tenant_id: str,
+    context_lines: int = 10,
+) -> list[dict]:
+    """
+    For each stack frame, fetch the relevant lines from GitHub and the last
+    commit that touched that file.
+
+    Returns a list of code_frame dicts:
+    {
+        file, line, function, repo,
+        snippet,              # the ±context_lines around the error line
+        last_commit_sha,
+        last_commit_msg,
+        last_commit_author,
+        last_commit_url,
+        github_url,           # permalink to the line on github.com
+    }
+    """
+    if not frames:
+        return []
+
+    try:
+        import sqlalchemy as sa
+        from apps.worker.db import AsyncSession
+        from apps.api.db.models import Integration
+        from apps.api.utils.crypto import decrypt_credentials
+
+        # Load GitHub integration for this tenant
+        async with AsyncSession() as db:
+            result = await db.execute(
+                sa.select(Integration).where(
+                    Integration.tenant_id == tenant_id,
+                    Integration.source_type == "github",
+                    Integration.status == "active",
+                ).limit(1)
+            )
+            intg = result.scalar_one_or_none()
+
+        if not intg:
+            logger.info("No active GitHub integration for tenant=%s — skipping code context", tenant_id)
+            return []
+
+        creds = decrypt_credentials(intg.credentials)
+        token = creds.get("access_token", "")
+        if not token:
+            return []
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+
+        # Discover accessible repos (cached from last sync ideally, else quick API call)
+        async with httpx.AsyncClient(headers=headers, timeout=15) as client:
+            repos_resp = await client.get(
+                "https://api.github.com/user/repos",
+                params={"per_page": 100, "sort": "updated", "affiliation": "owner,collaborator"},
+            )
+            repos = repos_resp.json() if repos_resp.is_success else []
+            repo_names = [r["full_name"] for r in repos if isinstance(r, dict)]
+
+        code_frames: list[dict] = []
+
+        async with httpx.AsyncClient(headers=headers, timeout=15) as client:
+            for frame in frames:
+                rel_path = frame["file"]
+                line_no = frame["line"]
+
+                # Try each repo until we find the file
+                for full_name in repo_names:
+                    content_resp = await client.get(
+                        f"https://api.github.com/repos/{full_name}/contents/{rel_path}",
+                    )
+                    if not content_resp.is_success:
+                        continue
+
+                    content_data = content_resp.json()
+                    if content_data.get("encoding") != "base64":
+                        continue
+
+                    # Decode file content
+                    file_text = base64.b64decode(content_data["content"]).decode("utf-8", errors="replace")
+                    all_lines = file_text.splitlines()
+                    total = len(all_lines)
+
+                    # Extract ±context_lines around the error line
+                    start = max(0, line_no - context_lines - 1)
+                    end   = min(total, line_no + context_lines)
+                    snippet_lines = all_lines[start:end]
+
+                    # Number the snippet lines
+                    numbered = []
+                    for i, sl in enumerate(snippet_lines, start=start + 1):
+                        marker = "→ " if i == line_no else "  "
+                        numbered.append(f"{marker}{i:4d} | {sl}")
+                    snippet = "\n".join(numbered)
+
+                    # Get last commit for this file
+                    commit_msg = ""
+                    commit_sha = ""
+                    commit_author = ""
+                    commit_url = ""
+                    commits_resp = await client.get(
+                        f"https://api.github.com/repos/{full_name}/commits",
+                        params={"path": rel_path, "per_page": 1},
+                    )
+                    if commits_resp.is_success:
+                        commits = commits_resp.json()
+                        if commits:
+                            c = commits[0]
+                            commit_sha = c.get("sha", "")[:7]
+                            commit_url = c.get("html_url", "")
+                            commit_msg = c.get("commit", {}).get("message", "").splitlines()[0][:120]
+                            commit_author = (
+                                c.get("commit", {}).get("author", {}).get("name", "")
+                                or c.get("author", {}).get("login", "")
+                            )
+
+                    # Detect language from extension
+                    ext = rel_path.rsplit(".", 1)[-1] if "." in rel_path else ""
+                    lang_map = {"py": "python", "js": "javascript", "ts": "typescript",
+                                "java": "java", "kt": "kotlin", "rb": "ruby",
+                                "go": "go", "rs": "rust", "cs": "csharp"}
+                    language = lang_map.get(ext, ext or "text")
+
+                    github_url = (
+                        f"https://github.com/{full_name}/blob/HEAD/{rel_path}#L{line_no}"
+                    )
+
+                    code_frames.append({
+                        "file":                rel_path,
+                        "line":                line_no,
+                        "function":            frame.get("function", ""),
+                        "repo":                full_name,
+                        "snippet":             snippet,
+                        "language":            language,
+                        "last_commit_sha":     commit_sha,
+                        "last_commit_msg":     commit_msg,
+                        "last_commit_author":  commit_author,
+                        "last_commit_url":     commit_url,
+                        "github_url":          github_url,
+                    })
+
+                    logger.info(
+                        "Code context: found %s:%d in repo %s (last commit: %s by %s)",
+                        rel_path, line_no, full_name, commit_sha, commit_author,
+                    )
+                    break  # found the file — don't try other repos
+
+        return code_frames
+
+    except Exception as exc:
+        logger.warning("GitHub code context fetch failed (non-fatal): %s", exc)
+        return []
 
 
 # ── TypedDicts matching ErrorGroup / enrichment output ───────────────────────
@@ -119,6 +363,7 @@ def _generate_brief_fields(
     owner_team: str | None,
     detected_at: datetime,
     timeline_events: list[dict] | None = None,
+    code_frames: list[dict] | None = None,
 ) -> dict:
     """
     Ask the LLM to produce a JSON object with:
@@ -138,11 +383,29 @@ def _generate_brief_fields(
         svc_part   = f" ({ev['service']})" if ev["service"] else ""
         timeline_text += f"\n- [{ev['type'].upper()}] {ev['title']}{svc_part}{actor_part} at {ev['occurred']}"
 
+    # Build code context block for the prompt
+    code_text = ""
+    if code_frames:
+        for cf in code_frames[:3]:
+            commit_info = ""
+            if cf.get("last_commit_sha"):
+                commit_info = (
+                    f"\n  Last change: [{cf['last_commit_sha']}] "
+                    f"\"{cf['last_commit_msg']}\" by {cf['last_commit_author']}"
+                )
+            code_text += (
+                f"\n\nFile: {cf['file']} (line {cf['line']}, function `{cf['function']}`)"
+                f"{commit_info}"
+                f"\n```{cf.get('language','')}\n{cf['snippet']}\n```"
+            )
+
     prompt = f"""\
 You are an SRE assistant generating an incident brief for a production exception.
 
 EXCEPTION:
 {chr(10).join(error_sample[:6])}
+
+SOURCE CODE AT THE CRASH POINT:{code_text or ' (GitHub not connected or file not found in repo)'}
 
 RELATED CONTEXT (from Jira, GitHub, Slack):{related_text or ' (none found)'}
 
@@ -156,15 +419,15 @@ Generate a structured incident brief as a JSON object with exactly these fields:
   "title": "<8-word max headline, e.g. 'Payment service timeout spike after deploy'>",
   "what_happened": "<2-3 sentences: what failed, where, how many times>",
   "impact": "<1-2 sentences: which services or user flows are affected>",
-  "suspected_cause": "<2-3 sentences: most likely root cause based on the exception, related context, AND any recent deployments or code changes listed above. If a PR merge or deploy closely preceded the incident, call it out explicitly>",
+  "suspected_cause": "<2-3 sentences: root cause referencing the ACTUAL CODE if available — cite the specific file, line number, and what the code is doing wrong. If a recent commit changed this code, call out the commit and author explicitly>",
   "next_actions": [
-    "<specific action 1 — name the file, function, or command>",
+    "<specific action 1 — name the exact file, function, line number, or command>",
     "<specific action 2>",
     "<specific action 3>"
   ]
 }}
 
-Be specific and actionable. Refer to actual file names, PR numbers, or ticket keys if visible.
+Be specific and actionable. If source code is available above, use it — reference exact line numbers, variable names, and the specific logic that is failing.
 Return ONLY the JSON object, no explanation."""
 
     try:
@@ -566,6 +829,7 @@ async def _save_rrt_brief(
     channels_sent: list[str],
     slack_ts: str | None,
     slack_channel: str | None,
+    code_frames: list[dict] | None = None,
 ) -> None:
     try:
         from apps.worker.db import AsyncSession
@@ -589,6 +853,7 @@ async def _save_rrt_brief(
                 channels_sent=channels_sent,
                 slack_ts=slack_ts,
                 slack_channel=slack_channel,
+                code_frames=code_frames or [],
             )
             db.add(brief)
             await db.commit()
@@ -654,7 +919,26 @@ def generate_rrt_brief(
         else:
             logger.info("RRT brief %s: no timeline events in pre-incident window", brief_id[:8])
 
-        # 1b. LLM: generate structured fields (with timeline context)
+        # 1b. Parse stack trace → fetch actual source code from GitHub
+        frames = _parse_traceback_frames(error_sample)
+        code_frames: list[dict] = []
+        if frames:
+            logger.info(
+                "RRT brief %s: parsed %d app code frames from stack trace",
+                brief_id[:8], len(frames),
+            )
+            code_frames = _run_async(
+                _fetch_github_code_context(frames, tenant_id)
+            )
+            if code_frames:
+                logger.info(
+                    "RRT brief %s: fetched code context for %d/%d frames",
+                    brief_id[:8], len(code_frames), len(frames),
+                )
+        else:
+            logger.info("RRT brief %s: no parseable app frames in stack trace", brief_id[:8])
+
+        # 1c. LLM: generate structured fields (with code + timeline context)
         fields = _generate_brief_fields(
             error_first_line=error_first_line,
             error_sample=error_sample,
@@ -662,6 +946,7 @@ def generate_rrt_brief(
             owner_team=owner_team,
             detected_at=detected_at,
             timeline_events=timeline_events,
+            code_frames=code_frames,
         )
         logger.info("RRT brief fields generated: title='%s'", fields.get("title"))
 
@@ -714,6 +999,7 @@ def generate_rrt_brief(
             channels_sent=channels_sent,
             slack_ts=slack_ts,
             slack_channel=slack_channel,
+            code_frames=code_frames,
         ))
 
         # 4. Auto-create a linked Incident record so the Incidents page reflects

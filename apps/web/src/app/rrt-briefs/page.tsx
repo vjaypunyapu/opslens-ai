@@ -4,7 +4,7 @@ import { useAuth } from "@clerk/nextjs";
 import {
   FileText, RefreshCw, CheckCircle, AlertCircle,
   Clock, ChevronDown, ChevronUp, ExternalLink, Zap,
-  GitBranch, MessageSquare, Tag, X, Ticket
+  GitBranch, MessageSquare, Tag, X, Ticket, Code2, GitCommit
 } from "lucide-react";
 import { rrtBriefsApi, RRTBrief } from "@/lib/api";
 
@@ -253,6 +253,84 @@ function BriefDetail({ brief, getToken, onClose, onStatusChange, onJiraPush }: {
                 </div>
               );
             })}
+          </div>
+        )}
+
+        {/* Code Context */}
+        {brief.code_frames && brief.code_frames.length > 0 && (
+          <div style={{ marginBottom: "20px" }}>
+            <div style={{ fontSize: "11px", fontWeight: 600, color: "#64748b", textTransform: "uppercase",
+              letterSpacing: "0.08em", marginBottom: "12px", display: "flex", alignItems: "center", gap: "6px" }}>
+              <Code2 size={11} /> Source Code at Crash Point
+            </div>
+            {brief.code_frames.map((frame, i) => (
+              <div key={i} style={{
+                background: "#0a0f1a", border: "1px solid rgba(255,255,255,0.1)",
+                borderRadius: "8px", marginBottom: "12px", overflow: "hidden",
+              }}>
+                {/* Frame header */}
+                <div style={{
+                  display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap",
+                  padding: "10px 14px", background: "rgba(255,255,255,0.04)",
+                  borderBottom: "1px solid rgba(255,255,255,0.08)",
+                }}>
+                  <Code2 size={12} color="#94a3b8" />
+                  <span style={{ fontSize: "12px", color: "#e2e8f0", fontFamily: "monospace", fontWeight: 600 }}>
+                    {frame.file}
+                    <span style={{ color: "#f87171" }}>:{frame.line}</span>
+                    {frame.function && (
+                      <span style={{ color: "#94a3b8" }}> · {frame.function}()</span>
+                    )}
+                  </span>
+                  <a href={frame.github_url} target="_blank" rel="noreferrer"
+                    style={{ marginLeft: "auto", color: "#64748b", display: "flex", alignItems: "center", gap: "3px",
+                      fontSize: "11px", textDecoration: "none" }}>
+                    GitHub <ExternalLink size={10} />
+                  </a>
+                </div>
+
+                {/* Code snippet */}
+                <pre style={{
+                  margin: 0, padding: "12px 14px", fontSize: "11.5px", lineHeight: 1.7,
+                  color: "#cbd5e1", fontFamily: "monospace", overflowX: "auto",
+                  whiteSpace: "pre",
+                }}>
+                  {frame.snippet.split("\n").map((ln, li) => {
+                    const isError = ln.startsWith("→");
+                    return (
+                      <div key={li} style={{
+                        background: isError ? "rgba(239,68,68,0.12)" : "transparent",
+                        color: isError ? "#fca5a5" : "#cbd5e1",
+                        fontWeight: isError ? 600 : 400,
+                        margin: "0 -14px", padding: "0 14px",
+                      }}>{ln}</div>
+                    );
+                  })}
+                </pre>
+
+                {/* Last commit */}
+                {frame.last_commit_sha && (
+                  <div style={{
+                    padding: "8px 14px", borderTop: "1px solid rgba(255,255,255,0.06)",
+                    display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap",
+                  }}>
+                    <GitCommit size={11} color="#64748b" />
+                    <span style={{ fontSize: "11px", color: "#64748b" }}>Last change:</span>
+                    <a href={frame.last_commit_url} target="_blank" rel="noreferrer"
+                      style={{ fontSize: "11px", fontFamily: "monospace", color: "#a78bfa",
+                        textDecoration: "none" }}>
+                      {frame.last_commit_sha}
+                    </a>
+                    <span style={{ fontSize: "11px", color: "#94a3b8" }}>
+                      "{frame.last_commit_msg}"
+                    </span>
+                    <span style={{ fontSize: "11px", color: "#64748b" }}>
+                      by {frame.last_commit_author}
+                    </span>
+                  </div>
+                )}
+              </div>
+            ))}
           </div>
         )}
 

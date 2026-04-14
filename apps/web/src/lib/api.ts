@@ -401,6 +401,19 @@ export interface RRTBrief {
   error_sample: string | null;
   jira_ticket_key: string | null;
   jira_ticket_url: string | null;
+  code_frames: {
+    file: string;
+    line: number;
+    function: string;
+    repo: string;
+    snippet: string;
+    language: string;
+    last_commit_sha: string;
+    last_commit_msg: string;
+    last_commit_author: string;
+    last_commit_url: string;
+    github_url: string;
+  }[];
   channels_sent: string[];
   created_at: string;
   updated_at: string;
