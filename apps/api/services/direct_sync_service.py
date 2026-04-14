@@ -1786,16 +1786,30 @@ _INCIDENT_RE = _re.compile(
 _NOISE_RE = _re.compile(
     r"(Application shutdown complete|Waiting for application shutdown|"
     r"Shutting down gracefully|Shutdown complete|"
+    # Process / signal termination — catches "Server process termination" LLM titles
+    r"Process terminated|Server process termination|process termination|"
+    r"Received signal \d+|signal \d+.*shutting|SIGTERM|SIGKILL|SIGINT|"
+    r"Terminated process|Process killed|process.*killed|killed.*process|"
     r"Process terminated with ID|Worker exiting|worker exiting|"
+    # Service shutdown — catches "Service shutdown error detected" LLM titles
+    r"Service shutdown|service.*shutting down|shutdown.*service|"
+    r"Service.*stopped|stopped.*service|graceful.*shutdown|"
+    r"Shutting down workers|Stopping.*server|Server.*stopping|"
+    # Gunicorn / uvicorn lifecycle
     r"Booting worker with pid|Arbiter booted|"
     r"Handling signal:|uvicorn.*Finished server process|"
     r"Application startup complete|Started server process|"
     r"Waiting for connections|Uvicorn running on|"
+    # Railway / deploy noise
     r"INFO:.*shutdown|INFO:.*startup|INFO:.*Waiting|"
     r"\[INFO\].*shutdown|\[INFO\].*startup|"
-    r"health.?check|healthcheck|/health|/ping|/readyz|"
+    r"railway.*deploy|deploy.*railway|deployment.*complete|"
+    r"Deploying|deployment.*started|build.*succeeded|build.*complete|"
+    r"Container.*starting|Container.*stopped|Container.*healthy|"
+    # Health / metrics pings
+    r"health.?check|healthcheck|/health|/ping|/readyz|/metrics|/livez|"
     r"GET /api/v1/health|POST /api/v1/health|"
-    r"railway.*deploy|deploy.*railway|deployment.*complete)",
+    r"200 OK.*health|health.*200 OK)",
     _re.IGNORECASE,
 )
 
@@ -1867,17 +1881,20 @@ def _trigger_log_source_incidents(
             getattr(settings, "LOG_FAST_ALERT_SLACK_WEBHOOK", None)
             or getattr(settings, "LOG_SCAN_SLACK_WEBHOOK", None)
         )
+        # NOTE: we no longer gate on fallback_webhook here.  If no webhook env
+        # var is set, enrich_and_alert / generate_rrt_brief will fall back to
+        # the tenant's connected Slack bot token.  The brief is always generated.
         if not fallback_webhook:
             logger.info(
-                "Log source incident scan (%s): found %d error group(s) for tenant %s "
-                "but no Slack webhook configured — records stored for chat/alert-rules only. "
-                "Set LOG_FAST_ALERT_SLACK_WEBHOOK to enable live incident alerting.",
-                source_type, len(groups), tenant_id,
+                "Log source incident scan (%s): no LOG_FAST_ALERT_SLACK_WEBHOOK set for "
+                "tenant %s — will use Slack bot-token fallback if available.",
+                source_type, tenant_id,
             )
-            return
 
         # Load signatures of recent RRT briefs so we don't re-fire the same one
-        cooldown_hours = max(1, getattr(settings, "LOG_INCIDENT_COOLDOWN_HOURS", 2))
+        # Default 15-minute cooldown so demo re-runs work without waiting hours.
+        # Override in Railway env: LOG_INCIDENT_COOLDOWN_HOURS=2 for production.
+        cooldown_hours = getattr(settings, "LOG_INCIDENT_COOLDOWN_HOURS", 0.25)
         recent_sigs: set[str] = set()
         try:
             from apps.api.models.rrt_brief import RRTBrief as _RRTBrief

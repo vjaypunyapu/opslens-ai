@@ -914,8 +914,10 @@ async def _upsert_incident_from_brief(
             severity = "p4"
 
         async with AsyncSession() as db:
-            # Deduplicate: skip if same sig incident created recently
-            cutoff = detected_at - timedelta(hours=2)
+            # Deduplicate: skip if same title incident created within cooldown window
+            from apps.api.config import settings as _settings
+            _cooldown_h = getattr(_settings, "LOG_INCIDENT_COOLDOWN_HOURS", 0.25)
+            cutoff = detected_at - timedelta(hours=_cooldown_h)
             dupe = await db.execute(
                 sa.select(Incident.id).where(
                     Incident.tenant_id == tenant_id,
@@ -1028,6 +1030,118 @@ async def _save_rrt_brief(
             logger.info("RRT brief %s saved for tenant=%s", brief_id, tenant_id)
     except Exception as exc:
         logger.warning("Failed to save RRT brief: %s", exc)
+
+
+# ── Slack bot-token fallback notifier ────────────────────────────────────────
+
+async def _notify_via_slack_bot(
+    tenant_id: str,
+    brief_id: str,
+    fields: dict,
+    related_items: list,
+    detected_at: "datetime",
+    error_count: int,
+    window_minutes: int,
+    timeline_events: list,
+) -> str | None:
+    """
+    When no Incoming Webhook URL is configured, fall back to posting via the
+    Slack Bot Token stored in the tenant's Slack integration (if any).
+
+    Posts to the `alert_channel` stored in integration credentials, or falls
+    back to `#incidents` / `#general` in that order.
+
+    Returns the channel name if sent, None otherwise.
+    """
+    try:
+        import sqlalchemy as sa
+        from apps.worker.db import AsyncSession
+        from apps.api.db.models import Integration
+        from apps.api.utils.crypto import decrypt_credentials
+        from apps.api.services.notifications import build_rrt_brief_payload
+        import httpx as _httpx
+
+        async with AsyncSession() as db:
+            result = await db.execute(
+                sa.select(Integration).where(
+                    Integration.tenant_id == tenant_id,
+                    Integration.source_type == "slack",
+                    Integration.status == "active",
+                ).limit(1)
+            )
+            intg = result.scalar_one_or_none()
+
+        if not intg:
+            logger.info("No active Slack integration for tenant=%s — cannot send brief via bot", tenant_id)
+            return None
+
+        creds = decrypt_credentials(intg.credentials)
+        bot_token = creds.get("bot_token", "")
+        if not bot_token:
+            return None
+
+        # Determine channel: stored preference → #incidents → #general
+        channel = (
+            creds.get("alert_channel")
+            or creds.get("default_channel")
+            or "#incidents"
+        )
+
+        # Build the same Block Kit payload used for webhooks
+        payload = build_rrt_brief_payload(
+            brief_id=brief_id,
+            fields=fields,
+            related_items=related_items,
+            owner_team="Default",
+            detected_at=detected_at,
+            error_count=error_count,
+            window_minutes=window_minutes,
+            timeline_events=timeline_events,
+        )
+
+        # Inject channel into the payload and post via Web API
+        payload["channel"] = channel
+        async with _httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(
+                "https://slack.com/api/chat.postMessage",
+                json=payload,
+                headers={
+                    "Authorization": f"Bearer {bot_token}",
+                    "Content-Type": "application/json; charset=utf-8",
+                },
+            )
+            data = resp.json()
+            if data.get("ok"):
+                logger.info(
+                    "RRT brief %s sent to Slack channel '%s' via bot token",
+                    brief_id[:8], channel,
+                )
+                return channel
+            else:
+                # If #incidents doesn't exist, try #general
+                if channel != "#general" and data.get("error") in ("channel_not_found", "not_in_channel"):
+                    payload["channel"] = "#general"
+                    resp2 = await client.post(
+                        "https://slack.com/api/chat.postMessage",
+                        json=payload,
+                        headers={
+                            "Authorization": f"Bearer {bot_token}",
+                            "Content-Type": "application/json; charset=utf-8",
+                        },
+                    )
+                    data2 = resp2.json()
+                    if data2.get("ok"):
+                        logger.info("RRT brief %s sent to #general via bot token", brief_id[:8])
+                        return "#general"
+                logger.warning(
+                    "Slack bot postMessage failed: %s",
+                    data.get("error", resp.text[:200]),
+                )
+                return None
+
+    except Exception as exc:
+        logger.warning("Slack bot-token fallback failed (non-fatal): %s", exc)
+        return None
 
 
 # ── Main Celery task ──────────────────────────────────────────────────────────
@@ -1152,6 +1266,24 @@ def generate_rrt_brief(
                     "RRT brief %s sent to team='%s'",
                     brief_id[:8], target.get("team_name"),
                 )
+
+        # 2b. If no routing target had a webhook, try Slack bot token fallback
+        if not channels_sent:
+            bot_channel = _run_async(
+                _notify_via_slack_bot(
+                    tenant_id=tenant_id,
+                    brief_id=brief_id,
+                    fields=fields,
+                    related_items=related_items,
+                    detected_at=detected_at,
+                    error_count=error_count,
+                    window_minutes=window_minutes,
+                    timeline_events=timeline_events,
+                )
+            )
+            if bot_channel:
+                channels_sent.append(f"slack:{bot_channel}")
+                slack_channel = bot_channel
 
         # 3. Persist RRT brief to DB
         _run_async(_save_rrt_brief(

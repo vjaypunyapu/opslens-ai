@@ -138,7 +138,8 @@ class Settings(BaseSettings):
     LOG_FAST_ALERT_CRON_MINUTES: int = 5       # how often to run the fast scan
     LOG_FAST_ALERT_WINDOW_MINUTES: int = 5     # look-back window per run
     LOG_FAST_ALERT_THRESHOLD: int = 3          # min error occurrences to fire
-    LOG_FAST_ALERT_COOLDOWN_MINUTES: int = 10  # suppress duplicate per error sig
+    LOG_FAST_ALERT_COOLDOWN_MINUTES: int = 10  # in-process dedup (fast scan only)
+    LOG_INCIDENT_COOLDOWN_HOURS: float = 0.25  # DB-level RRT brief dedup (15 min)
     LOG_FAST_ALERT_ENRICH: bool = True         # query Jira/Slack/GitHub for context
     LOG_FAST_ALERT_ENRICH_TOP_K: int = 5       # max related docs to surface
     LOG_FAST_ALERT_SLACK_WEBHOOK: str | None = None  # webhook (falls back to LOG_SCAN_SLACK_WEBHOOK)
