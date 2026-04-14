@@ -1877,9 +1877,16 @@ def _trigger_log_source_incidents(
         while i < len(lines):
             line = lines[i]
             if _INCIDENT_RE.search(line) and not _NOISE_RE.search(line):
-                # Grab traceback context (indented lines following the error,
-                # plus Traceback header and chained-exception markers which are
-                # NOT indented but must be captured for frame extraction).
+                # Grab the full traceback block.
+                # Rules:
+                #   • Always continue for INDENTED lines (File "..." + code snippets)
+                #   • Continue for the "Traceback (most recent call last):" header
+                #     which is NOT indented but must be included so _parse_traceback_frames
+                #     can find the File "..." lines that follow.
+                #   • Continue for chained-exception markers (also not indented)
+                #   • NEVER use "Error:" as a continuation test — doing so causes the
+                #     [ERROR] header of the *next* repeat occurrence to be swallowed
+                #     into this block, which prevents the count from reaching threshold.
                 block = [line]
                 j = i + 1
                 while j < len(lines) and (
@@ -1888,13 +1895,13 @@ def _trigger_log_source_incidents(
                     or lines[j].startswith("Traceback (")
                     or lines[j].startswith("During handling of")
                     or lines[j].startswith("The above exception")
-                    or ("Error:" in lines[j] and not lines[j].startswith("20"))
-                    or ("Exception:" in lines[j] and not lines[j].startswith("20"))
                 ):
                     block.append(lines[j])
                     j += 1
 
-                key_line = block[-1]
+                # Use the FIRST line (the [ERROR] trigger) as the dedup key —
+                # it is the most stable identifier across repeated occurrences.
+                key_line = block[0]
                 # Strip timestamps so the same error at different times deduplicates
                 clean = _re.sub(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}[.\d]*[Z]?", "", key_line).strip()
                 sig = f"{source_type}:{_hashlib.md5(clean[:120].encode()).hexdigest()[:10]}"

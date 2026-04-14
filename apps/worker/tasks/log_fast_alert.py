@@ -242,8 +242,12 @@ def _extract_error_groups(lines: list[str]) -> list[ErrorGroup]:
     while i < len(lines):
         line = lines[i]
         if _CRITICAL_RE.search(line):
-            # Grab traceback context (indented lines + Traceback header lines
-            # which are NOT indented but required for frame extraction)
+            # Grab the full traceback block.
+            # Only continue for indented lines (File "..." + code snippets) and
+            # the non-indented Traceback/chained-exception header lines.
+            # Do NOT use "Error:" as a continuation condition — it swallows the
+            # [ERROR] header of the next repeat occurrence into this block,
+            # preventing the count from incrementing to reach threshold.
             block = [line]
             j = i + 1
             while j < len(lines) and (
@@ -252,14 +256,12 @@ def _extract_error_groups(lines: list[str]) -> list[ErrorGroup]:
                 or lines[j].startswith("Traceback (")
                 or lines[j].startswith("During handling of")
                 or lines[j].startswith("The above exception")
-                or ("Error:" in lines[j] and not lines[j].startswith("20"))
-                or ("Exception:" in lines[j] and not lines[j].startswith("20"))
             ):
                 block.append(lines[j])
                 j += 1
 
-            # Signature = last meaningful line (actual exception class)
-            key_line = block[-1]
+            # Use the FIRST line (the trigger) as the dedup key — most stable.
+            key_line = block[0]
             # Strip timestamps so the same error at different times deduplicates
             clean = re.sub(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}[.\d]*[Z]?", "", key_line).strip()
             sig = hashlib.md5(clean[:120].encode()).hexdigest()[:10]
