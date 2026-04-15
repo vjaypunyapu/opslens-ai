@@ -540,6 +540,9 @@ export const demoApi = {
       { method: "POST", token, body: JSON.stringify({ source_type }) },
     ),
 
+  codeContextTest: (token: string) =>
+    request<Record<string, unknown>>("/dev/code-context-test", { token }),
+
   githubCheck: (token: string) =>
     request<{
       status: string;

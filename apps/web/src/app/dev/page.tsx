@@ -10,6 +10,26 @@ export default function DevDiagnosticsPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [ctxResult, setCtxResult] = useState<Record<string, unknown> | null>(null);
+  const [ctxLoading, setCtxLoading] = useState(false);
+  const [ctxError, setCtxError] = useState<string | null>(null);
+
+  async function runCodeContextTest() {
+    setCtxLoading(true);
+    setCtxError(null);
+    setCtxResult(null);
+    try {
+      const token = await getToken();
+      if (!token) throw new Error("Not authenticated");
+      const result = await demoApi.codeContextTest(token);
+      setCtxResult(result as Record<string, unknown>);
+    } catch (e: unknown) {
+      setCtxError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCtxLoading(false);
+    }
+  }
+
   async function runGithubCheck() {
     setLoading(true);
     setError(null);
@@ -127,6 +147,60 @@ export default function DevDiagnosticsPage() {
             {!githubResult.token_valid && (
               <div className="bg-blue-500/10 border border-blue-500/30 rounded p-3 text-sm text-blue-700 dark:text-blue-400">
                 <strong>Fix:</strong> Your token is invalid or expired. Generate a new classic PAT with <code className="bg-muted px-1 rounded">repo</code> scope at GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic).
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Code Context Pipeline Test */}
+      <div className="border rounded-lg p-6 space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-lg font-semibold">Code Context Pipeline Test</h2>
+            <p className="text-sm text-muted-foreground">
+              Runs the full traceback → frame extraction → GitHub/local fetch chain directly.
+              Tells you exactly where it breaks.
+            </p>
+          </div>
+          <button
+            onClick={runCodeContextTest}
+            disabled={ctxLoading}
+            className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:bg-primary/90 disabled:opacity-50"
+          >
+            {ctxLoading ? "Testing…" : "Run Test"}
+          </button>
+        </div>
+
+        {ctxError && (
+          <div className="bg-destructive/10 border border-destructive/30 rounded p-3 text-sm text-destructive">
+            {ctxError}
+          </div>
+        )}
+
+        {ctxResult && (
+          <div className="space-y-3">
+            {!!ctxResult.error && (
+              <div className="bg-destructive/10 border border-destructive/30 rounded p-3 text-sm text-destructive font-medium">
+                ❌ {String(ctxResult.error)}
+              </div>
+            )}
+            <table className="w-full text-sm">
+              <tbody className="divide-y">
+                <Row label="Frames parsed" value={Array.isArray(ctxResult.parsed_frames) ? String((ctxResult.parsed_frames as unknown[]).length) : "0"} />
+                <Row label="Code frames fetched" value={String(ctxResult.code_frames_count ?? 0)} />
+                <Row label="Local file exists" value={ctxResult.local_file_exists_at_app ? "✅ /app/apps/api/routers/dev_tools.py" : "❌ Not found"} />
+                <Row label="Token decryptable" value={ctxResult.github_token_decryptable ? `✅ ${String(ctxResult.github_token_preview)}` : `❌ ${String(ctxResult.github_token_preview)}`} />
+              </tbody>
+            </table>
+            {Array.isArray(ctxResult.code_frames) && (ctxResult.code_frames as unknown[]).length > 0 && (
+              <div className="bg-green-500/10 border border-green-500/30 rounded p-3 text-sm text-green-700 dark:text-green-400">
+                ✅ Code context works! Source: {String((ctxResult.code_frames as Record<string,unknown>[])[0]?.source)} — {String((ctxResult.code_frames as Record<string,unknown>[])[0]?.snippet_lines)} lines fetched
+              </div>
+            )}
+            {Number(ctxResult.code_frames_count) === 0 && !ctxResult.error && (
+              <div className="bg-yellow-500/10 border border-yellow-500/30 rounded p-3 text-sm text-yellow-700 dark:text-yellow-400">
+                ⚠️ Frames were parsed but code fetch returned empty. Check Railway worker logs for the exact error — look for lines starting with "GitHub code context" or "Local code context".
               </div>
             )}
           </div>

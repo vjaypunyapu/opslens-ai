@@ -677,3 +677,108 @@ async def github_token_check(
             )
         ),
     }
+
+
+# ── Code context pipeline test ────────────────────────────────────────────────
+
+@router.get("/code-context-test")
+async def code_context_test(
+    ctx: Annotated[TenantContext, Depends(require_admin)],
+):
+    """
+    Directly runs the full code-context pipeline against the demo file
+    (apps/api/routers/dev_tools.py, line 72) and returns what was found.
+    Bypasses Celery/queue entirely — runs synchronously in the API process.
+    """
+    import asyncio as _asyncio
+
+    tenant_id = str(ctx.tenant_uuid)
+
+    # Simulate the exact frame _parse_traceback_frames would produce
+    test_frames = [
+        {"file": "apps/api/routers/dev_tools.py", "line": 72, "function": "_scenario_alert_rule_null_condition"}
+    ]
+
+    # Test the block extractor on a real traceback string
+    sample_lines = [
+        "[ERROR] [DEMO:alert_rule_null_condition] TypeError: 'NoneType' is not iterable",
+        "Traceback (most recent call last):",
+        '  File "/app/apps/api/routers/dev_tools.py", line 72, in _scenario_alert_rule_null_condition',
+        "    for condition in rule.conditions:",
+        "TypeError: 'NoneType' object is not iterable",
+    ]
+
+    try:
+        from apps.worker.tasks.rrt_briefing import _parse_traceback_frames, _fetch_code_context
+        parsed_frames = _parse_traceback_frames(sample_lines)
+    except Exception as exc:
+        return {"error": f"import or parse failed: {exc}", "sample_lines": sample_lines}
+
+    if not parsed_frames:
+        return {
+            "error": "parse_traceback_frames returned 0 frames — block extractor fix not active",
+            "sample_lines": sample_lines,
+            "parsed_frames": [],
+        }
+
+    try:
+        code_frames = _asyncio.get_event_loop().run_until_complete(
+            _fetch_code_context(parsed_frames, tenant_id)
+        )
+    except Exception as exc:
+        return {
+            "parsed_frames": parsed_frames,
+            "error": f"_fetch_code_context raised: {exc}",
+        }
+
+    # Also test local filesystem directly
+    import os
+    local_path = "/app/apps/api/routers/dev_tools.py"
+    local_exists = os.path.isfile(local_path)
+
+    # Check credential decryption
+    decrypt_ok = False
+    token_preview = ""
+    try:
+        import sqlalchemy as sa
+        from ..db.models import Integration
+        from ..utils.crypto import decrypt_credentials
+        from ..db.session import get_db as _get_db
+        from ..db.session import AsyncSessionFactory
+        async def _check_creds():
+            async with AsyncSessionFactory() as db:
+                r = await db.execute(
+                    sa.select(Integration).where(
+                        Integration.tenant_id == tenant_id,
+                        Integration.source_type == "github",
+                        Integration.status == "active",
+                    ).limit(1)
+                )
+                intg = r.scalar_one_or_none()
+                if not intg:
+                    return False, "no integration"
+                creds = decrypt_credentials(intg.credentials)
+                tok = creds.get("access_token", "")
+                return bool(tok), f"{tok[:8]}..." if tok else "(empty)"
+        decrypt_ok, token_preview = _asyncio.get_event_loop().run_until_complete(_check_creds())
+    except Exception as exc:
+        token_preview = f"check failed: {exc}"
+
+    return {
+        "parsed_frames": parsed_frames,
+        "code_frames_count": len(code_frames),
+        "code_frames": [
+            {
+                "file": f["file"],
+                "line": f["line"],
+                "repo": f.get("repo"),
+                "source": "github" if f.get("github_url") else "local",
+                "snippet_lines": len(f.get("snippet", "").splitlines()),
+                "snippet_preview": f.get("snippet", "")[:200],
+            }
+            for f in code_frames
+        ],
+        "local_file_exists_at_app": local_exists,
+        "github_token_decryptable": decrypt_ok,
+        "github_token_preview": token_preview,
+    }
