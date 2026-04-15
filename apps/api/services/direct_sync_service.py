@@ -1733,9 +1733,12 @@ async def _fetch_railway(creds: dict, tenant_id: str, integration_id: str, since
                     # Build per-line strings
                     all_lines = []
                     for line in log_lines:
-                        msg = (line.get("message") or "").strip()
+                        # Use rstrip() not strip() — strip() removes leading spaces
+                        # from indented traceback lines ("  File \"...\"") which breaks
+                        # the block extractor's startswith("  ") continuation check.
+                        msg = (line.get("message") or "").rstrip()
                         sev = (line.get("severity") or "").upper()
-                        if not msg:
+                        if not msg.strip():
                             continue
                         prefix = f"[{sev}] " if sev and sev != "UNSPECIFIED" else ""
                         all_lines.append(f"{prefix}{msg}")
@@ -1890,11 +1893,8 @@ def _trigger_log_source_incidents(
                 block = [line]
                 j = i + 1
                 while j < len(lines):
-                    # Railway prefixes every physical log line with "[SEVERITY] "
-                    # (e.g. "[ERROR] Traceback …", "[ERROR]   File \"…\"").
-                    # Strip that optional prefix before applying startswith checks
-                    # so the block extractor still captures the full traceback even
-                    # when each continuation line has a severity tag.
+                    # Strip optional [SEVERITY] prefix Railway adds to each line,
+                    # then check for known traceback continuation patterns.
                     cont = _re.sub(r"^\[[A-Z]+\]\s*", "", lines[j])
                     if not (
                         cont.startswith("  ")
@@ -1902,6 +1902,8 @@ def _trigger_log_source_incidents(
                         or cont.startswith("Traceback (")
                         or cont.startswith("During handling of")
                         or cont.startswith("The above exception")
+                        or cont.startswith("File \"")   # stripped-indent fallback
+                        or '  File "' in cont           # embedded within a log prefix
                     ):
                         break
                     block.append(lines[j])

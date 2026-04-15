@@ -251,11 +251,8 @@ def _extract_error_groups(lines: list[str]) -> list[ErrorGroup]:
             block = [line]
             j = i + 1
             while j < len(lines):
-                # Railway prefixes every physical log line with "[SEVERITY] "
-                # (e.g. "[ERROR] Traceback …", "[ERROR]   File \"…\"").
-                # Strip that optional prefix before applying startswith checks
-                # so the block extractor still captures the full traceback even
-                # when each continuation line carries a severity tag.
+                # Strip optional [SEVERITY] prefix Railway adds to each line,
+                # then check for known traceback continuation patterns.
                 cont = re.sub(r"^\[[A-Z]+\]\s*", "", lines[j])
                 if not (
                     cont.startswith("  ")
@@ -263,6 +260,8 @@ def _extract_error_groups(lines: list[str]) -> list[ErrorGroup]:
                     or cont.startswith("Traceback (")
                     or cont.startswith("During handling of")
                     or cont.startswith("The above exception")
+                    or cont.startswith("File \"")   # stripped-indent fallback
+                    or '  File "' in cont           # embedded within a log prefix
                 ):
                     break
                 block.append(lines[j])
