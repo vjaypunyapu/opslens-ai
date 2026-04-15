@@ -4,6 +4,8 @@ import { useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { demoApi } from "@/lib/api";
 
+type LatestBriefResult = Awaited<ReturnType<typeof demoApi.latestBrief>>;
+
 export default function DevDiagnosticsPage() {
   const { getToken } = useAuth();
   const [githubResult, setGithubResult] = useState<Record<string, unknown> | null>(null);
@@ -13,6 +15,26 @@ export default function DevDiagnosticsPage() {
   const [ctxResult, setCtxResult] = useState<Record<string, unknown> | null>(null);
   const [ctxLoading, setCtxLoading] = useState(false);
   const [ctxError, setCtxError] = useState<string | null>(null);
+
+  const [briefResult, setBriefResult] = useState<LatestBriefResult | null>(null);
+  const [briefLoading, setBriefLoading] = useState(false);
+  const [briefError, setBriefError] = useState<string | null>(null);
+
+  async function fetchLatestBrief() {
+    setBriefLoading(true);
+    setBriefError(null);
+    setBriefResult(null);
+    try {
+      const token = await getToken();
+      if (!token) throw new Error("Not authenticated");
+      const result = await demoApi.latestBrief(token);
+      setBriefResult(result);
+    } catch (e: unknown) {
+      setBriefError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBriefLoading(false);
+    }
+  }
 
   async function runCodeContextTest() {
     setCtxLoading(true);
@@ -147,6 +169,88 @@ export default function DevDiagnosticsPage() {
             {!githubResult.token_valid && (
               <div className="bg-blue-500/10 border border-blue-500/30 rounded p-3 text-sm text-blue-700 dark:text-blue-400">
                 <strong>Fix:</strong> Your token is invalid or expired. Generate a new classic PAT with <code className="bg-muted px-1 rounded">repo</code> scope at GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic).
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Latest RRT Brief Inspector */}
+      <div className="border rounded-lg p-6 space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-lg font-semibold">Latest RRT Brief Inspector</h2>
+            <p className="text-sm text-muted-foreground">
+              Reads the most recent brief from the DB and shows what <code className="bg-muted px-1 rounded">error_sample</code> and{" "}
+              <code className="bg-muted px-1 rounded">code_frames</code> were actually saved by the worker.
+            </p>
+          </div>
+          <button
+            onClick={fetchLatestBrief}
+            disabled={briefLoading}
+            className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:bg-primary/90 disabled:opacity-50"
+          >
+            {briefLoading ? "Loading…" : "Inspect Brief"}
+          </button>
+        </div>
+
+        {briefError && (
+          <div className="bg-destructive/10 border border-destructive/30 rounded p-3 text-sm text-destructive">
+            {briefError}
+          </div>
+        )}
+
+        {briefResult && !briefResult.found && (
+          <div className="bg-yellow-500/10 border border-yellow-500/30 rounded p-3 text-sm text-yellow-700 dark:text-yellow-400">
+            ⚠️ {briefResult.message}
+          </div>
+        )}
+
+        {briefResult?.found && (
+          <div className="space-y-3">
+            {/* Diagnosis banner */}
+            <div className={`rounded p-3 text-sm font-medium ${
+              briefResult.diagnosis?.startsWith("✅")
+                ? "bg-green-500/10 border border-green-500/30 text-green-700 dark:text-green-400"
+                : "bg-red-500/10 border border-red-500/30 text-red-700 dark:text-red-400"
+            }`}>
+              {briefResult.diagnosis}
+            </div>
+
+            <table className="w-full text-sm">
+              <tbody className="divide-y">
+                <Row label="Brief ID" value={(briefResult.brief_id?.slice(0, 8) ?? "") + "..."} />
+                <Row label="Created" value={briefResult.created_at ?? ""} />
+                <Row label="Signature" value={briefResult.error_signature ?? "(none)"} />
+                <Row label="Sample lines" value={String(briefResult.error_sample_line_count ?? 0)} />
+                <Row label="Has Traceback line" value={briefResult.error_sample_has_traceback ? "✅ Yes" : "❌ No"} />
+                <Row label='Has File "..." lines' value={briefResult.error_sample_has_file_lines ? "✅ Yes" : "❌ No"} />
+                <Row label="Frames parseable" value={
+                  briefResult.would_parse_error
+                    ? `❌ ${briefResult.would_parse_error}`
+                    : briefResult.would_parse_frames && briefResult.would_parse_frames.length > 0
+                    ? `✅ ${briefResult.would_parse_frames.length} frame(s)`
+                    : "❌ 0 frames"
+                } />
+                <Row label="code_frames stored" value={String(briefResult.code_frames_stored ?? 0)} />
+              </tbody>
+            </table>
+
+            {briefResult.error_sample_file_lines && briefResult.error_sample_file_lines.length > 0 && (
+              <div>
+                <p className="text-xs font-medium text-muted-foreground mb-1">File lines in sample:</p>
+                <pre className="bg-muted rounded p-2 text-xs overflow-x-auto whitespace-pre-wrap">
+                  {briefResult.error_sample_file_lines.join("\n")}
+                </pre>
+              </div>
+            )}
+
+            {briefResult.error_sample_first_10_lines && briefResult.error_sample_first_10_lines.length > 0 && (
+              <div>
+                <p className="text-xs font-medium text-muted-foreground mb-1">First 10 lines of error_sample:</p>
+                <pre className="bg-muted rounded p-2 text-xs overflow-x-auto whitespace-pre-wrap">
+                  {briefResult.error_sample_first_10_lines.join("\n")}
+                </pre>
               </div>
             )}
           </div>

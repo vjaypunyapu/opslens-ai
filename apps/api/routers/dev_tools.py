@@ -779,3 +779,99 @@ async def code_context_test(
             for f in code_frames
         ],
     }
+
+
+# ── Latest RRT brief inspector ────────────────────────────────────────────────
+
+@router.get("/latest-brief")
+async def latest_brief_debug(
+    ctx: Annotated[TenantContext, Depends(require_admin)],
+    db=Depends(get_db),
+):
+    """
+    Fetches the most recent RRT brief from the DB and returns its raw diagnostic fields:
+    - error_sample: the raw log lines passed to the brief generator
+    - code_frames: what (if anything) was stored for source code context
+    - error_signature: the dedup key
+    - created_at: when it was generated
+
+    Use this to diagnose why code context isn't appearing in briefs even though
+    the /dev/code-context-test confirms the pipeline works in the API process.
+    """
+    from ..models.rrt_brief import RRTBrief
+
+    result = await db.execute(
+        sa.select(RRTBrief)
+        .where(RRTBrief.tenant_id == ctx.tenant_uuid)
+        .order_by(RRTBrief.created_at.desc())
+        .limit(1)
+    )
+    brief = result.scalar_one_or_none()
+
+    if not brief:
+        return {
+            "found": False,
+            "message": "No RRT briefs found for this tenant. Run POST /dev/scenario + POST /dev/force-sync to generate one.",
+        }
+
+    # Parse the raw error_sample to check if File "..." lines are present
+    error_sample_lines = []
+    if brief.error_sample:
+        if isinstance(brief.error_sample, list):
+            error_sample_lines = brief.error_sample
+        elif isinstance(brief.error_sample, str):
+            error_sample_lines = brief.error_sample.splitlines()
+
+    file_lines = [l for l in error_sample_lines if l.strip().startswith('File "')]
+    traceback_lines = [l for l in error_sample_lines if "Traceback" in l]
+
+    # Try parsing frames from the stored sample to see what would happen
+    try:
+        from apps.worker.tasks.rrt_briefing import _parse_traceback_frames
+        would_parse = _parse_traceback_frames(error_sample_lines)
+    except Exception as exc:
+        would_parse = f"parse error: {exc}"
+
+    code_frames = brief.code_frames or []
+
+    return {
+        "found": True,
+        "brief_id": str(brief.id),
+        "created_at": brief.created_at.isoformat() if brief.created_at else None,
+        "error_signature": brief.error_signature,
+        "title": brief.title if hasattr(brief, "title") else "(no title field)",
+
+        # Error sample analysis
+        "error_sample_line_count": len(error_sample_lines),
+        "error_sample_has_traceback": len(traceback_lines) > 0,
+        "error_sample_has_file_lines": len(file_lines) > 0,
+        "error_sample_file_lines": file_lines[:5],
+        "error_sample_first_10_lines": error_sample_lines[:10],
+
+        # What frame parsing would produce from the stored sample
+        "would_parse_frames": would_parse if isinstance(would_parse, list) else [],
+        "would_parse_error": would_parse if isinstance(would_parse, str) else None,
+
+        # Stored code context
+        "code_frames_stored": len(code_frames),
+        "code_frames_summary": [
+            {
+                "file": f.get("file"),
+                "line": f.get("line"),
+                "source": "github" if f.get("github_url") else "local",
+                "snippet_lines": len(f.get("snippet", "").splitlines()),
+            }
+            for f in code_frames[:5]
+        ] if isinstance(code_frames, list) else [],
+
+        # Diagnosis
+        "diagnosis": (
+            "✅ code_frames populated — brief has source code"
+            if code_frames
+            else (
+                "❌ code_frames empty + no File lines in error_sample — block extractor not capturing traceback (check Railway worker deploy has latest code)"
+                if not file_lines
+                else "❌ code_frames empty but File lines ARE present — worker failed to fetch code (check worker logs for 'GitHub code context' lines)"
+            )
+        ),
+    }

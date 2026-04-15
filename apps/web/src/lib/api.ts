@@ -559,6 +559,26 @@ export const demoApi = {
       verdict: string;
       message?: string;
     }>("/dev/github-check", { token }),
+
+  latestBrief: (token: string) =>
+    request<{
+      found: boolean;
+      message?: string;
+      brief_id?: string;
+      created_at?: string;
+      error_signature?: string;
+      title?: string;
+      error_sample_line_count?: number;
+      error_sample_has_traceback?: boolean;
+      error_sample_has_file_lines?: boolean;
+      error_sample_file_lines?: string[];
+      error_sample_first_10_lines?: string[];
+      would_parse_frames?: { file: string; line: number; func: string }[];
+      would_parse_error?: string | null;
+      code_frames_stored?: number;
+      code_frames_summary?: { file: string; line: number; source: string; snippet_lines: number }[];
+      diagnosis?: string;
+    }>("/dev/latest-brief", { token }),
 };
 
 // ── Known Issues (alert suppression) ─────────────────────────────────────────
