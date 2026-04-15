@@ -13,7 +13,7 @@
 ┌────────────────────────────────────────────────────────────────────────┐
 │  Layer 1 — Data Understanding                                          │
 │  Airbyte → Staging DB → Normalize → Deduplicate → Chunk → Embed       │
-│  (Slack / Jira / Google Drive / Zendesk / GitHub / Bitbucket / HubSpot)           │
+│  (Slack / Jira / Google Drive / Zendesk / GitHub / Bitbucket / HubSpot)          │
 └─────────────────────────────┬──────────────────────────────────────────┘
                               │
 ┌─────────────────────────────▼──────────────────────────────────────────┐
