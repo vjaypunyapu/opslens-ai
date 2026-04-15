@@ -5,6 +5,7 @@ import { useAuth } from "@clerk/nextjs";
 import { demoApi } from "@/lib/api";
 
 type LatestBriefResult = Awaited<ReturnType<typeof demoApi.latestBrief>>;
+type RailwayRawResult = Awaited<ReturnType<typeof demoApi.railwayRaw>>;
 
 export default function DevDiagnosticsPage() {
   const { getToken } = useAuth();
@@ -19,6 +20,26 @@ export default function DevDiagnosticsPage() {
   const [briefResult, setBriefResult] = useState<LatestBriefResult | null>(null);
   const [briefLoading, setBriefLoading] = useState(false);
   const [briefError, setBriefError] = useState<string | null>(null);
+
+  const [railwayRaw, setRailwayRaw] = useState<RailwayRawResult | null>(null);
+  const [railwayRawLoading, setRailwayRawLoading] = useState(false);
+  const [railwayRawError, setRailwayRawError] = useState<string | null>(null);
+
+  async function fetchRailwayRaw() {
+    setRailwayRawLoading(true);
+    setRailwayRawError(null);
+    setRailwayRaw(null);
+    try {
+      const token = await getToken();
+      if (!token) throw new Error("Not authenticated");
+      const result = await demoApi.railwayRaw(token);
+      setRailwayRaw(result);
+    } catch (e: unknown) {
+      setRailwayRawError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRailwayRawLoading(false);
+    }
+  }
 
   async function fetchLatestBrief() {
     setBriefLoading(true);
@@ -175,14 +196,87 @@ export default function DevDiagnosticsPage() {
         )}
       </div>
 
+      {/* Railway Raw Log Diagnostic */}
+      <div className="border rounded-lg p-6 space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-lg font-semibold">Railway Raw Log Diagnostic</h2>
+            <p className="text-sm text-muted-foreground">
+              Fetches live Railway logs and shows exactly what format they arrive in + what blocks the incident extractor builds.
+            </p>
+          </div>
+          <button
+            onClick={fetchRailwayRaw}
+            disabled={railwayRawLoading}
+            className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:bg-primary/90 disabled:opacity-50"
+          >
+            {railwayRawLoading ? "Fetching…" : "Fetch Raw Logs"}
+          </button>
+        </div>
+
+        {railwayRawError && (
+          <div className="bg-destructive/10 border border-destructive/30 rounded p-3 text-sm text-destructive">
+            {railwayRawError}
+          </div>
+        )}
+
+        {railwayRaw && (
+          <div className="space-y-3">
+            {!!railwayRaw.error && (
+              <div className="bg-red-500/10 border border-red-500/30 rounded p-2 text-xs text-red-700 dark:text-red-400">
+                {String(railwayRaw.error)}
+              </div>
+            )}
+            {!railwayRaw.error && (
+              <>
+                <table className="w-full text-sm">
+                  <tbody className="divide-y">
+                    <Row label="Service" value={`${String(railwayRaw.project ?? "")} / ${String(railwayRaw.service ?? "")}`} />
+                    <Row label="Raw entries from Railway" value={String(railwayRaw.total_log_entries_from_railway ?? 0)} />
+                    <Row label="Lines after splitlines()" value={String(railwayRaw.lines_after_splitlines ?? 0)} />
+                    <Row label="Incident blocks found" value={String(railwayRaw.incident_blocks_found ?? 0)} />
+                  </tbody>
+                </table>
+
+                {Array.isArray(railwayRaw.raw_entry_sample_last_20) && railwayRaw.raw_entry_sample_last_20.length > 0 && (
+                  <div>
+                    <p className="text-xs font-medium text-muted-foreground mb-1">Last 20 raw Railway entries (severity + message format):</p>
+                    <pre className="bg-muted rounded p-2 text-xs overflow-x-auto whitespace-pre-wrap">
+                      {(railwayRaw.raw_entry_sample_last_20 as {severity: string; message_has_newline: boolean; message_preview: string}[]).map((e, i) =>
+                        `[${e.severity}] has_newline=${e.message_has_newline} | ${e.message_preview}`
+                      ).join("\n")}
+                    </pre>
+                  </div>
+                )}
+
+                {Array.isArray(railwayRaw.incident_blocks) && railwayRaw.incident_blocks.length > 0 && (
+                  <div>
+                    <p className="text-xs font-medium text-muted-foreground mb-1">Incident blocks extracted:</p>
+                    <div className="space-y-2">
+                      {(railwayRaw.incident_blocks as {trigger_line: string; block_size: number; has_file_lines: boolean; has_traceback: boolean; block_lines: string[]}[]).map((b, i) => (
+                        <div key={i} className={`rounded p-2 text-xs border ${b.has_file_lines ? "border-green-500/40 bg-green-500/5" : "border-red-500/30 bg-red-500/5"}`}>
+                          <div className="font-medium mb-1">
+                            Block {i + 1}: {b.block_size} line(s) | File lines: {b.has_file_lines ? "✅" : "❌"} | Traceback: {b.has_traceback ? "✅" : "❌"}
+                          </div>
+                          <pre className="whitespace-pre-wrap opacity-80">{b.block_lines.join("\n")}</pre>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
+      </div>
+
       {/* Latest RRT Brief Inspector */}
       <div className="border rounded-lg p-6 space-y-4">
         <div className="flex items-center justify-between">
           <div>
             <h2 className="text-lg font-semibold">Latest RRT Brief Inspector</h2>
             <p className="text-sm text-muted-foreground">
-              Reads the most recent brief from the DB and shows what <code className="bg-muted px-1 rounded">error_sample</code> and{" "}
-              <code className="bg-muted px-1 rounded">code_frames</code> were actually saved by the worker.
+              Shows the 5 most recent briefs from the DB — checks which ones have traceback lines and code frames.
             </p>
           </div>
           <button
@@ -190,7 +284,7 @@ export default function DevDiagnosticsPage() {
             disabled={briefLoading}
             className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:bg-primary/90 disabled:opacity-50"
           >
-            {briefLoading ? "Loading…" : "Inspect Brief"}
+            {briefLoading ? "Loading…" : "Inspect Briefs"}
           </button>
         </div>
 
@@ -207,52 +301,35 @@ export default function DevDiagnosticsPage() {
         )}
 
         {briefResult?.found && (
-          <div className="space-y-3">
-            {/* Diagnosis banner */}
-            <div className={`rounded p-3 text-sm font-medium ${
-              briefResult.diagnosis?.startsWith("✅")
-                ? "bg-green-500/10 border border-green-500/30 text-green-700 dark:text-green-400"
-                : "bg-red-500/10 border border-red-500/30 text-red-700 dark:text-red-400"
-            }`}>
-              {briefResult.diagnosis}
+          <div className="space-y-4">
+            <div className={`rounded p-3 text-sm font-medium ${briefResult.any_with_code_frames ? "bg-green-500/10 border border-green-500/30 text-green-700 dark:text-green-400" : briefResult.any_with_file_lines ? "bg-yellow-500/10 border border-yellow-500/30 text-yellow-700 dark:text-yellow-400" : "bg-red-500/10 border border-red-500/30 text-red-700 dark:text-red-400"}`}>
+              {briefResult.any_with_code_frames ? "✅ At least one brief has code_frames — source code IS being fetched" : briefResult.any_with_file_lines ? "⚠️ File lines present in sample but no code_frames — worker fetch failing" : "❌ None of the last 5 briefs have File lines — block extractor still not capturing tracebacks"}
             </div>
 
-            <table className="w-full text-sm">
-              <tbody className="divide-y">
-                <Row label="Brief ID" value={(briefResult.brief_id?.slice(0, 8) ?? "") + "..."} />
-                <Row label="Created" value={briefResult.created_at ?? ""} />
-                <Row label="Signature" value={briefResult.error_signature ?? "(none)"} />
-                <Row label="Sample lines" value={String(briefResult.error_sample_line_count ?? 0)} />
-                <Row label="Has Traceback line" value={briefResult.error_sample_has_traceback ? "✅ Yes" : "❌ No"} />
-                <Row label='Has File "..." lines' value={briefResult.error_sample_has_file_lines ? "✅ Yes" : "❌ No"} />
-                <Row label="Frames parseable" value={
-                  briefResult.would_parse_error
-                    ? `❌ ${briefResult.would_parse_error}`
-                    : briefResult.would_parse_frames && briefResult.would_parse_frames.length > 0
-                    ? `✅ ${briefResult.would_parse_frames.length} frame(s)`
-                    : "❌ 0 frames"
-                } />
-                <Row label="code_frames stored" value={String(briefResult.code_frames_stored ?? 0)} />
-              </tbody>
-            </table>
-
-            {briefResult.error_sample_file_lines && briefResult.error_sample_file_lines.length > 0 && (
-              <div>
-                <p className="text-xs font-medium text-muted-foreground mb-1">File lines in sample:</p>
-                <pre className="bg-muted rounded p-2 text-xs overflow-x-auto whitespace-pre-wrap">
-                  {briefResult.error_sample_file_lines.join("\n")}
-                </pre>
+            {Array.isArray(briefResult.briefs) && briefResult.briefs.map((b: Record<string, unknown>, i: number) => (
+              <div key={String(b.brief_id)} className="border rounded p-3 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-mono text-muted-foreground">{String(b.brief_id ?? "").slice(0, 8)}… — {String(b.created_at ?? "")}</span>
+                  <span className={`text-xs px-2 py-0.5 rounded-full ${(b.code_frames_stored as number) > 0 ? "bg-green-500/20 text-green-700" : (b.error_sample_has_file_lines as boolean) ? "bg-yellow-500/20 text-yellow-700" : "bg-red-500/20 text-red-700"}`}>
+                    {String(b.diagnosis ?? "")}
+                  </span>
+                </div>
+                <table className="w-full text-xs">
+                  <tbody className="divide-y">
+                    <Row label="Sample lines" value={String(b.error_sample_line_count ?? 0)} />
+                    <Row label="Has Traceback" value={(b.error_sample_has_traceback as boolean) ? "✅" : "❌"} />
+                    <Row label='Has File "..."' value={(b.error_sample_has_file_lines as boolean) ? "✅" : "❌"} />
+                    <Row label="Parseable frames" value={String(b.would_parse_frame_count ?? 0)} />
+                    <Row label="code_frames stored" value={String(b.code_frames_stored ?? 0)} />
+                  </tbody>
+                </table>
+                {Array.isArray(b.error_sample_first_10_lines) && (b.error_sample_first_10_lines as string[]).length > 0 && (
+                  <pre className="bg-muted rounded p-2 text-xs overflow-x-auto whitespace-pre-wrap">
+                    {(b.error_sample_first_10_lines as string[]).join("\n")}
+                  </pre>
+                )}
               </div>
-            )}
-
-            {briefResult.error_sample_first_10_lines && briefResult.error_sample_first_10_lines.length > 0 && (
-              <div>
-                <p className="text-xs font-medium text-muted-foreground mb-1">First 10 lines of error_sample:</p>
-                <pre className="bg-muted rounded p-2 text-xs overflow-x-auto whitespace-pre-wrap">
-                  {briefResult.error_sample_first_10_lines.join("\n")}
-                </pre>
-              </div>
-            )}
+            ))}
           </div>
         )}
       </div>

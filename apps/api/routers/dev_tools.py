@@ -781,6 +781,176 @@ async def code_context_test(
     }
 
 
+# ── Railway raw log diagnostic ───────────────────────────────────────────────
+
+@router.get("/railway-raw")
+async def railway_raw_logs(
+    ctx: Annotated[TenantContext, Depends(require_admin)],
+    db=Depends(get_db),
+):
+    """
+    Fetches the last deployment's Railway logs and shows:
+    1. The first 30 raw lines as they appear after Railway API processing
+    2. All blocks the incident extractor would build (showing if File lines are captured)
+    3. How many lines each block contains
+
+    Use this to diagnose whether Railway is delivering multi-line tracebacks
+    as separate entries (with severity prefixes) or embedded in one entry.
+    """
+    import re as _re2
+    import httpx
+    from ..db.models import Integration
+    from ..utils.crypto import decrypt_credentials
+
+    # ── 1. Get Railway integration ────────────────────────────────────────────
+    result = await db.execute(
+        sa.select(Integration).where(
+            Integration.tenant_id == str(ctx.tenant_uuid),
+            Integration.source_type == "railway",
+            Integration.status == "active",
+        ).limit(1)
+    )
+    intg = result.scalar_one_or_none()
+    if not intg:
+        return {"error": "No active Railway integration found"}
+
+    creds = decrypt_credentials(intg.credentials)
+    api_token = creds.get("api_token", "")
+    if not api_token:
+        return {"error": "Railway integration has no api_token"}
+
+    gql_url = "https://backboard.railway.app/graphql/v2"
+    headers = {"Authorization": f"Bearer {api_token}", "Content-Type": "application/json"}
+
+    # ── 2. Get first project/service/deployment ──────────────────────────────
+    async with httpx.AsyncClient(headers=headers, timeout=20) as client:
+        proj_resp = await client.post(gql_url, json={"query": """
+            query { me { projects { edges { node { id name
+                services { edges { node { id name
+                    deployments(first: 1) { edges { node { id status } } }
+                } } }
+            } } } }
+        """})
+        if not proj_resp.is_success:
+            return {"error": f"Railway projects query failed: {proj_resp.status_code}"}
+
+        projects = (proj_resp.json().get("data", {}).get("me", {}).get("projects", {}).get("edges", []) or [])
+        if not projects:
+            return {"error": "No Railway projects found"}
+
+        # find first deployment
+        d_id = None
+        s_name = None
+        p_name = None
+        for pe in projects:
+            p = pe.get("node", {})
+            p_name = p.get("name", "")
+            for se in p.get("services", {}).get("edges", []):
+                s = se.get("node", {})
+                s_name = s.get("name", "")
+                deps = s.get("deployments", {}).get("edges", [])
+                if deps:
+                    d_id = deps[0]["node"]["id"]
+                    break
+            if d_id:
+                break
+
+        if not d_id:
+            return {"error": "No deployments found"}
+
+        # ── 3. Fetch log lines ────────────────────────────────────────────────
+        log_query = """
+            query($deploymentId: String!) {
+                deploymentLogs(deploymentId: $deploymentId) {
+                    message severity timestamp
+                }
+            }
+        """
+        lresp = await client.post(gql_url, json={"query": log_query, "variables": {"deploymentId": d_id}})
+        if not lresp.is_success:
+            return {"error": f"Log fetch failed: {lresp.status_code}"}
+
+        log_lines_raw = lresp.json().get("data", {}).get("deploymentLogs", []) or []
+
+    # ── 4. Build all_lines same as _fetch_railway ────────────────────────────
+    all_lines = []
+    for entry in log_lines_raw:
+        msg = (entry.get("message") or "").strip()
+        sev = (entry.get("severity") or "").upper()
+        if not msg:
+            continue
+        prefix = f"[{sev}] " if sev and sev != "UNSPECIFIED" else ""
+        all_lines.append(f"{prefix}{msg}")
+
+    tail_lines = all_lines[-500:]
+    content = "\n".join(tail_lines)
+    lines = content.splitlines()
+
+    # ── 5. Sample lines (last 30 for context) ────────────────────────────────
+    sample = lines[-30:] if len(lines) > 30 else lines
+
+    # Show per-entry format for first few raw entries
+    raw_entry_sample = []
+    for entry in log_lines_raw[-20:]:
+        msg = (entry.get("message") or "").strip()
+        sev = (entry.get("severity") or "").upper()
+        raw_entry_sample.append({
+            "severity": sev,
+            "message_len": len(msg),
+            "message_has_newline": "\n" in msg,
+            "message_preview": msg[:120].replace("\n", "\\n"),
+        })
+
+    # ── 6. Run block extractor on the full content ───────────────────────────
+    from ..services.direct_sync_service import _INCIDENT_RE, _NOISE_RE
+
+    blocks_found = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if _INCIDENT_RE.search(line) and not _NOISE_RE.search(line):
+            block = [line]
+            j = i + 1
+            while j < len(lines):
+                cont = _re2.sub(r"^\[[A-Z]+\]\s*", "", lines[j])
+                if not (
+                    cont.startswith("  ")
+                    or cont.startswith("\t")
+                    or cont.startswith("Traceback (")
+                    or cont.startswith("During handling of")
+                    or cont.startswith("The above exception")
+                ):
+                    break
+                block.append(lines[j])
+                j += 1
+            blocks_found.append({
+                "trigger_line": line[:120],
+                "block_size": len(block),
+                "has_file_lines": any('File "' in b for b in block),
+                "has_traceback": any("Traceback (" in b for b in block),
+                "block_lines": block[:10],  # first 10 lines of block
+            })
+            i = j
+        else:
+            i += 1
+
+    # Limit output
+    blocks_found = blocks_found[-20:]  # last 20 incident matches
+
+    return {
+        "deployment_id": d_id,
+        "project": p_name,
+        "service": s_name,
+        "total_log_entries_from_railway": len(log_lines_raw),
+        "all_lines_count": len(all_lines),
+        "lines_after_splitlines": len(lines),
+        "raw_entry_sample_last_20": raw_entry_sample,
+        "last_30_processed_lines": sample,
+        "incident_blocks_found": len(blocks_found),
+        "incident_blocks": blocks_found,
+    }
+
+
 # ── Latest RRT brief inspector ────────────────────────────────────────────────
 
 @router.get("/latest-brief")
@@ -806,74 +976,66 @@ async def latest_brief_debug(
         sa.select(RRTBrief)
         .where(RRTBrief.tenant_id == tenant_id_str)
         .order_by(RRTBrief.created_at.desc())
-        .limit(1)
+        .limit(5)
     )
-    brief = result.scalar_one_or_none()
+    briefs = result.scalars().all()
 
-    if not brief:
+    if not briefs:
         return {
             "found": False,
             "message": "No RRT briefs found for this tenant. Run POST /dev/scenario + POST /dev/force-sync to generate one.",
         }
 
-    # Parse the raw error_sample to check if File "..." lines are present
-    error_sample_lines = []
-    if brief.error_sample:
-        if isinstance(brief.error_sample, list):
-            error_sample_lines = brief.error_sample
-        elif isinstance(brief.error_sample, str):
-            error_sample_lines = brief.error_sample.splitlines()
+    def _analyze_brief(brief):
+        error_sample_lines = []
+        if brief.error_sample:
+            if isinstance(brief.error_sample, list):
+                error_sample_lines = brief.error_sample
+            elif isinstance(brief.error_sample, str):
+                error_sample_lines = brief.error_sample.splitlines()
 
-    file_lines = [l for l in error_sample_lines if l.strip().startswith('File "')]
-    traceback_lines = [l for l in error_sample_lines if "Traceback" in l]
+        # Also check for File "..." lines even when prefixed with [ERROR]
+        file_lines = [l for l in error_sample_lines if 'File "' in l]
+        traceback_lines = [l for l in error_sample_lines if "Traceback" in l]
 
-    # Try parsing frames from the stored sample to see what would happen
-    try:
-        from apps.worker.tasks.rrt_briefing import _parse_traceback_frames
-        would_parse = _parse_traceback_frames(error_sample_lines)
-    except Exception as exc:
-        would_parse = f"parse error: {exc}"
+        try:
+            from apps.worker.tasks.rrt_briefing import _parse_traceback_frames
+            would_parse = _parse_traceback_frames(error_sample_lines)
+        except Exception as exc:
+            would_parse = []
 
-    code_frames = brief.code_frames or []
+        code_frames = brief.code_frames or []
+
+        return {
+            "brief_id": str(brief.id),
+            "created_at": brief.created_at.isoformat() if brief.created_at else None,
+            "error_signature": brief.error_signature,
+            "error_sample_line_count": len(error_sample_lines),
+            "error_sample_has_traceback": len(traceback_lines) > 0,
+            "error_sample_has_file_lines": len(file_lines) > 0,
+            "error_sample_file_lines": file_lines[:5],
+            "error_sample_first_10_lines": error_sample_lines[:10],
+            "would_parse_frame_count": len(would_parse),
+            "code_frames_stored": len(code_frames),
+            "diagnosis": (
+                "✅ code_frames populated — brief has source code"
+                if code_frames
+                else (
+                    "❌ no File lines in error_sample — block extractor not capturing traceback"
+                    if not file_lines
+                    else "❌ File lines present but code_frames empty — worker fetch failed (check worker logs)"
+                )
+            ),
+        }
+
+    analyses = [_analyze_brief(b) for b in briefs]
+    any_with_file_lines = any(a["error_sample_has_file_lines"] for a in analyses)
+    any_with_frames = any(a["code_frames_stored"] > 0 for a in analyses)
 
     return {
         "found": True,
-        "brief_id": str(brief.id),
-        "created_at": brief.created_at.isoformat() if brief.created_at else None,
-        "error_signature": brief.error_signature,
-        "title": brief.title if hasattr(brief, "title") else "(no title field)",
-
-        # Error sample analysis
-        "error_sample_line_count": len(error_sample_lines),
-        "error_sample_has_traceback": len(traceback_lines) > 0,
-        "error_sample_has_file_lines": len(file_lines) > 0,
-        "error_sample_file_lines": file_lines[:5],
-        "error_sample_first_10_lines": error_sample_lines[:10],
-
-        # What frame parsing would produce from the stored sample
-        "would_parse_frames": would_parse if isinstance(would_parse, list) else [],
-        "would_parse_error": would_parse if isinstance(would_parse, str) else None,
-
-        # Stored code context
-        "code_frames_stored": len(code_frames),
-        "code_frames_summary": [
-            {
-                "file": f.get("file"),
-                "line": f.get("line"),
-                "source": "github" if f.get("github_url") else "local",
-                "snippet_lines": len(f.get("snippet", "").splitlines()),
-            }
-            for f in code_frames[:5]
-        ] if isinstance(code_frames, list) else [],
-
-        # Diagnosis
-        "diagnosis": (
-            "✅ code_frames populated — brief has source code"
-            if code_frames
-            else (
-                "❌ code_frames empty + no File lines in error_sample — block extractor not capturing traceback (check Railway worker deploy has latest code)"
-                if not file_lines
-                else "❌ code_frames empty but File lines ARE present — worker failed to fetch code (check worker logs for 'GitHub code context' lines)"
-            )
-        ),
+        "brief_count": len(analyses),
+        "any_with_file_lines": any_with_file_lines,
+        "any_with_code_frames": any_with_frames,
+        "briefs": analyses,
     }

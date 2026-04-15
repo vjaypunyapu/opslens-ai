@@ -560,24 +560,29 @@ export const demoApi = {
       message?: string;
     }>("/dev/github-check", { token }),
 
+  railwayRaw: (token: string) =>
+    request<{
+      error?: string;
+      deployment_id?: string;
+      project?: string;
+      service?: string;
+      total_log_entries_from_railway?: number;
+      all_lines_count?: number;
+      lines_after_splitlines?: number;
+      raw_entry_sample_last_20?: { severity: string; message_len: number; message_has_newline: boolean; message_preview: string }[];
+      last_30_processed_lines?: string[];
+      incident_blocks_found?: number;
+      incident_blocks?: { trigger_line: string; block_size: number; has_file_lines: boolean; has_traceback: boolean; block_lines: string[] }[];
+    }>("/dev/railway-raw", { token }),
+
   latestBrief: (token: string) =>
     request<{
       found: boolean;
       message?: string;
-      brief_id?: string;
-      created_at?: string;
-      error_signature?: string;
-      title?: string;
-      error_sample_line_count?: number;
-      error_sample_has_traceback?: boolean;
-      error_sample_has_file_lines?: boolean;
-      error_sample_file_lines?: string[];
-      error_sample_first_10_lines?: string[];
-      would_parse_frames?: { file: string; line: number; func: string }[];
-      would_parse_error?: string | null;
-      code_frames_stored?: number;
-      code_frames_summary?: { file: string; line: number; source: string; snippet_lines: number }[];
-      diagnosis?: string;
+      brief_count?: number;
+      any_with_file_lines?: boolean;
+      any_with_code_frames?: boolean;
+      briefs?: Record<string, unknown>[];
     }>("/dev/latest-brief", { token }),
 };
 
