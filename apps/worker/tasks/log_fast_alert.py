@@ -250,13 +250,21 @@ def _extract_error_groups(lines: list[str]) -> list[ErrorGroup]:
             # preventing the count from incrementing to reach threshold.
             block = [line]
             j = i + 1
-            while j < len(lines) and (
-                lines[j].startswith("  ")
-                or lines[j].startswith("\t")
-                or lines[j].startswith("Traceback (")
-                or lines[j].startswith("During handling of")
-                or lines[j].startswith("The above exception")
-            ):
+            while j < len(lines):
+                # Railway prefixes every physical log line with "[SEVERITY] "
+                # (e.g. "[ERROR] Traceback …", "[ERROR]   File \"…\"").
+                # Strip that optional prefix before applying startswith checks
+                # so the block extractor still captures the full traceback even
+                # when each continuation line carries a severity tag.
+                cont = re.sub(r"^\[[A-Z]+\]\s*", "", lines[j])
+                if not (
+                    cont.startswith("  ")
+                    or cont.startswith("\t")
+                    or cont.startswith("Traceback (")
+                    or cont.startswith("During handling of")
+                    or cont.startswith("The above exception")
+                ):
+                    break
                 block.append(lines[j])
                 j += 1
 
