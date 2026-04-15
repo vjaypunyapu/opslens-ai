@@ -806,38 +806,43 @@ async def force_brief(
     tenant_id = str(ctx.tenant_uuid)
     unique_sig = f"railway:force_brief_{int(time.time())}"
 
+    sample_lines = [
+        "[ERROR] [DEMO:force_brief] TypeError: 'NoneType' object is not iterable",
+        "Traceback (most recent call last):",
+        f'  File "{actual_path}", line 60, in evaluate_conditions',
+        "    for condition in rule.conditions:",
+        "TypeError: 'NoneType' object is not iterable",
+    ]
+
     error_group_dict = {
         "signature":    unique_sig,
         "first_line":   "[ERROR] TypeError: 'NoneType' object is not iterable — force-brief test",
         "count":        5,
-        "sample_lines": [
-            "[ERROR] [DEMO:force_brief] TypeError: 'NoneType' object is not iterable",
-            "Traceback (most recent call last):",
-            f'  File "{actual_path}", line 60, in evaluate_conditions',
-            "    for condition in rule.conditions:",
-            "TypeError: 'NoneType' object is not iterable",
-        ],
-        "source_label": "railway/api",
+        "sample_lines": sample_lines,
     }
 
     try:
-        from apps.worker.tasks.log_fast_alert import enrich_and_alert  # type: ignore[import]
-        enrich_and_alert.delay(
+        # Call generate_rrt_brief directly — skips enrich_and_alert entirely
+        # so there's no Slack/ErrorGroup layer that can interfere.
+        from apps.worker.tasks.rrt_briefing import generate_rrt_brief  # type: ignore[import]
+        generate_rrt_brief.delay(
             tenant_id=tenant_id,
             error_group_dict=error_group_dict,
-            webhook_url=None,
-            routing_targets=None,
+            related_items=[],
+            routing_targets=[{"team_name": "Test", "slack_webhook": None, "email_recipients": []}],
             error_count=5,
             window_minutes=5,
         )
         return {
             "fired": True,
             "signature": unique_sig,
-            "sample_lines": error_group_dict["sample_lines"],
+            "sample_lines": sample_lines,
             "repo_relative_path": repo_relative,
             "message": (
-                "Brief queued. Wait ~30s then click 'Inspect Briefs' — "
-                "if code_frames > 0 the worker fetch works; if still 0 the worker cannot reach GitHub."
+                "Brief queued directly to generate_rrt_brief. Wait ~30s then click 'Inspect Briefs' — "
+                "if code_frames > 0 the worker GitHub fetch works; "
+                "if Has File lines ✅ but code_frames = 0 the worker fetch is broken; "
+                "if Has File lines ❌ sample_lines are being dropped before the DB save."
             ),
         }
     except Exception as exc:
