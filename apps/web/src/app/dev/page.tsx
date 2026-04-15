@@ -25,6 +25,24 @@ export default function DevDiagnosticsPage() {
   const [railwayRawLoading, setRailwayRawLoading] = useState(false);
   const [railwayRawError, setRailwayRawError] = useState<string | null>(null);
 
+  const [forceBriefResult, setForceBriefResult] = useState<{ fired: boolean; message?: string; error?: string; sample_lines?: string[] } | null>(null);
+  const [forceBriefLoading, setForceBriefLoading] = useState(false);
+
+  async function triggerForceBrief() {
+    setForceBriefLoading(true);
+    setForceBriefResult(null);
+    try {
+      const token = await getToken();
+      if (!token) throw new Error("Not authenticated");
+      const result = await demoApi.forceBrief(token);
+      setForceBriefResult(result);
+    } catch (e: unknown) {
+      setForceBriefResult({ fired: false, error: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setForceBriefLoading(false);
+    }
+  }
+
   async function fetchRailwayRaw() {
     setRailwayRawLoading(true);
     setRailwayRawError(null);
@@ -192,6 +210,41 @@ export default function DevDiagnosticsPage() {
                 <strong>Fix:</strong> Your token is invalid or expired. Generate a new classic PAT with <code className="bg-muted px-1 rounded">repo</code> scope at GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic).
               </div>
             )}
+          </div>
+        )}
+      </div>
+
+      {/* Force Brief — bypass Railway, test worker directly */}
+      <div className="border-2 border-primary/30 rounded-lg p-6 space-y-4 bg-primary/5">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-lg font-semibold">Force Brief (Direct Worker Test)</h2>
+            <p className="text-sm text-muted-foreground">
+              Fires <code className="bg-muted px-1 rounded">generate_rrt_brief</code> directly with a perfect hardcoded traceback —
+              no Railway log fetching. Wait 30s then click Inspect Briefs. If code_frames appear, only the block extractor needs fixing.
+            </p>
+          </div>
+          <button
+            onClick={triggerForceBrief}
+            disabled={forceBriefLoading}
+            className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:bg-primary/90 disabled:opacity-50 whitespace-nowrap"
+          >
+            {forceBriefLoading ? "Firing…" : "Fire Force Brief"}
+          </button>
+        </div>
+
+        {forceBriefResult && (
+          <div className={`rounded p-3 text-sm ${forceBriefResult.fired ? "bg-green-500/10 border border-green-500/30 text-green-700 dark:text-green-400" : "bg-red-500/10 border border-red-500/30 text-red-700 dark:text-red-400"}`}>
+            {forceBriefResult.fired ? forceBriefResult.message : `❌ ${forceBriefResult.error}`}
+          </div>
+        )}
+
+        {forceBriefResult?.sample_lines && (
+          <div>
+            <p className="text-xs font-medium text-muted-foreground mb-1">sample_lines sent to worker:</p>
+            <pre className="bg-muted rounded p-2 text-xs overflow-x-auto whitespace-pre-wrap">
+              {forceBriefResult.sample_lines.join("\n")}
+            </pre>
           </div>
         )}
       </div>

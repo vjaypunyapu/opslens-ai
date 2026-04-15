@@ -560,6 +560,12 @@ export const demoApi = {
       message?: string;
     }>("/dev/github-check", { token }),
 
+  forceBrief: (token: string) =>
+    request<{ fired: boolean; signature?: string; sample_lines?: string[]; message?: string; error?: string }>(
+      "/dev/force-brief",
+      { method: "POST", token },
+    ),
+
   railwayRaw: (token: string) =>
     request<{
       error?: string;

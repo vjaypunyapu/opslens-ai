@@ -781,6 +781,68 @@ async def code_context_test(
     }
 
 
+# ── Force-brief: bypass Railway logs, test worker code-fetch directly ─────────
+
+@router.post("/force-brief")
+async def force_brief(
+    ctx: Annotated[TenantContext, Depends(require_admin)],
+    db=Depends(get_db),
+):
+    """
+    Bypasses Railway log fetching entirely.
+    Fires generate_rrt_brief directly with a hardcoded traceback that points
+    to a real file in the repo. If the resulting brief has code_frames, the
+    worker fetch works and the block extractor is the only problem to fix.
+    If it still has no code_frames, the worker itself cannot fetch from GitHub.
+    """
+    import os
+    import time
+
+    # Use the actual path of this file so GitHub can definitely find it
+    actual_path = os.path.abspath(__file__)  # /app/apps/api/routers/dev_tools.py
+    # Strip /app/ prefix to get repo-relative path
+    repo_relative = actual_path.lstrip("/").removeprefix("app/")  # apps/api/routers/dev_tools.py
+
+    tenant_id = str(ctx.tenant_uuid)
+    unique_sig = f"railway:force_brief_{int(time.time())}"
+
+    error_group_dict = {
+        "signature":    unique_sig,
+        "first_line":   "[ERROR] TypeError: 'NoneType' object is not iterable — force-brief test",
+        "count":        5,
+        "sample_lines": [
+            "[ERROR] [DEMO:force_brief] TypeError: 'NoneType' object is not iterable",
+            "Traceback (most recent call last):",
+            f'  File "{actual_path}", line 60, in evaluate_conditions',
+            "    for condition in rule.conditions:",
+            "TypeError: 'NoneType' object is not iterable",
+        ],
+        "source_label": "railway/api",
+    }
+
+    try:
+        from apps.worker.tasks.log_fast_alert import enrich_and_alert  # type: ignore[import]
+        enrich_and_alert.delay(
+            error_group_dict,
+            tenant_id,
+            None,   # slack_webhook
+            None,   # routing_targets
+            "railway",
+        )
+        return {
+            "fired": True,
+            "signature": unique_sig,
+            "sample_lines": error_group_dict["sample_lines"],
+            "repo_relative_path": repo_relative,
+            "message": (
+                "Brief queued. Wait ~30s then click 'Inspect Briefs' — "
+                "if code_frames > 0 the worker fetch works; if still 0 the worker cannot reach GitHub."
+            ),
+        }
+    except Exception as exc:
+        return {"fired": False, "error": str(exc)}
+
+
 # ── Railway raw log diagnostic ───────────────────────────────────────────────
 
 @router.get("/railway-raw")
