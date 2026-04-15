@@ -556,3 +556,124 @@ async def force_sync(
             status_code=500,
             detail=f"Sync failed: {exc}",
         )
+
+
+# ── GitHub token diagnostic ───────────────────────────────────────────────────
+
+@router.get("/github-check")
+async def github_token_check(
+    ctx: Annotated[TenantContext, Depends(require_admin)],
+    db=Depends(get_db),
+):
+    """
+    Diagnose the GitHub integration token for this tenant.
+    Returns: token validity, scopes, accessible repos, and whether the
+    demo file (apps/api/routers/dev_tools.py) can be read.
+    """
+    import httpx
+    from ..db.models import Integration
+    from ..utils.crypto import decrypt_credentials
+
+    result = await db.execute(
+        sa.select(Integration).where(
+            Integration.tenant_id == ctx.tenant_uuid,
+            Integration.source_type == "github",
+            Integration.status == "active",
+        ).limit(1)
+    )
+    intg = result.scalar_one_or_none()
+
+    if not intg:
+        return {
+            "status": "no_integration",
+            "message": "No active GitHub integration found. Connect GitHub via Integrations page.",
+            "token_valid": False,
+        }
+
+    creds = decrypt_credentials(intg.credentials)
+    token = creds.get("access_token", "")
+
+    if not token:
+        return {
+            "status": "no_token",
+            "message": "Integration exists but access_token is empty. Reconnect GitHub.",
+            "token_valid": False,
+        }
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+    async with httpx.AsyncClient(headers=headers, timeout=10) as client:
+
+        # 1. Validate token and check scopes
+        user_resp = await client.get("https://api.github.com/user")
+        if not user_resp.is_success:
+            return {
+                "status": "token_invalid",
+                "message": f"GitHub rejected the token (HTTP {user_resp.status_code}). Generate a new PAT with 'repo' scope.",
+                "token_valid": False,
+                "http_status": user_resp.status_code,
+            }
+
+        user_data = user_resp.json()
+        scopes_header = user_resp.headers.get("X-OAuth-Scopes", "")
+        scopes = [s.strip() for s in scopes_header.split(",") if s.strip()]
+        has_repo_scope = "repo" in scopes
+        has_public_repo = "public_repo" in scopes
+
+        # 2. List repos
+        repos_resp = await client.get(
+            "https://api.github.com/user/repos",
+            params={"per_page": 50, "sort": "updated", "affiliation": "owner,collaborator"},
+        )
+        repos = repos_resp.json() if repos_resp.is_success else []
+        repo_names = [r["full_name"] for r in repos if isinstance(r, dict)]
+
+        # 3. Try to read the demo file from each repo
+        test_path = "apps/api/routers/dev_tools.py"
+        file_found_in = None
+        file_http_status = None
+        for full_name in repo_names:
+            file_resp = await client.get(
+                f"https://api.github.com/repos/{full_name}/contents/{test_path}",
+            )
+            file_http_status = file_resp.status_code
+            if file_resp.is_success:
+                file_found_in = full_name
+                break
+
+    # Determine overall verdict
+    if not scopes:
+        scope_warning = "No OAuth scopes detected — token may be a fine-grained PAT. Fine-grained PATs work differently; use a classic PAT with 'repo' scope for best compatibility."
+    elif not has_repo_scope and not has_public_repo:
+        scope_warning = f"Token scopes [{scopes_header}] do not include 'repo' or 'public_repo'. Private repo files will return 404. Add 'repo' scope."
+    elif not has_repo_scope and has_public_repo:
+        scope_warning = "Token has 'public_repo' but NOT 'repo'. This works for public repos only. If opslens-ai is private, upgrade to 'repo' scope."
+    else:
+        scope_warning = None
+
+    return {
+        "status": "ok" if file_found_in else "file_not_found",
+        "token_valid": True,
+        "github_user": user_data.get("login"),
+        "scopes": scopes,
+        "scope_warning": scope_warning,
+        "has_repo_scope": has_repo_scope,
+        "accessible_repos": repo_names[:10],
+        "repo_count": len(repo_names),
+        "test_file": test_path,
+        "file_found_in_repo": file_found_in,
+        "file_http_status": file_http_status,
+        "verdict": (
+            f"✅ Token works — found '{test_path}' in '{file_found_in}'. Code context should appear in briefs."
+            if file_found_in
+            else (
+                f"⚠️ Token is valid and sees {len(repo_names)} repo(s), but '{test_path}' not found "
+                f"(last HTTP status: {file_http_status}). "
+                + (scope_warning or "Check the repo name and that the file path exists.")
+            )
+        ),
+    }
