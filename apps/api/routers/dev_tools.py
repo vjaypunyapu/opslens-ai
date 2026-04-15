@@ -800,9 +800,11 @@ async def latest_brief_debug(
     """
     from ..models.rrt_brief import RRTBrief
 
+    tenant_id_str = str(ctx.tenant_uuid)
+
     result = await db.execute(
         sa.select(RRTBrief)
-        .where(RRTBrief.tenant_id == ctx.tenant_uuid)
+        .where(RRTBrief.tenant_id == tenant_id_str)
         .order_by(RRTBrief.created_at.desc())
         .limit(1)
     )
