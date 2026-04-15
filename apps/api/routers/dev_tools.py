@@ -823,11 +823,12 @@ async def force_brief(
     try:
         from apps.worker.tasks.log_fast_alert import enrich_and_alert  # type: ignore[import]
         enrich_and_alert.delay(
-            error_group_dict,
-            tenant_id,
-            None,   # slack_webhook
-            None,   # routing_targets
-            "railway",
+            tenant_id=tenant_id,
+            error_group_dict=error_group_dict,
+            webhook_url=None,
+            routing_targets=None,
+            error_count=5,
+            window_minutes=5,
         )
         return {
             "fired": True,
