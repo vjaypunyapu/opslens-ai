@@ -75,10 +75,10 @@ export default function DevDiagnosticsPage() {
             <table className="w-full text-sm">
               <tbody className="divide-y">
                 <Row label="Token valid" value={githubResult.token_valid ? "✅ Yes" : "❌ No"} />
-                {githubResult.github_user && (
+                {githubResult.github_user != null && (
                   <Row label="GitHub user" value={String(githubResult.github_user)} />
                 )}
-                {githubResult.scopes !== undefined && (
+                {Array.isArray(githubResult.scopes) && (
                   <Row
                     label="Scopes"
                     value={(githubResult.scopes as string[]).length > 0
@@ -86,39 +86,39 @@ export default function DevDiagnosticsPage() {
                       : "(none — may be a fine-grained PAT)"}
                   />
                 )}
-                {githubResult.has_repo_scope !== undefined && (
+                {githubResult.has_repo_scope != null && (
                   <Row
                     label="Has 'repo' scope"
                     value={githubResult.has_repo_scope ? "✅ Yes" : "❌ No — add 'repo' scope to your PAT"}
                   />
                 )}
-                {githubResult.repo_count !== undefined && (
+                {githubResult.repo_count != null && (
                   <Row label="Accessible repos" value={String(githubResult.repo_count)} />
                 )}
                 {scopes && scopes.length > 0 && (
                   <Row label="Repos (first 10)" value={scopes.join(", ")} />
                 )}
-                {githubResult.test_file && (
+                {githubResult.test_file != null && (
                   <Row label="Test file" value={String(githubResult.test_file)} />
                 )}
                 {githubResult.file_found_in_repo !== undefined && (
                   <Row
                     label="File found in repo"
-                    value={githubResult.file_found_in_repo
-                      ? `✅ ${githubResult.file_found_in_repo}`
-                      : `❌ Not found (HTTP ${githubResult.file_http_status})`}
+                    value={githubResult.file_found_in_repo != null
+                      ? `✅ ${String(githubResult.file_found_in_repo)}`
+                      : `❌ Not found (HTTP ${String(githubResult.file_http_status)})`}
                   />
                 )}
               </tbody>
             </table>
 
-            {githubResult.scope_warning && (
+            {!!githubResult.scope_warning && (
               <div className="bg-yellow-500/10 border border-yellow-500/30 rounded p-3 text-sm text-yellow-700 dark:text-yellow-400">
                 ⚠️ {String(githubResult.scope_warning)}
               </div>
             )}
 
-            {!isOk && githubResult.token_valid && (
+            {!isOk && !!githubResult.token_valid && (
               <div className="bg-blue-500/10 border border-blue-500/30 rounded p-3 text-sm text-blue-700 dark:text-blue-400">
                 <strong>Fix:</strong> Go to GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic) → generate a new token with the <code className="bg-muted px-1 rounded">repo</code> checkbox checked. Then update it in Integrations → GitHub.
               </div>
