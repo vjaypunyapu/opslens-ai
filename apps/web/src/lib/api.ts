@@ -539,6 +539,23 @@ export const demoApi = {
       "/dev/force-sync",
       { method: "POST", token, body: JSON.stringify({ source_type }) },
     ),
+
+  githubCheck: (token: string) =>
+    request<{
+      status: string;
+      token_valid: boolean;
+      github_user?: string;
+      scopes?: string[];
+      scope_warning?: string | null;
+      has_repo_scope?: boolean;
+      accessible_repos?: string[];
+      repo_count?: number;
+      test_file?: string;
+      file_found_in_repo?: string | null;
+      file_http_status?: number | null;
+      verdict: string;
+      message?: string;
+    }>("/dev/github-check", { token }),
 };
 
 // ── Known Issues (alert suppression) ─────────────────────────────────────────
