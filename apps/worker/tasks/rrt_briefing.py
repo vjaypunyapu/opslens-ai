@@ -1451,7 +1451,7 @@ def generate_rrt_brief(
             owner_team=owner_team,
             owner_contacts=owner_contacts,
             error_signature=error_signature,
-            error_sample="\n".join(error_sample[:5]),
+            error_sample="\n".join(error_sample[:15]),  # enough for full multi-frame traceback
             detected_at=detected_at,
             channels_sent=channels_sent,
             slack_ts=slack_ts,
