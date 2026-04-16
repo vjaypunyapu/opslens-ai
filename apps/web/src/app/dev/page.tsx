@@ -28,6 +28,24 @@ export default function DevDiagnosticsPage() {
   const [forceBriefResult, setForceBriefResult] = useState<{ fired: boolean; message?: string; error?: string; sample_lines?: string[] } | null>(null);
   const [forceBriefLoading, setForceBriefLoading] = useState(false);
 
+  const [clearResult, setClearResult] = useState<{ deleted_briefs?: number; deleted_incidents?: number; deleted?: number; message: string } | null>(null);
+  const [clearLoading, setClearLoading] = useState(false);
+
+  async function clearBriefs() {
+    setClearLoading(true);
+    setClearResult(null);
+    try {
+      const token = await getToken();
+      if (!token) throw new Error("Not authenticated");
+      const result = await demoApi.clearBriefs(token);
+      setClearResult(result);
+    } catch (e: unknown) {
+      setClearResult({ deleted: 0, message: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setClearLoading(false);
+    }
+  }
+
   async function triggerForceBrief() {
     setForceBriefLoading(true);
     setForceBriefResult(null);
@@ -118,6 +136,30 @@ export default function DevDiagnosticsPage() {
         <p className="text-sm text-muted-foreground mt-1">
           Tools to verify your integrations are configured correctly.
         </p>
+      </div>
+
+      {/* Clear Test Data */}
+      <div className="border border-destructive/30 rounded-lg p-6 space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-lg font-semibold">Clear Test Briefs</h2>
+            <p className="text-sm text-muted-foreground">
+              Delete all RRT briefs and incidents for your account so the demo starts with a clean slate.
+            </p>
+          </div>
+          <button
+            onClick={clearBriefs}
+            disabled={clearLoading}
+            className="px-4 py-2 bg-destructive text-destructive-foreground rounded-md text-sm font-medium hover:bg-destructive/90 disabled:opacity-50 whitespace-nowrap"
+          >
+            {clearLoading ? "Clearing…" : "Clear All Briefs"}
+          </button>
+        </div>
+        {clearResult && (
+          <div className={`rounded p-3 text-sm ${clearResult.message.includes("Cleared") ? "bg-green-500/10 border border-green-500/30 text-green-700 dark:text-green-400" : "bg-red-500/10 border border-red-500/30 text-red-700 dark:text-red-400"}`}>
+            {clearResult.message}
+          </div>
+        )}
       </div>
 
       {/* GitHub Token Check */}

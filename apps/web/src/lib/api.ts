@@ -560,6 +560,9 @@ export const demoApi = {
       message?: string;
     }>("/dev/github-check", { token }),
 
+  clearBriefs: (token: string) =>
+    request<{ deleted_briefs: number; deleted_incidents: number; message: string }>("/dev/clear-briefs", { method: "DELETE", token }),
+
   forceBrief: (token: string) =>
     request<{ fired: boolean; signature?: string; sample_lines?: string[]; message?: string; error?: string }>(
       "/dev/force-brief",

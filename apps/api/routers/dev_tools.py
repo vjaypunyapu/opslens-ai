@@ -1019,6 +1019,40 @@ async def railway_raw_logs(
     }
 
 
+# ── Clear test data ──────────────────────────────────────────────────────────
+
+@router.delete("/clear-briefs")
+async def clear_test_briefs(
+    ctx: Annotated[TenantContext, Depends(require_admin)],
+    db=Depends(get_db),
+):
+    """Delete all RRT briefs and incidents for this tenant so the demo starts clean."""
+    from ..models.rrt_brief import RRTBrief
+    from ..db.models import Incident
+
+    tenant_uuid = ctx.tenant_uuid
+
+    brief_count = (await db.execute(
+        sa.select(sa.func.count()).select_from(RRTBrief)
+        .where(RRTBrief.tenant_id == str(tenant_uuid))
+    )).scalar()
+
+    incident_count = (await db.execute(
+        sa.select(sa.func.count()).select_from(Incident)
+        .where(Incident.tenant_id == tenant_uuid)
+    )).scalar()
+
+    await db.execute(sa.delete(RRTBrief).where(RRTBrief.tenant_id == str(tenant_uuid)))
+    await db.execute(sa.delete(Incident).where(Incident.tenant_id == tenant_uuid))
+    await db.commit()
+
+    return {
+        "deleted_briefs": brief_count,
+        "deleted_incidents": incident_count,
+        "message": f"Cleared {brief_count} brief(s) and {incident_count} incident(s). Ready for demo.",
+    }
+
+
 # ── Latest RRT brief inspector ────────────────────────────────────────────────
 
 @router.get("/latest-brief")
