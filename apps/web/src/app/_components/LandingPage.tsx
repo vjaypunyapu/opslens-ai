@@ -1,7 +1,5 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-
 const CSS = `
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -64,64 +62,6 @@ nav {
   cursor: pointer; text-decoration: none; transition: background 0.2s;
 }
 .nav-cta:hover { background: var(--teal-dark); }
-
-/* LOGIN MODAL */
-.modal-overlay {
-  display: none; position: fixed; inset: 0; z-index: 999;
-  background: rgba(10, 15, 28, 0.85); backdrop-filter: blur(6px);
-  align-items: center; justify-content: center;
-}
-.modal-overlay.open { display: flex; }
-.modal {
-  background: var(--navy-mid); border: 1px solid var(--border);
-  border-radius: 16px; padding: 2.5rem; width: 100%; max-width: 420px;
-  box-shadow: 0 40px 80px rgba(0,0,0,0.6), 0 0 0 1px rgba(20,184,166,0.1);
-  position: relative; animation: modalIn 0.22s ease; margin: 1rem;
-}
-@keyframes modalIn {
-  from { opacity: 0; transform: translateY(-16px) scale(0.97); }
-  to   { opacity: 1; transform: translateY(0) scale(1); }
-}
-.modal-close {
-  position: absolute; top: 1rem; right: 1rem;
-  background: none; border: none; color: var(--text-muted);
-  font-size: 1.4rem; cursor: pointer; line-height: 1; transition: color 0.15s;
-}
-.modal-close:hover { color: var(--text); }
-.modal-logo { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1.5rem; }
-.modal-logo-icon {
-  width: 34px; height: 34px; background: var(--teal); border-radius: 8px;
-  display: flex; align-items: center; justify-content: center;
-  font-weight: 800; font-size: 17px; color: var(--navy);
-}
-.modal-logo-text { font-size: 1.1rem; font-weight: 700; }
-.modal h3 { font-size: 1.4rem; font-weight: 800; margin-bottom: 0.35rem; }
-.modal-sub { font-size: 0.875rem; color: var(--text-muted); margin-bottom: 2rem; }
-.form-group { margin-bottom: 1.1rem; }
-.form-label { display: block; font-size: 0.8rem; font-weight: 600; color: var(--text-muted); margin-bottom: 0.4rem; text-transform: uppercase; letter-spacing: 0.04em; }
-.form-input {
-  width: 100%; background: var(--navy); border: 1px solid var(--navy-light);
-  border-radius: 8px; padding: 0.7rem 0.9rem; color: var(--text);
-  font-size: 0.925rem; outline: none; transition: border-color 0.2s; font-family: inherit;
-}
-.form-input:focus { border-color: var(--teal); }
-.form-input::placeholder { color: var(--slate); }
-.modal-forgot { font-size: 0.8rem; color: var(--teal); text-decoration: none; float: right; margin-top: -0.6rem; margin-bottom: 1.5rem; display: block; }
-.modal-forgot:hover { text-decoration: underline; }
-.btn-login {
-  width: 100%; background: var(--teal); color: var(--navy);
-  border: none; border-radius: 8px; padding: 0.85rem;
-  font-weight: 700; font-size: 1rem; cursor: pointer;
-  transition: all 0.2s; box-shadow: 0 0 20px rgba(20,184,166,0.25);
-  margin-top: 0.5rem; font-family: inherit;
-}
-.btn-login:hover { background: var(--teal-dark); box-shadow: 0 0 30px rgba(20,184,166,0.4); }
-.modal-divider { display: flex; align-items: center; gap: 0.75rem; margin: 1.25rem 0; }
-.modal-divider::before, .modal-divider::after { content: ''; flex: 1; height: 1px; background: var(--navy-light); }
-.modal-divider span { font-size: 0.75rem; color: var(--text-muted); }
-.modal-signup { text-align: center; font-size: 0.85rem; color: var(--text-muted); }
-.modal-signup a { color: var(--teal); text-decoration: none; font-weight: 600; }
-.modal-signup a:hover { text-decoration: underline; }
 
 /* HERO */
 .hero {
@@ -360,35 +300,6 @@ footer a { color: var(--teal); text-decoration: none; }
 `;
 
 export default function LandingPage() {
-  const [modalOpen, setModalOpen] = useState(false);
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setModalOpen(false);
-    };
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, []);
-
-  useEffect(() => {
-    document.body.style.overflow = modalOpen ? 'hidden' : '';
-    return () => { document.body.style.overflow = ''; };
-  }, [modalOpen]);
-
-  const openModal = (e: React.MouseEvent) => {
-    e.preventDefault();
-    setModalOpen(true);
-    setTimeout(() => (document.getElementById('login-email') as HTMLInputElement)?.focus(), 100);
-  };
-
-  const handleLogin = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    const email = (e.currentTarget.elements.namedItem('login-email') as HTMLInputElement).value;
-    const url = new URL('https://opslensai.com/sign-in');
-    url.searchParams.set('email', email);
-    window.location.href = url.toString();
-  };
-
   return (
     <>
       <style dangerouslySetInnerHTML={{ __html: CSS }} />
@@ -405,40 +316,11 @@ export default function LandingPage() {
           <li><a href="#integrations">Integrations</a></li>
         </ul>
         <div className="nav-right">
-          <a href="#" className="nav-login" onClick={openModal}>Log In</a>
+          <a href="/sign-in" className="nav-login">Log In</a>
           <a href="#cta" className="nav-cta">Book a Demo</a>
         </div>
       </nav>
 
-      {/* LOGIN MODAL */}
-      <div
-        className={`modal-overlay${modalOpen ? ' open' : ''}`}
-        onClick={(e) => { if (e.target === e.currentTarget) setModalOpen(false); }}
-      >
-        <div className="modal">
-          <button className="modal-close" onClick={() => setModalOpen(false)} aria-label="Close">×</button>
-          <div className="modal-logo">
-            <div className="modal-logo-icon">O</div>
-            <span className="modal-logo-text">OpsLens AI</span>
-          </div>
-          <h3>Welcome back</h3>
-          <p className="modal-sub">Sign in to your OpsLens AI workspace.</p>
-          <form onSubmit={handleLogin}>
-            <div className="form-group">
-              <label className="form-label" htmlFor="login-email">Work Email</label>
-              <input className="form-input" id="login-email" type="email" placeholder="you@company.com" required autoComplete="email" />
-            </div>
-            <div className="form-group">
-              <label className="form-label" htmlFor="login-password">Password</label>
-              <input className="form-input" id="login-password" type="password" placeholder="••••••••" required autoComplete="current-password" />
-            </div>
-            <a href="https://opslensai.com/sign-in#forgot" className="modal-forgot">Forgot password?</a>
-            <button type="submit" className="btn-login">Sign In →</button>
-          </form>
-          <div className="modal-divider"><span>or</span></div>
-          <p className="modal-signup">Don&apos;t have an account? <a href="https://opslensai.com/sign-up">Start free trial</a></p>
-        </div>
-      </div>
 
       {/* HERO */}
       <section className="hero">
