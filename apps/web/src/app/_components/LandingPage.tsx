@@ -403,7 +403,6 @@ export default function LandingPage() {
           <li><a href="#how-it-works">How It Works</a></li>
           <li><a href="#features">Features</a></li>
           <li><a href="#integrations">Integrations</a></li>
-          <li><a href="#pricing">Pricing</a></li>
         </ul>
         <div className="nav-right">
           <a href="#" className="nav-login" onClick={openModal}>Log In</a>
@@ -563,50 +562,7 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* PRICING */}
-      <section id="pricing">
-        <div className="container">
-          <div className="section-label">Pricing</div>
-          <h2 className="section-title">Simple, usage-based pricing</h2>
-          <p className="section-sub">Start free, scale as you grow. No surprise bills.</p>
-          <div className="pricing-grid">
-            <div className="pricing-card">
-              <div className="pricing-tier">Starter</div>
-              <div className="pricing-price"><sup>$</sup>49<sub>/mo</sub></div>
-              <div className="pricing-desc">For small teams getting started with incident intelligence.</div>
-              <ul className="pricing-features">
-                {['Up to 5 services monitored', '1M log events/mo', 'Slack alerting', 'AI diagnosis (50 incidents/mo)', 'GitHub + Jira integration', 'Email support'].map(f => (
-                  <li key={f}><span className="check">✓</span> {f}</li>
-                ))}
-              </ul>
-              <a href="https://calendly.com/opslens-ai/demo" className="pricing-btn pricing-btn-outline" target="_blank" rel="noopener noreferrer">Book a Demo</a>
-            </div>
-            <div className="pricing-card featured">
-              <div className="pricing-popular">Most Popular</div>
-              <div className="pricing-tier">Growth</div>
-              <div className="pricing-price"><sup>$</sup>149<sub>/mo</sub></div>
-              <div className="pricing-desc">For growing teams that need full incident intelligence and routing.</div>
-              <ul className="pricing-features">
-                {['Unlimited services', '10M log events/mo', 'Smart routing rules', 'Unlimited AI diagnosis', 'Auto RRT briefs', 'RAG enrichment (Jira, GitHub, Slack)', 'Priority support'].map(f => (
-                  <li key={f}><span className="check">✓</span> {f}</li>
-                ))}
-              </ul>
-              <a href="#cta" className="pricing-btn pricing-btn-filled">Book a Demo</a>
-            </div>
-            <div className="pricing-card">
-              <div className="pricing-tier">Enterprise</div>
-              <div className="pricing-price">Custom</div>
-              <div className="pricing-desc">For teams that need compliance, SSO, and custom data residency.</div>
-              <ul className="pricing-features">
-                {['Everything in Growth', 'SOC 2 audit trail', 'SAML SSO / LDAP', 'RBAC + team permissions', 'Data residency options', 'Dedicated SLA + CSM', 'Custom integrations'].map(f => (
-                  <li key={f}><span className="check">✓</span> {f}</li>
-                ))}
-              </ul>
-              <a href="https://calendly.com/opslens-ai/demo" className="pricing-btn pricing-btn-outline" target="_blank" rel="noopener noreferrer">Talk to Sales</a>
-            </div>
-          </div>
-        </div>
-      </section>
+      {/* PRICING — hidden until finalized */}
 
       {/* SOCIAL PROOF */}
       <section style={{ background: 'var(--navy-mid)' }}>

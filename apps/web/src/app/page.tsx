@@ -9,7 +9,11 @@ export const metadata = {
 };
 
 export default async function Home() {
-  const { userId } = await auth();
-  if (userId) redirect("/dashboard");
+  try {
+    const { userId } = await auth();
+    if (userId) redirect("/dashboard");
+  } catch {
+    // auth() unavailable on this route — treat as unauthenticated
+  }
   return <LandingPage />;
 }
