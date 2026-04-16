@@ -1,6 +1,15 @@
+import { auth } from "@clerk/nextjs/server";
 import { redirect } from "next/navigation";
+import LandingPage from "./_components/LandingPage";
 
-// Root → redirect to /dashboard
-export default function Home() {
-  redirect("/dashboard");
+export const metadata = {
+  title: "OpsLens AI — AI-Powered Incident Response",
+  description:
+    "Stop guessing. Start resolving. OpsLens AI turns noisy logs into instant, routed, AI-diagnosed incident briefs — so your engineers fix problems, not find them.",
+};
+
+export default async function Home() {
+  const { userId } = await auth();
+  if (userId) redirect("/dashboard");
+  return <LandingPage />;
 }
