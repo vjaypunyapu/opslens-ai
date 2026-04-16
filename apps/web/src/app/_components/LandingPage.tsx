@@ -384,7 +384,7 @@ export default function LandingPage() {
   const handleLogin = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const email = (e.currentTarget.elements.namedItem('login-email') as HTMLInputElement).value;
-    const url = new URL('https://app.opslensai.com/sign-in');
+    const url = new URL('https://opslensai.com/sign-in');
     url.searchParams.set('email', email);
     window.location.href = url.toString();
   };
@@ -432,11 +432,11 @@ export default function LandingPage() {
               <label className="form-label" htmlFor="login-password">Password</label>
               <input className="form-input" id="login-password" type="password" placeholder="••••••••" required autoComplete="current-password" />
             </div>
-            <a href="https://app.opslensai.com/sign-in#forgot" className="modal-forgot">Forgot password?</a>
+            <a href="https://opslensai.com/sign-in#forgot" className="modal-forgot">Forgot password?</a>
             <button type="submit" className="btn-login">Sign In →</button>
           </form>
           <div className="modal-divider"><span>or</span></div>
-          <p className="modal-signup">Don&apos;t have an account? <a href="https://app.opslensai.com/sign-up">Start free trial</a></p>
+          <p className="modal-signup">Don&apos;t have an account? <a href="https://opslensai.com/sign-up">Start free trial</a></p>
         </div>
       </div>
 
