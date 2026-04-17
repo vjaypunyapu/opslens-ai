@@ -132,6 +132,15 @@ export default function SignInPage() {
               formResendCodeLink: {
                 color: "#14B8A6",
               },
+              formFieldAction: {
+                color: "#14B8A6",
+                fontSize: "0.8rem",
+                fontWeight: "600",
+              },
+              formFieldAction__hover: {
+                color: "#0D9488",
+                textDecoration: "underline",
+              },
             },
           }}
         />
