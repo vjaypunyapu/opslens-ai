@@ -7,6 +7,7 @@ import {
   FileText, Activity, X, ExternalLink, Play, Database
 } from "lucide-react";
 import { incidentsApi, logOpsApi, demoApi, Incident, TimelineEvent } from "@/lib/api";
+import { toast } from "sonner";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -1051,15 +1052,54 @@ export default function IncidentsPage() {
     if (!selected) return;
     const token = await getToken();
     if (!token) return;
-    await incidentsApi.investigate(selected.id, token);
-    // Refresh after a moment (investigation runs async)
-    setTimeout(async () => {
-      const token2 = await getToken();
-      if (!token2) return;
-      const updated = await incidentsApi.get(selected.id, token2);
-      setSelected(updated);
-      setIncidents(prev => prev.map(i => i.id === updated.id ? updated : i));
-    }, 4000);
+
+    const incidentId = selected.id;
+    const toastId = toast.loading("Investigation running… analysing logs, code & tickets", { duration: Infinity });
+
+    try {
+      await incidentsApi.investigate(incidentId, token);
+    } catch {
+      toast.dismiss(toastId);
+      toast.error("Failed to start investigation. Please try again.");
+      return;
+    }
+
+    // Poll every 3 seconds until status is no longer "analysing"
+    const MAX_POLLS = 20; // 60 seconds max
+    let polls = 0;
+
+    const poll = async () => {
+      polls++;
+      try {
+        const t = await getToken();
+        if (!t) return;
+        const updated = await incidentsApi.get(incidentId, t);
+        setSelected(prev => prev?.id === incidentId ? updated : prev);
+        setIncidents(prev => prev.map(i => i.id === updated.id ? updated : i));
+
+        if (updated.status !== "analysing") {
+          toast.dismiss(toastId);
+          if (updated.root_cause) {
+            toast.success("Investigation complete — root cause analysis ready", { duration: 5000 });
+          } else {
+            toast.info("Investigation finished — check the Signals tab for details", { duration: 5000 });
+          }
+          return;
+        }
+      } catch {
+        // silently retry
+      }
+
+      if (polls >= MAX_POLLS) {
+        toast.dismiss(toastId);
+        toast.warning("Investigation is taking longer than expected — refresh to check results", { duration: 8000 });
+        return;
+      }
+
+      setTimeout(poll, 3000);
+    };
+
+    setTimeout(poll, 3000);
   }
 
   async function handleStatusChange(status: string) {
