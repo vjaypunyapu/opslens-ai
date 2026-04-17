@@ -242,13 +242,78 @@ async def investigate_incident(
             incident.root_cause = rca.get("root_cause") or rca.get("narrative", "")
             incident.contributing_factors = rca.get("contributing_factors", [])[:5]
             incident.recommendations      = rca.get("recommendations", [])[:5]
-            incident.status = "analysing"  # keep as analysing until human confirms
+            incident.status = "investigating"  # ready for human review
 
             await db.commit()
             logger.info(
                 "Investigation complete for incident %s: %d signals, root_cause set",
                 incident_id, len(signals),
             )
+
+            # ── 8. Slack notification ─────────────────────────────────────────
+            try:
+                import sqlalchemy as _sa
+                from ..models.log_ops import AlertRoutingRule
+                webhook_result = await db.execute(
+                    _sa.select(AlertRoutingRule.slack_webhook)
+                    .where(
+                        AlertRoutingRule.tenant_id == tenant_id,
+                        AlertRoutingRule.slack_webhook.isnot(None),
+                    )
+                    .order_by(AlertRoutingRule.priority)
+                    .limit(1)
+                )
+                webhook_url = webhook_result.scalar_one_or_none()
+
+                if webhook_url:
+                    import httpx as _httpx
+                    root_cause = incident.root_cause or "No root cause identified."
+                    recommendations = incident.recommendations or []
+                    rec_text = "\n".join(
+                        f"• {r}" for r in recommendations[:3]
+                    ) or "No recommendations generated."
+
+                    payload = {
+                        "text": f"🔍 Investigation Complete — {incident.title}",
+                        "blocks": [
+                            {
+                                "type": "header",
+                                "text": {"type": "plain_text", "text": "🔍 Investigation Complete"},
+                            },
+                            {
+                                "type": "section",
+                                "text": {
+                                    "type": "mrkdwn",
+                                    "text": f"*{incident.title}*\n_{incident.service or 'Unknown service'}_ · {len(signals)} correlated signals",
+                                },
+                            },
+                            {"type": "divider"},
+                            {
+                                "type": "section",
+                                "text": {
+                                    "type": "mrkdwn",
+                                    "text": f"*Root Cause*\n{root_cause[:500]}",
+                                },
+                            },
+                            {
+                                "type": "section",
+                                "text": {
+                                    "type": "mrkdwn",
+                                    "text": f"*Recommendations*\n{rec_text}",
+                                },
+                            },
+                            {
+                                "type": "context",
+                                "elements": [
+                                    {"type": "mrkdwn", "text": f"Incident ID: `{incident_id}` · OpsLens AI"}
+                                ],
+                            },
+                        ],
+                    }
+                    _httpx.post(webhook_url, json=payload, timeout=10)
+                    logger.info("Slack notification sent for incident %s", incident_id)
+            except Exception as slack_exc:
+                logger.warning("Slack notification failed for %s: %s", incident_id, slack_exc)
 
         except Exception as exc:
             logger.exception("Investigation failed for %s: %s", incident_id, exc)
