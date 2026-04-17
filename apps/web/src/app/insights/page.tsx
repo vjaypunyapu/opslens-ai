@@ -62,16 +62,21 @@ export default function InsightsPage() {
 
   const handleGenerate = async () => {
     setGenerating(true);
-    const token = await getToken();
-    await insightsApi.generate(token!);
-    toast.success("Insight generation triggered — results will appear shortly");
-    setTimeout(load, 3000);
-    setGenerating(false);
+    try {
+      const token = await getToken();
+      await insightsApi.generate(token!);
+      toast.success("Insight generation triggered — results will appear shortly");
+      setTimeout(load, 3000);
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Failed to trigger insight generation");
+    } finally {
+      setGenerating(false);
+    }
   };
 
   const kpis = [
     { label: "Active",   value: summary?.active ?? 0,                color: "#f59e0b", icon: Lightbulb },
-    { label: "Critical", value: summary?.by_magnitude?.critical ?? 0, color: "#ef4444", icon: AlertTriangle },
+    { label: "High",     value: summary?.by_magnitude?.high ?? 0,     color: "#ef4444", icon: AlertTriangle },
     { label: "Resolved", value: summary?.resolved ?? 0,              color: "#22c55e", icon: CheckCircle },
     { label: "Snoozed",  value: summary?.snoozed ?? 0,               color: "#64748b", icon: BellOff },
   ];
