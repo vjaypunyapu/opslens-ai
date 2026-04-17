@@ -185,6 +185,17 @@ async def _provision_user(db, tenant_uuid_str: str, external_id: str, email: str
     )
     user_count = count_result.scalar_one()
 
+    # Safety net: if no admin exists in the tenant yet (e.g. the first account
+    # was created by a service account or seed script), the next real user login
+    # claims admin automatically so the workspace is never left without an owner.
+    admin_result = await db.execute(
+        sa.select(sa.func.count()).select_from(User).where(
+            User.tenant_id == tenant_uuid_obj,
+            User.role == "admin",
+        )
+    )
+    has_admin = admin_result.scalar_one() > 0
+
     # ── Invite-only enforcement (non-first users) ──────────────────────────────
     # The very first user in a tenant is the workspace owner provisioned by
     # OpsLens when onboarding a new customer — they bypass the invite check.
@@ -216,7 +227,7 @@ async def _provision_user(db, tenant_uuid_str: str, external_id: str, email: str
                 ),
             )
 
-    role = "admin" if user_count == 0 else "member"
+    role = "admin" if (user_count == 0 or not has_admin) else "member"
 
     user = User(
         id=_uuid.uuid4(),

@@ -276,7 +276,7 @@ async def _delete_canonical_documents(db, tenant_id: str, days: int) -> int:
                 WHERE tenant_id = :tid
                   AND source_type IN (
                       'elasticsearch','datadog','cloudwatch',
-                      'gcp','splunk','azuremonitor'
+                      'gcp','splunk','azuremonitor','railway'
                   )
                   AND source_created_at <= :cutoff
             """),
