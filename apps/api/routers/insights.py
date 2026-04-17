@@ -6,7 +6,7 @@ CRUD and management for automatically-generated operational insights.
 Endpoints:
     GET    /api/v1/insights           — List insights (filterable)
     GET    /api/v1/insights/{id}      — Get single insight
-    POST   /api/v1/insights/generate  — Trigger on-demand generation (admin)
+    POST   /api/v1/insights/generate  — Trigger on-demand generation (member+)
     PATCH  /api/v1/insights/{id}/status — Resolve or snooze
     GET    /api/v1/insights/summary   — Aggregated counts by type
 """
@@ -176,12 +176,12 @@ async def get_insight(
 # ── On-demand generation ───────────────────────────────────────────────────────
 @router.post("/generate", status_code=status.HTTP_202_ACCEPTED)
 async def trigger_generation(
-    ctx: Annotated[TenantContext, Depends(require_admin)],
+    ctx: Annotated[TenantContext, Depends(require_member)],
     insight_type: str | None = Query(default=None, description="Run specific detector only"),
 ):
     """
     Dispatch on-demand insight generation via Celery.
-    Only admins can trigger this (prevents abuse of LLM API).
+    Available to all members (viewer+ can read, member+ can trigger).
     """
     from ...worker.tasks.insight_runner import run_all_insights_for_tenant
 
