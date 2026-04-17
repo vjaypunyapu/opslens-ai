@@ -133,14 +133,26 @@ async def _provision_user(db, tenant_uuid_str: str, external_id: str, email: str
 
     # Check if user already exists — existing users bypass all allowlist checks
     result = await db.execute(
-        sa.select(User.role).where(
+        sa.select(User).where(
             User.tenant_id == tenant_uuid_obj,
             User.external_id == external_id,
         )
     )
-    existing_role = result.scalar_one_or_none()
-    if existing_role is not None:
-        return existing_role
+    existing_user = result.scalar_one_or_none()
+    if existing_user is not None:
+        # If the email was previously stored as @unknown.local but a real email
+        # is now available (JWT template was updated), refresh it silently.
+        if (
+            email
+            and not email.endswith("@unknown.local")
+            and existing_user.email != email
+        ):
+            try:
+                existing_user.email = email
+                await db.commit()
+            except Exception:
+                await db.rollback()
+        return existing_user.role
 
     # ── Domain allowlist check (new users only) ────────────────────────────────
     # Fetch the tenant's allowed_email_domains list from the DB.
