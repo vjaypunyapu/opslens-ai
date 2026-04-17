@@ -9,7 +9,7 @@ const NAV = [
   { href: "/dashboard",    label: "Dashboard",    icon: BarChart2 },
   { href: "/chat",         label: "Chat",         icon: MessageSquare },
   { href: "/incidents",    label: "Incidents",    icon: AlertTriangle },
-  { href: "/rrt-briefs",     label: "RRT Briefs",     icon: FileText },
+  { href: "/rrt-briefs",   label: "Auto-detected",  icon: FileText },
   { href: "/routing-rules",  label: "Routing Rules",  icon: Route },
   { href: "/known-issues",   label: "Suppressions",   icon: BellOff },
   { href: "/insights",       label: "Insights",       icon: Lightbulb },

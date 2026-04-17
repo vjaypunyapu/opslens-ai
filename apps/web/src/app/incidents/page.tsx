@@ -1191,7 +1191,7 @@ export default function IncidentsPage() {
               Incidents
             </h1>
             <p style={{ margin: 0, color: "#475569", fontSize: "14px" }}>
-              Declare, investigate, and resolve production incidents with AI-powered root cause analysis.
+              Manually declare and investigate incidents. For errors detected automatically, see <a href="/rrt-briefs" style={{ color: "#2dd4bf", textDecoration: "none" }}>Auto-detected</a>.
             </p>
           </div>
           <div style={{ display: "flex", gap: "10px" }}>

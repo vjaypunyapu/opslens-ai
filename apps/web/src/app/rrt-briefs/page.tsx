@@ -430,9 +430,9 @@ export default function RRTBriefsPage() {
       {/* Header */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "28px" }}>
         <div>
-          <h1 style={{ fontSize: "22px", fontWeight: 700, color: "#f1f5f9", margin: 0 }}>RRT Briefs</h1>
+          <h1 style={{ fontSize: "22px", fontWeight: 700, color: "#f1f5f9", margin: 0 }}>Auto-detected Incidents</h1>
           <p style={{ fontSize: "13px", color: "#64748b", marginTop: "4px" }}>
-            AI-generated Rapid Response Team incident artifacts
+            Automatically opened when the log scanner detects a critical error
           </p>
         </div>
         <button
@@ -498,7 +498,7 @@ export default function RRTBriefsPage() {
       {loading && !briefs.length && (
         <div style={{ textAlign: "center", padding: "60px", color: "#475569" }}>
           <RefreshCw size={24} style={{ animation: "spin 1s linear infinite", marginBottom: "12px" }} />
-          <div style={{ fontSize: "14px" }}>Loading RRT briefs…</div>
+          <div style={{ fontSize: "14px" }}>Loading auto-detected incidents…</div>
         </div>
       )}
 
@@ -510,10 +510,10 @@ export default function RRTBriefsPage() {
         }}>
           <FileText size={36} color="#334155" style={{ marginBottom: "12px" }} />
           <div style={{ fontSize: "15px", fontWeight: 600, color: "#475569", marginBottom: "6px" }}>
-            No RRT briefs yet
+            No auto-detected incidents yet
           </div>
           <p style={{ fontSize: "13px", color: "#334155", maxWidth: "380px", margin: "0 auto" }}>
-            Briefs are generated automatically when the log scanner detects a critical error.
+            Incidents are opened here automatically when the log scanner detects a critical error.
             Use the <strong style={{ color: "#64748b" }}>Simulate Alert</strong> button on the
             Incidents page to trigger one for a demo.
           </p>
