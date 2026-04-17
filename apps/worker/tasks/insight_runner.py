@@ -78,15 +78,33 @@ async def _call_llm(data_summary: str) -> dict[str, Any] | None:
     return parsed
 
 
+def _magnitude_to_tier(value: Any) -> str:
+    """
+    Convert the LLM-returned magnitude (a raw number like 45 or a string)
+    to one of the three tiers the DB and frontend expect: low / medium / high.
+    """
+    if isinstance(value, str) and value in ("low", "medium", "high"):
+        return value
+    try:
+        n = float(value)
+        if n >= 50:
+            return "high"
+        if n >= 20:
+            return "medium"
+        return "low"
+    except (TypeError, ValueError):
+        return "medium"
+
+
 async def _save_insight(db, tenant_id: str, parsed: dict, source_types: list[str]):
     insight = Insight(
         tenant_id=tenant_id,
         insight_type=parsed["insight_type"],
         title=parsed["title"],
         summary=parsed["summary"],
-        magnitude=parsed.get("magnitude"),
+        magnitude=_magnitude_to_tier(parsed.get("magnitude")),
         source_types=source_types,
-        raw_data=parsed,
+        evidence=parsed,          # DB column is "evidence", not "raw_data"
     )
     db.add(insight)
     await db.commit()
