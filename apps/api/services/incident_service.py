@@ -149,13 +149,24 @@ async def investigate_incident(
             signals: list[dict] = []
 
             if collection in collections_exist:
-                hits = qdrant.search(
-                    collection_name=collection,
-                    query_vector=query_vec,
-                    limit=40,
-                    score_threshold=0.35,
-                )
-                for hit in hits:
+                # qdrant-client >= 2.0 replaced .search() with .query_points()
+                try:
+                    response = qdrant.query_points(
+                        collection_name=collection,
+                        query=query_vec,
+                        limit=40,
+                        score_threshold=0.35,
+                    )
+                    raw_hits = response.points
+                except AttributeError:
+                    # fallback for older qdrant-client 1.x
+                    raw_hits = qdrant.search(
+                        collection_name=collection,
+                        query_vector=query_vec,
+                        limit=40,
+                        score_threshold=0.35,
+                    )
+                for hit in raw_hits:
                     p = hit.payload or {}
                     signals.append({
                         "source_type":    p.get("source_type", "unknown"),

@@ -117,7 +117,7 @@ export default function SignInPage() {
       </div>
 
       <p style={{
-        marginTop: "1.5rem", fontSize: "0.8rem", color: "#64748B",
+        marginTop: "1rem", fontSize: "0.8rem", color: "#64748B",
         position: "relative", zIndex: 1,
       }}>
         © 2025 OpsLens AI &nbsp;·&nbsp;
