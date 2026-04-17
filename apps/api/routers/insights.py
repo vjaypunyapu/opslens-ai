@@ -183,17 +183,30 @@ async def trigger_generation(
     Dispatch on-demand insight generation via Celery.
     Available to all members (viewer+ can read, member+ can trigger).
     """
-    from ...worker.tasks.insight_runner import run_all_insights_for_tenant
+    from celery import current_app as celery_app
 
     if insight_type and insight_type not in VALID_INSIGHT_TYPES:
         raise HTTPException(400, f"Invalid insight_type: {insight_type}")
 
-    run_all_insights_for_tenant.delay(str(ctx.tenant_uuid), only_type=insight_type)
+    tenant_id = str(ctx.tenant_uuid)
+
+    if insight_type:
+        # Map insight_type string to the specific Celery task name
+        task_map = {
+            "complaint_spike":    "insights.complaint_spike",
+            "feature_trend":      "insights.feature_trend",
+            "eng_bottleneck":     "insights.eng_bottleneck",
+        }
+        task_name = task_map.get(insight_type, "insights.run_all_for_tenant")
+        celery_app.send_task(task_name, args=[tenant_id])
+    else:
+        celery_app.send_task("insights.run_all_for_tenant", args=[tenant_id])
+
     logger.info("On-demand insight generation triggered by %s for tenant %s",
-                ctx.user_id, ctx.tenant_uuid)
+                ctx.user_id, tenant_id)
     return {
         "message": "Insight generation dispatched",
-        "tenant_id": str(ctx.tenant_uuid),
+        "tenant_id": tenant_id,
         "insight_type": insight_type or "all",
     }
 
