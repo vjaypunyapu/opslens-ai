@@ -61,28 +61,26 @@ else:
 
 _RCA_PROMPT = ChatPromptTemplate.from_messages([
     ("system", """\
-You are an expert Site Reliability Engineer (SRE) conducting a post-incident root cause analysis.
+You are an expert Site Reliability Engineer (SRE) performing a root cause analysis.
 
-You will be given:
-- INCIDENT: title, description, and affected service
-- SIGNALS: a timeline of correlated events from logs, code commits, Jira tickets, and Slack messages
+Rules:
+- ALWAYS produce a specific, actionable root_cause — never say "insufficient signals".
+- If correlated signals are sparse, base your analysis on the incident title, error type, and service name.
+- Use your SRE knowledge: a NullPointerException means an unhandled null reference; a ConnectionPool error means resource exhaustion; a TimeoutError means latency or deadlock, etc.
+- Reference specific signal details (commit SHAs, ticket IDs, timestamps) when available.
+- Recommendations must be concrete, numbered steps — not generic advice.
 
-Your job is to:
-1. Identify the most likely ROOT CAUSE
-2. List CONTRIBUTING FACTORS (up to 5)
-3. Provide RECOMMENDATIONS to prevent recurrence (up to 5)
-4. Produce a NARRATIVE: a clear 3-5 sentence explanation suitable for an incident report
-
-Respond ONLY with a valid JSON object:
+Respond ONLY with valid JSON:
 {{
-  "root_cause": "...",
-  "contributing_factors": ["...", "..."],
-  "recommendations": ["...", "..."],
-  "narrative": "..."
+  "root_cause": "One clear sentence identifying the most likely cause.",
+  "contributing_factors": ["factor 1", "factor 2", "factor 3"],
+  "recommendations": [
+    "Step 1: ...",
+    "Step 2: ...",
+    "Step 3: ..."
+  ],
+  "narrative": "3-5 sentence summary suitable for an incident report."
 }}
-
-Be specific. Reference actual signal details (commit SHAs, ticket IDs, timestamps) where possible.
-If signals are insufficient, say so clearly in root_cause.
 """),
     ("human", """\
 INCIDENT
@@ -95,6 +93,8 @@ Description: {description}
 CORRELATED SIGNALS ({signal_count} events, sorted by time)
 ------------------
 {signals}
+
+Produce a complete root cause analysis. Even if signals are limited, use the error type and service context to give specific, actionable findings.
 """),
 ])
 
@@ -267,11 +267,11 @@ async def investigate_incident(
 
                 if webhook_url:
                     import httpx as _httpx
-                    root_cause = incident.root_cause or "No root cause identified."
+                    root_cause = incident.root_cause or "See investigation signals for details."
                     recommendations = incident.recommendations or []
                     rec_text = "\n".join(
                         f"• {r}" for r in recommendations[:3]
-                    ) or "No recommendations generated."
+                    ) or "Review the investigation panel in OpsLens for next steps."
 
                     payload = {
                         "text": f"🔍 Investigation Complete — {incident.title}",
