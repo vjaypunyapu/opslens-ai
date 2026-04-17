@@ -56,7 +56,7 @@ export interface ChatMessage {
 // ─── Insights ─────────────────────────────────────────────────────────────────
 export interface Insight {
   id: string;
-  tenant_id: string;
+  tenant_id?: string;
   insight_type: InsightType;
   title: string;
   summary: string;
@@ -64,10 +64,11 @@ export interface Insight {
   confidence: number | null;
   status: InsightStatus;
   source_types: SourceType[];
-  evidence: Record<string, unknown>;
+  evidence?: Record<string, unknown>;
   snoozed_until: string | null;
-  created_at: string;
-  updated_at: string;
+  generated_at: string;   // what the API actually returns
+  created_at?: string;    // alias kept for backwards compat
+  updated_at?: string;
 }
 
 export interface InsightSummary {

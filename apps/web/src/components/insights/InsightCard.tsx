@@ -84,7 +84,14 @@ export function InsightCard({ insight, onStatusChange }: Props) {
           {/* Timestamp + expand */}
           <div className="flex flex-col items-end gap-2 shrink-0">
             <span className="text-xs text-gray-400">
-              {formatDistanceToNow(new Date(insight.created_at), { addSuffix: true })}
+              {(() => {
+                try {
+                  const ts = insight.generated_at ?? insight.created_at;
+                  return ts ? formatDistanceToNow(new Date(ts), { addSuffix: true }) : "—";
+                } catch {
+                  return "—";
+                }
+              })()}
             </span>
             <button
               onClick={() => setExpanded((v) => !v)}

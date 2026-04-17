@@ -54,10 +54,14 @@ export default function InsightsPage() {
   useEffect(() => { load(); }, [load]);
 
   const handleStatusChange = async (id: string, newStatus: "active" | "resolved" | "snoozed", snoozeHours?: number) => {
-    const token = await getToken();
-    await insightsApi.updateStatus(id, newStatus, snoozeHours, token!);
-    await load();
-    toast.success(`Insight ${newStatus}`);
+    try {
+      const token = await getToken();
+      await insightsApi.updateStatus(id, newStatus, snoozeHours, token!);
+      await load();
+      toast.success(`Insight marked as ${newStatus}`);
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Failed to update insight");
+    }
   };
 
   const handleGenerate = async () => {
