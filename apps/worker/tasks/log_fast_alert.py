@@ -235,56 +235,119 @@ def _collect_lines() -> list[str]:
     return lines
 
 
+def _strip_log_prefix(line: str) -> str:
+    """
+    Strip Railway/structlog prefixes so we can inspect the bare message.
+    Handles formats like:
+      2026-04-21T01:45:00Z error Some message
+      [ERROR] Some message
+      2026-04-21 01:45:00.123 [ERROR] Some message
+    """
+    s = line.strip()
+    # Remove ISO timestamp
+    s = re.sub(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}[.\d]*[Z]?\s*", "", s)
+    # Remove bracketed severity like [ERROR] [CRITICAL]
+    s = re.sub(r"^\[[A-Z]+\]\s*", "", s)
+    # Remove bare severity word (error, warning, critical, info) with optional extra token
+    s = re.sub(r"^(error|warning|critical|info|debug)\s+", "", s, flags=re.IGNORECASE)
+    return s
+
+
+# Matches the canonical last line of a Python traceback: "SomeError: message"
+_EXCEPTION_LINE_RE = re.compile(r"^[A-Za-z][\w.]*(?:Error|Exception|Warning|Fault|Timeout|Interrupt|Exit)[:\s]")
+
+
+def _extract_canonical_exception(block: list[str]) -> str | None:
+    """
+    Find the canonical Python exception line (last 'ExcType: message' line)
+    in a traceback block.  Returns None if the block has no such line.
+    """
+    for raw in reversed(block):
+        bare = _strip_log_prefix(raw)
+        if _EXCEPTION_LINE_RE.match(bare):
+            return bare
+    return None
+
+
 def _extract_error_groups(lines: list[str]) -> list[ErrorGroup]:
-    """Group ERROR/EXCEPTION lines by normalised signature."""
+    """
+    Group ERROR/EXCEPTION lines by normalised signature.
+
+    Key insight: Railway injects [ERROR] as a prefix on EVERY line of a
+    multi-line log, so each traceback line fires _CRITICAL_RE independently.
+    We avoid creating duplicate groups by:
+      1. Skipping trigger lines that are clearly mid-traceback (indented File "..."
+         lines or bare "Traceback (most recent call last):" with nothing before them).
+      2. Using the CANONICAL EXCEPTION LINE (last "FooError: msg" in the block)
+         as the dedup key — not the first trigger line — so all occurrences of the
+         same exception hash to the same signature regardless of which Railway log
+         line was seen first.
+    """
     groups: dict[str, dict] = {}
+
+    # Lines we should skip as group triggers — they are mid-traceback artifacts
+    _SKIP_TRIGGER_RE = re.compile(
+        r'^(Traceback \(most recent|During handling of|The above exception|'
+        r'\s*File "|'
+        r'\s+raise\s)',
+        re.IGNORECASE,
+    )
+
     i = 0
     while i < len(lines):
         line = lines[i]
-        if _CRITICAL_RE.search(line):
-            # Grab the full traceback block.
-            # Only continue for indented lines (File "..." + code snippets) and
-            # the non-indented Traceback/chained-exception header lines.
-            # Do NOT use "Error:" as a continuation condition — it swallows the
-            # [ERROR] header of the next repeat occurrence into this block,
-            # preventing the count from incrementing to reach threshold.
-            block = [line]
-            j = i + 1
-            while j < len(lines):
-                # Strip optional [SEVERITY] prefix Railway adds to each line,
-                # then check for known traceback continuation patterns.
-                cont = re.sub(r"^\[[A-Z]+\]\s*", "", lines[j])
-                if not (
-                    cont.startswith("  ")
-                    or cont.startswith("\t")
-                    or cont.startswith("Traceback (")
-                    or cont.startswith("During handling of")
-                    or cont.startswith("The above exception")
-                    or cont.startswith("File \"")   # stripped-indent fallback
-                    or '  File "' in cont           # embedded within a log prefix
-                ):
-                    break
-                block.append(lines[j])
-                j += 1
+        bare = _strip_log_prefix(line)
 
-            # Use the FIRST line (the trigger) as the dedup key — most stable.
-            key_line = block[0]
-            # Strip timestamps so the same error at different times deduplicates
-            clean = re.sub(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}[.\d]*[Z]?", "", key_line).strip()
-            sig = hashlib.md5(clean[:120].encode()).hexdigest()[:10]
-
-            if sig in groups:
-                groups[sig]["count"] += 1
-            else:
-                groups[sig] = {
-                    "signature": sig,
-                    "first_line": key_line[:300],
-                    "count": 1,
-                    "sample_lines": block[:30],  # enough for full multi-frame traceback
-                }
-            i = j
-        else:
+        if not _CRITICAL_RE.search(line):
             i += 1
+            continue
+
+        # Skip lines that are clearly the middle of a traceback, not a root trigger
+        if _SKIP_TRIGGER_RE.match(bare):
+            i += 1
+            continue
+
+        # Collect the full traceback block that follows this trigger line.
+        # Do NOT treat "Error:" as a continuation condition — it would swallow
+        # the next repeat occurrence into this block, defeating the count.
+        block = [line]
+        j = i + 1
+        while j < len(lines):
+            cont = _strip_log_prefix(lines[j])
+            if not (
+                cont.startswith("  ")
+                or cont.startswith("\t")
+                or cont.startswith("Traceback (")
+                or cont.startswith("During handling of")
+                or cont.startswith("The above exception")
+                or cont.startswith('File "')
+                or '  File "' in cont
+            ):
+                break
+            block.append(lines[j])
+            j += 1
+
+        # Derive signature from the canonical exception line if present,
+        # otherwise fall back to normalising the first trigger line.
+        canonical = _extract_canonical_exception(block)
+        key_text = canonical or bare
+        # Strip any remaining timestamps / noise before hashing
+        key_clean = re.sub(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}[.\d]*[Z]?", "", key_text).strip()
+        sig = hashlib.md5(key_clean[:200].encode()).hexdigest()[:10]
+
+        if sig in groups:
+            groups[sig]["count"] += 1
+            # Keep the largest block for richer context
+            if len(block) > len(groups[sig]["sample_lines"]):
+                groups[sig]["sample_lines"] = block[:30]
+        else:
+            groups[sig] = {
+                "signature": sig,
+                "first_line": (canonical or line)[:300],
+                "count": 1,
+                "sample_lines": block[:30],
+            }
+        i = j
 
     return [
         ErrorGroup(
