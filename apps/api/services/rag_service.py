@@ -261,15 +261,21 @@ class RagService:
 
             # Source citations
             docs = state.retrieved_docs
-            sources = [
-                {
-                    "title":       doc.metadata.get("title", "Untitled"),
+            sources = []
+            for doc in docs:
+                raw_title = doc.metadata.get("title", "") or ""
+                source_type = doc.metadata.get("source_type", "")
+                # Build a meaningful title fallback from snippet content
+                # when the document has no title (e.g. raw Railway log chunks)
+                if not raw_title.strip():
+                    snippet_preview = doc.page_content[:60].replace("\n", " ").strip()
+                    raw_title = f"{source_type.capitalize()} log: {snippet_preview}…" if snippet_preview else f"{source_type.capitalize()} entry"
+                sources.append({
+                    "title":       raw_title,
                     "url":         doc.metadata.get("url", ""),
-                    "source_type": doc.metadata.get("source_type", ""),
+                    "source_type": source_type,
                     "snippet":     doc.page_content[:350],
-                }
-                for doc in docs
-            ]
+                })
             yield {"type": "sources", "data": sources}
 
             elapsed_ms = int((time.monotonic() - start) * 1000)
