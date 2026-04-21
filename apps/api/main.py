@@ -22,7 +22,7 @@ from .auth.middleware import JWTAuthMiddleware
 from .config import settings
 from .db.session import engine, Base
 from .routers import (
-    admin, alerts, billing, dashboard, dev_tools, enterprise, incidents, ingestion, insights,
+    admin, alerts, analytics, billing, dashboard, dev_tools, enterprise, incidents, ingestion, insights,
     log_ops, manager_dashboard, rag, retention, rrt_briefs,
     settings as settings_router, timeline, users,
 )
@@ -445,6 +445,11 @@ def create_app() -> FastAPI:
         billing.router,
         prefix="/api/v1/billing",
         tags=["Billing & Metering"],
+    )
+    app.include_router(
+        analytics.router,
+        prefix="/api/v1/analytics",
+        tags=["Analytics — Error Trends & Retrospectives"],
     )
     app.include_router(
         dev_tools.router,

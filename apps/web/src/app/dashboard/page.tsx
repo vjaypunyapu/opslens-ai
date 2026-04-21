@@ -6,9 +6,13 @@ import { useRouter } from "next/navigation";
 import {
   BarChart2, Lightbulb, FileText, Plug, MessageSquare,
   Bell, TrendingUp, RefreshCw, AlertTriangle, CheckCircle,
-  Clock, Zap, ArrowRight,
+  Clock, Zap, ArrowRight, Activity,
 } from "lucide-react";
-import { dashboardApi, DashboardData } from "@/lib/api";
+import {
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
+  ResponsiveContainer, Legend,
+} from "recharts";
+import { dashboardApi, analyticsApi, DashboardData, ErrorTrendPoint, AnomalyFlag } from "@/lib/api";
 
 const SOURCE_LABELS: Record<string, string> = {
   slack: "Slack", jira: "Jira", github: "GitHub",
@@ -58,6 +62,9 @@ function KpiCard({
   ) : inner;
 }
 
+// Colour palette for trend lines (up to 8 services)
+const TREND_COLORS = ["#14b8a6","#6366f1","#f59e0b","#ef4444","#22c55e","#ec4899","#3b82f6","#a78bfa"];
+
 export default function DashboardPage() {
   const { getToken } = useAuth();
   const router = useRouter();
@@ -65,6 +72,22 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [trendDays, setTrendDays] = useState(30);
+  const [trendPoints, setTrendPoints] = useState<ErrorTrendPoint[]>([]);
+  const [anomalies, setAnomalies] = useState<AnomalyFlag[]>([]);
+  const [trendLoading, setTrendLoading] = useState(true);
+
+  const loadTrends = async (days = trendDays) => {
+    try {
+      setTrendLoading(true);
+      const token = await getToken();
+      if (!token) return;
+      const res = await analyticsApi.errorTrends(token, days);
+      setTrendPoints(res.points);
+      setAnomalies(res.anomalies);
+    } catch { /* silently skip — trend is non-critical */ }
+    finally { setTrendLoading(false); }
+  };
 
   const load = async (showSpinner = true) => {
     if (showSpinner) setLoading(true);
@@ -83,7 +106,8 @@ export default function DashboardPage() {
     }
   };
 
-  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); loadTrends(30); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { loadTrends(trendDays); }, [trendDays]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (loading) return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "center",
@@ -214,6 +238,108 @@ export default function DashboardPage() {
           )}
         </Section>
       </div>
+
+      {/* ── Error Trend Chart ── */}
+      {(() => {
+        // Pivot points into recharts format: [{date, service1, service2, ...}]
+        const services = [...new Set(trendPoints.map(p => p.service))].slice(0, 8);
+        const dateMap: Record<string, Record<string, number>> = {};
+        trendPoints.forEach(p => {
+          if (!dateMap[p.date]) dateMap[p.date] = {};
+          dateMap[p.date][p.service] = p.count;
+        });
+        const chartData = Object.entries(dateMap)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([date, vals]) => ({
+            date: date.slice(5), // MM-DD
+            ...vals,
+          }));
+        const rising = anomalies.filter(a => a.trend === "rising");
+
+        return (
+          <div style={{
+            background: "#1e293b", borderRadius: 12, padding: "20px",
+            border: "1px solid rgba(255,255,255,0.07)", marginBottom: 20,
+          }}>
+            {/* Header */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <Activity size={15} color="#94a3b8" />
+                <span style={{ fontSize: 13, fontWeight: 600, color: "#cbd5e1" }}>Service Error Trends</span>
+                {rising.length > 0 && (
+                  <span style={{
+                    fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 20,
+                    background: "rgba(239,68,68,0.12)", color: "#f87171",
+                  }}>
+                    {rising.length} rising
+                  </span>
+                )}
+              </div>
+              <div style={{ display: "flex", gap: 6 }}>
+                {[7, 30, 60].map(d => (
+                  <button key={d} onClick={() => setTrendDays(d)} style={{
+                    padding: "4px 10px", borderRadius: 6, fontSize: 12, cursor: "pointer", border: "none",
+                    background: trendDays === d ? "rgba(20,184,166,0.2)" : "rgba(255,255,255,0.06)",
+                    color: trendDays === d ? "#2dd4bf" : "#64748b",
+                  }}>{d}d</button>
+                ))}
+              </div>
+            </div>
+
+            {/* Anomaly badges */}
+            {anomalies.length > 0 && (
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+                {anomalies.slice(0, 6).map(a => (
+                  <span key={a.service} style={{
+                    fontSize: 11, padding: "3px 10px", borderRadius: 20, fontWeight: 500,
+                    background: a.trend === "rising"  ? "rgba(239,68,68,0.1)"  :
+                                a.trend === "falling" ? "rgba(34,197,94,0.1)"  : "rgba(255,255,255,0.05)",
+                    color:      a.trend === "rising"  ? "#f87171" :
+                                a.trend === "falling" ? "#4ade80" : "#64748b",
+                    border: `1px solid ${a.trend === "rising" ? "rgba(239,68,68,0.25)" : a.trend === "falling" ? "rgba(34,197,94,0.25)" : "rgba(255,255,255,0.08)"}`,
+                  }}>
+                    {a.service} {a.trend === "rising" ? "↑" : a.trend === "falling" ? "↓" : "→"} {a.change_pct > 0 ? "+" : ""}{a.change_pct}%
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {trendLoading ? (
+              <div style={{ height: 220, display: "flex", alignItems: "center", justifyContent: "center", color: "#475569" }}>
+                <RefreshCw size={16} style={{ animation: "spin 1s linear infinite", marginRight: 8 }} /> Loading trends…
+              </div>
+            ) : chartData.length === 0 ? (
+              <div style={{ height: 220, display: "flex", alignItems: "center", justifyContent: "center", color: "#475569", fontSize: 13 }}>
+                No incidents in this period — great sign! 🎉
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height={220}>
+                <LineChart data={chartData} margin={{ top: 4, right: 16, bottom: 0, left: -20 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+                  <XAxis dataKey="date" tick={{ fill: "#64748b", fontSize: 11 }} />
+                  <YAxis tick={{ fill: "#64748b", fontSize: 11 }} allowDecimals={false} />
+                  <Tooltip
+                    contentStyle={{ background: "#0f172a", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, fontSize: 12 }}
+                    labelStyle={{ color: "#94a3b8" }}
+                  />
+                  <Legend wrapperStyle={{ fontSize: 11, color: "#94a3b8" }} />
+                  {services.map((svc, idx) => (
+                    <Line
+                      key={svc}
+                      type="monotone"
+                      dataKey={svc}
+                      stroke={TREND_COLORS[idx % TREND_COLORS.length]}
+                      strokeWidth={2}
+                      dot={false}
+                      activeDot={{ r: 4 }}
+                    />
+                  ))}
+                </LineChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+        );
+      })()}
 
       {/* ── Two-column bottom ── */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>

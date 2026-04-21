@@ -668,3 +668,44 @@ export const routingRulesApi = {
       token,
     }),
 };
+
+// ─── Analytics ────────────────────────────────────────────────────────────────
+export interface ErrorTrendPoint { date: string; service: string; count: number; }
+export interface AnomalyFlag { service: string; trend: "rising" | "stable" | "falling"; change_pct: number; avg_per_day: number; }
+export interface ErrorTrendsResponse { days: number; points: ErrorTrendPoint[]; anomalies: AnomalyFlag[]; }
+export interface RetrospectiveResponse {
+  period: string;
+  generated_at: string;
+  incidents: {
+    total: number;
+    by_severity: Record<string, number>;
+    by_service: Record<string, number>;
+    avg_resolution_minutes: number | null;
+    top_incidents: { title: string; severity: string; service: string; started_at: string | null; root_cause: string }[];
+  };
+  deploys: {
+    prs_merged: number;
+    jira_tickets: number;
+    top_prs: { title: string; author: string; url: string }[];
+    top_tickets: { title: string; author: string; url: string }[];
+  };
+  team_patterns: {
+    most_affected_services: { service: string; incident_count: number }[];
+    recurring_services: string[];
+    top_contributors: { author: string; contributions: number }[];
+    total_changes_shipped: number;
+  };
+  recommendations: string[];
+}
+
+export const analyticsApi = {
+  errorTrends: (token: string, days = 30) =>
+    request<ErrorTrendsResponse>(`/analytics/error-trends?days=${days}`, { token }),
+
+  retrospective: (token: string, start_date: string, end_date: string) =>
+    request<RetrospectiveResponse>("/analytics/retrospective", {
+      method: "POST",
+      body: JSON.stringify({ start_date, end_date }),
+      token,
+    }),
+};
