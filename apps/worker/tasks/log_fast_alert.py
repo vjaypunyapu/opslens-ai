@@ -376,22 +376,26 @@ def _enrich_with_rag(error_group: ErrorGroup, tenant_id: str) -> list[dict]:
             payload = hit.payload or {}
             source_type = payload.get("source_type", "unknown")
             raw_title = (payload.get("title") or "").strip()
+            # Qdrant payload stores content under "page_content" (set at ingest time)
+            content = (payload.get("page_content") or payload.get("content_preview") or "").strip()
             # Build a meaningful title for untitled docs (e.g. raw log chunks)
             # so related_items don't display as "Untitled" in RRT briefs
             if not raw_title:
-                content_preview = (payload.get("content_preview") or "").strip()
-                snippet_preview = content_preview[:60].replace("\n", " ")
+                snippet_preview = content[:60].replace("\n", " ")
                 raw_title = (
                     f"{source_type.capitalize()} log: {snippet_preview}…"
                     if snippet_preview
-                    else f"{source_type.capitalize()} entry"
+                    else None  # skip items with no title and no content
                 )
+            # Skip entirely if we still have no usable title or content
+            if not raw_title or not content:
+                continue
             enriched.append({
                 "source_type": source_type,
                 "title":       raw_title,
                 "url":         payload.get("url", ""),
                 "author":      payload.get("author", ""),
-                "snippet":     (payload.get("content_preview") or "")[:300],
+                "snippet":     content[:300],
                 "score":       round(hit.score, 3),
             })
         return enriched

@@ -231,9 +231,15 @@ function BriefDetail({ brief, getToken, onClose, onStatusChange, onJiraPush }: {
 
         {/* Related context */}
         {(() => {
-          const meaningfulItems = brief.related_items.filter(item =>
-            item.title && item.title !== "Untitled" && item.title.trim() !== ""
-          );
+          const JUNK_TITLES = new Set(["untitled", "unknown entry", "unknown", ""]);
+          const meaningfulItems = brief.related_items.filter(item => {
+            const t = (item.title || "").trim().toLowerCase();
+            if (!t || JUNK_TITLES.has(t)) return false;
+            // Drop backend-generated fallback labels like "Railway entry", "Unknown entry"
+            if (/^[\w]+ entry$/.test(t)) return false;
+            // Must also have some snippet content to be worth showing
+            return !!(item.snippet && item.snippet.trim());
+          });
           if (meaningfulItems.length === 0) return null;
           return (
             <div style={{ marginBottom: "20px" }}>
