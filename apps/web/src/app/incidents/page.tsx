@@ -1,5 +1,6 @@
 "use client";
 import { useState, useEffect, useCallback } from "react";
+import Link from "next/link";
 import { useAuth } from "@clerk/nextjs";
 import {
   AlertTriangle, Plus, RefreshCw, Search, ChevronRight,
@@ -501,7 +502,7 @@ function IncidentDetail({
                               Full AI diagnosis, next actions, and Jira push available
                             </div>
                           </div>
-                          <a href="/rrt-briefs" style={{
+                          <Link href="/rrt-briefs" style={{
                             fontSize: "12px", color: "#2dd4bf", textDecoration: "none",
                             display: "flex", alignItems: "center", gap: "4px",
                             padding: "5px 12px", borderRadius: "6px",
@@ -509,7 +510,7 @@ function IncidentDetail({
                             background: "rgba(20,184,166,0.1)",
                           }}>
                             View Brief <ExternalLink size={10} />
-                          </a>
+                          </Link>
                         </div>
                       );
                     }
@@ -766,10 +767,10 @@ function SimulateAlertModal({ onClose, onSimulate }: {
                     </div>
                   )}
                   <div style={{ marginTop: "8px" }}>
-                    <a href="/rrt-briefs" style={{ fontSize: "12px", color: "#2dd4bf", textDecoration: "none",
+                    <Link href="/rrt-briefs" style={{ fontSize: "12px", color: "#2dd4bf", textDecoration: "none",
                       display: "inline-flex", alignItems: "center", gap: "4px" }}>
                       <ExternalLink size={11} /> View RRT Briefs →
-                    </a>
+                    </Link>
                   </div>
                 </div>
               </div>
@@ -969,13 +970,13 @@ function DemoScenarioModal({ onClose }: { onClose: () => void }) {
                 padding: "10px 20px", borderRadius: "8px",
                 background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)",
                 color: "#94a3b8", fontSize: "14px", cursor: "pointer" }}>Close</button>
-              <a href="/rrt-briefs" style={{
+              <Link href="/rrt-briefs" style={{
                 padding: "10px 22px", borderRadius: "8px",
                 background: "rgba(167,139,250,0.2)", border: "1px solid rgba(167,139,250,0.4)",
                 color: "#c4b5fd", fontSize: "14px", fontWeight: 700, cursor: "pointer",
                 textDecoration: "none", display: "flex", alignItems: "center", gap: "8px" }}>
                 <FileText size={14} /> View RRT Briefs →
-              </a>
+              </Link>
             </div>
           </div>
         )}
@@ -1191,7 +1192,7 @@ export default function IncidentsPage() {
               Incidents
             </h1>
             <p style={{ margin: 0, color: "#475569", fontSize: "14px" }}>
-              Manually declare and investigate incidents. For errors detected automatically, see <a href="/rrt-briefs" style={{ color: "#2dd4bf", textDecoration: "none" }}>Auto-detected</a>.
+              Manually declare and investigate incidents. For errors detected automatically, see <Link href="/rrt-briefs" style={{ color: "#2dd4bf", textDecoration: "none" }}>Auto-detected</Link>.
             </p>
           </div>
           <div style={{ display: "flex", gap: "10px" }}>

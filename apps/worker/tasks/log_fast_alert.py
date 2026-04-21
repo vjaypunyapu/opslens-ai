@@ -374,9 +374,21 @@ def _enrich_with_rag(error_group: ErrorGroup, tenant_id: str) -> list[dict]:
         enriched = []
         for hit in response.points:
             payload = hit.payload or {}
+            source_type = payload.get("source_type", "unknown")
+            raw_title = (payload.get("title") or "").strip()
+            # Build a meaningful title for untitled docs (e.g. raw log chunks)
+            # so related_items don't display as "Untitled" in RRT briefs
+            if not raw_title:
+                content_preview = (payload.get("content_preview") or "").strip()
+                snippet_preview = content_preview[:60].replace("\n", " ")
+                raw_title = (
+                    f"{source_type.capitalize()} log: {snippet_preview}…"
+                    if snippet_preview
+                    else f"{source_type.capitalize()} entry"
+                )
             enriched.append({
-                "source_type": payload.get("source_type", "unknown"),
-                "title":       payload.get("title", "Untitled"),
+                "source_type": source_type,
+                "title":       raw_title,
                 "url":         payload.get("url", ""),
                 "author":      payload.get("author", ""),
                 "snippet":     (payload.get("content_preview") or "")[:300],

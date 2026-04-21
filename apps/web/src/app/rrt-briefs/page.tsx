@@ -230,31 +230,39 @@ function BriefDetail({ brief, getToken, onClose, onStatusChange, onJiraPush }: {
         )}
 
         {/* Related context */}
-        {brief.related_items.length > 0 && (
-          <div style={{ marginBottom: "20px" }}>
-            <div style={{ fontSize: "11px", fontWeight: 600, color: "#64748b", textTransform: "uppercase",
-              letterSpacing: "0.08em", marginBottom: "8px" }}>Related Context</div>
-            {brief.related_items.map((item, i) => {
-              const Icon = SOURCE_ICONS[item.source_type] ?? Tag;
-              return (
-                <div key={i} style={{
-                  background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)",
-                  borderRadius: "8px", padding: "12px", marginBottom: "8px",
-                }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
-                    <Icon size={13} color="#64748b" />
-                    <span style={{ fontSize: "13px", fontWeight: 600, color: "#cbd5e1" }}>{item.title}</span>
-                    {item.url && (
-                      <a href={item.url} target="_blank" rel="noreferrer"
-                        style={{ marginLeft: "auto", color: "#64748b" }}><ExternalLink size={12} /></a>
+        {(() => {
+          const meaningfulItems = brief.related_items.filter(item =>
+            item.title && item.title !== "Untitled" && item.title.trim() !== ""
+          );
+          if (meaningfulItems.length === 0) return null;
+          return (
+            <div style={{ marginBottom: "20px" }}>
+              <div style={{ fontSize: "11px", fontWeight: 600, color: "#64748b", textTransform: "uppercase",
+                letterSpacing: "0.08em", marginBottom: "8px" }}>Related Context</div>
+              {meaningfulItems.map((item, i) => {
+                const Icon = SOURCE_ICONS[item.source_type] ?? Tag;
+                return (
+                  <div key={i} style={{
+                    background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)",
+                    borderRadius: "8px", padding: "12px", marginBottom: "8px",
+                  }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
+                      <Icon size={13} color="#64748b" />
+                      <span style={{ fontSize: "13px", fontWeight: 600, color: "#cbd5e1" }}>{item.title}</span>
+                      {item.url && (
+                        <a href={item.url} target="_blank" rel="noreferrer"
+                          style={{ marginLeft: "auto", color: "#64748b" }}><ExternalLink size={12} /></a>
+                      )}
+                    </div>
+                    {item.snippet && (
+                      <p style={{ fontSize: "12px", color: "#64748b", margin: 0, lineHeight: 1.5 }}>{item.snippet}</p>
                     )}
                   </div>
-                  <p style={{ fontSize: "12px", color: "#64748b", margin: 0, lineHeight: 1.5 }}>{item.snippet}</p>
-                </div>
-              );
-            })}
-          </div>
-        )}
+                );
+              })}
+            </div>
+          );
+        })()}
 
         {/* Code Context */}
         {brief.code_frames && brief.code_frames.length > 0 && (
