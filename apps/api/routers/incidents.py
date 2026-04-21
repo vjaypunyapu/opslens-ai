@@ -186,6 +186,7 @@ async def reinvestigate(
     incident.timeline = []
     incident.signals = []
     await db.commit()
+    await db.refresh(incident)   # re-hydrate after commit so _to_out can read attributes
 
     background_tasks.add_task(
         _trigger_investigation, str(incident.id), str(ctx.tenant_id), ctx.company_name
