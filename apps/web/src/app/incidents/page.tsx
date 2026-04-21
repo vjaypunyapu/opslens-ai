@@ -7,7 +7,7 @@ import {
   Clock, CheckCircle, Loader2, Zap, GitBranch, MessageSquare,
   FileText, Activity, X, ExternalLink, Play, Database
 } from "lucide-react";
-import { incidentsApi, logOpsApi, demoApi, Incident, TimelineEvent } from "@/lib/api";
+import { incidentsApi, logOpsApi, demoApi, ApiError, Incident, TimelineEvent } from "@/lib/api";
 import { toast } from "sonner";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -1024,13 +1024,28 @@ export default function IncidentsPage() {
     try {
       setLoading(true);
       setError(null);
-      const token = await getToken();
+      let token = await getToken();
       if (!token) return;
-      const data = await incidentsApi.list(token, {
-        ...(filterStatus ? { status: filterStatus } : {}),
-        ...(filterSeverity ? { severity: filterSeverity } : {}),
-      });
-      setIncidents(data);
+      try {
+        const data = await incidentsApi.list(token, {
+          ...(filterStatus ? { status: filterStatus } : {}),
+          ...(filterSeverity ? { severity: filterSeverity } : {}),
+        });
+        setIncidents(data);
+      } catch (e: unknown) {
+        // On 401 (token expired), force-refresh the Clerk token and retry once
+        if (e instanceof ApiError && e.status === 401) {
+          token = await getToken({ skipCache: true });
+          if (!token) { window.location.href = "/sign-in"; return; }
+          const data = await incidentsApi.list(token, {
+            ...(filterStatus ? { status: filterStatus } : {}),
+            ...(filterSeverity ? { severity: filterSeverity } : {}),
+          });
+          setIncidents(data);
+        } else {
+          throw e;
+        }
+      }
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to load incidents");
     } finally {
