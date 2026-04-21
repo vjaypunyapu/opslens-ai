@@ -46,24 +46,35 @@ def _scenario_alert_rule_null_condition() -> str:
     Simulates a bug in the alerts module: an AlertRule is loaded from DB
     with a None conditions list (data-migration gap), and the evaluator
     tries to iterate it → TypeError deep in the rule evaluation stack.
+
+    Uses a plain dataclass to avoid SQLAlchemy _sa_instance_state issues
+    when constructing the corrupt rule object outside a session.
     """
-    from ..models.alert import AlertRule
+    from dataclasses import dataclass
 
-    # Simulate a rule object with a None conditions field (corrupt DB row)
-    corrupt_rule = AlertRule.__new__(AlertRule)
-    object.__setattr__(corrupt_rule, "id", uuid.uuid4())
-    object.__setattr__(corrupt_rule, "name", "P0 Payment Failures")
-    object.__setattr__(corrupt_rule, "conditions", None)   # <-- the bug
+    @dataclass
+    class MockAlertRule:
+        id:         object
+        name:       str
+        conditions: object   # intentionally typed as object so None is valid
 
-    def evaluate_conditions(rule: AlertRule) -> bool:
+    # Simulate a rule with a None conditions field — as if a data migration
+    # inserted a row without backfilling the JSONB column.
+    corrupt_rule = MockAlertRule(
+        id=uuid.uuid4(),
+        name="P0 Payment Failures",
+        conditions=None,   # <-- the migration gap bug
+    )
+
+    def evaluate_conditions(rule: MockAlertRule) -> bool:
         """Inner evaluator — crashes on None conditions."""
-        for condition in rule.conditions:                  # <-- TypeError here
+        for condition in rule.conditions:          # <-- TypeError: 'NoneType' not iterable
             field = condition.get("field")
             if condition.get("operator") == "gt":
                 return float(condition.get("value", 0)) > 0
         return False
 
-    def dispatch_alert_rule(rule: AlertRule) -> None:
+    def dispatch_alert_rule(rule: MockAlertRule) -> None:
         """Alert dispatcher — calls evaluator."""
         result = evaluate_conditions(rule)
         if result:
