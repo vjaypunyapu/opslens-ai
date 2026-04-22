@@ -1,12 +1,11 @@
 /**
- * Founder-only layout — no sidebar, no AppShell.
- * Overrides the parent /admin/layout.tsx so the clients page
- * looks nothing like the regular app. Anyone without a platform-admin
- * email just sees the access-denied screen with zero nav to click around.
+ * Founder-only layout — completely standalone, no AppShell, no sidebar.
+ * Lives at /platform so it inherits ONLY from the root layout (ClerkProvider).
+ * The /admin/ hierarchy is entirely bypassed.
  */
 import { AuthGuard } from "@/components/auth/AuthGuard";
 
-export default function ClientsLayout({ children }: { children: React.ReactNode }) {
+export default function PlatformLayout({ children }: { children: React.ReactNode }) {
   return (
     <AuthGuard>
       <div style={{
@@ -44,7 +43,6 @@ export default function ClientsLayout({ children }: { children: React.ReactNode 
           </span>
         </header>
 
-        {/* Page content — full width, no sidebar offset */}
         <main style={{ padding: "2rem 1.5rem" }}>
           {children}
         </main>
