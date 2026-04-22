@@ -325,6 +325,36 @@ async def lifespan(app: FastAPI):
 
         logger.info("Database schema + tables verified / created.")
 
+    # ── Always-run schema patches (all environments) ──────────────────────────
+    # These are idempotent ADD COLUMN IF NOT EXISTS guards for columns that were
+    # added after the initial production deployment and may not exist on older
+    # instances. Alembic migrations handle new deployments; these cover the gap
+    # for existing production databases that missed a migration.
+    async with engine.begin() as conn:
+        # Q10: per-rule cooldown on alert_routing_rules (migration 0011)
+        await conn.execute(sa.text(
+            "ALTER TABLE opslens.alert_routing_rules "
+            "ADD COLUMN IF NOT EXISTS cooldown_minutes INTEGER NOT NULL DEFAULT 10"
+        ))
+        # Q11: acknowledgement fields on alert_history (migration 0011)
+        await conn.execute(sa.text(
+            "ALTER TABLE opslens.alert_history "
+            "ADD COLUMN IF NOT EXISTS acknowledged BOOLEAN NOT NULL DEFAULT false"
+        ))
+        await conn.execute(sa.text(
+            "ALTER TABLE opslens.alert_history "
+            "ADD COLUMN IF NOT EXISTS acknowledged_at TIMESTAMPTZ"
+        ))
+        await conn.execute(sa.text(
+            "ALTER TABLE opslens.alert_history "
+            "ADD COLUMN IF NOT EXISTS acknowledged_by VARCHAR(255)"
+        ))
+        await conn.execute(sa.text(
+            "CREATE INDEX IF NOT EXISTS idx_alert_history_acknowledged "
+            "ON opslens.alert_history (tenant_id, acknowledged)"
+        ))
+    logger.info("Always-run schema patches applied.")
+
     yield
 
     await engine.dispose()

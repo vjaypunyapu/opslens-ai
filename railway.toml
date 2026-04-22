@@ -18,7 +18,7 @@ startCommand = """sh -c '
   elif [ "$RAILWAY_SERVICE_NAME" = "beat" ]; then
     exec celery -A apps.worker.celery_app beat --loglevel=info
   else
-    exec uvicorn apps.api.main:app --host 0.0.0.0 --port $PORT --no-access-log
+    echo "Running Alembic migrations..." && alembic upgrade head && exec uvicorn apps.api.main:app --host 0.0.0.0 --port $PORT --no-access-log
   fi
 '"""
 restartPolicyType = "on_failure"
