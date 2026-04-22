@@ -119,6 +119,13 @@ class Settings(BaseSettings):
     INVITE_FROM_EMAIL: str = "hello@opslensai.com"
     APP_URL: str = "https://app.opslensai.com"   # used to build invite links
 
+    # ── Platform Admin (Founder Panel) ───────────────────────────────────────
+    # Comma-separated list of email addresses that can access /api/v1/platform/*
+    # These users can list all tenants and generate first-admin invite links for
+    # any workspace without being a member of that workspace.
+    # Example: "vj@opslensai.com,cofounder@opslensai.com"
+    PLATFORM_ADMIN_EMAILS: str = ""
+
     # ── Log Scanner (hourly LLM digest) ──────────────────────────────────────
     # Runs once per hour, uses LLM to summarise all issues, sends to team.
     LOG_SCAN_ENABLED: bool = True

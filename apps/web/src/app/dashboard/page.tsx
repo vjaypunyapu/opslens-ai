@@ -128,8 +128,51 @@ export default function DashboardPage() {
 
   const { insights, documents, integrations, chat, alerts } = data;
 
+  // ── "Get started" banner — shown when no integrations are connected yet ──
+  const hasIntegrations = integrations.active_count > 0;
+
   return (
     <div style={{ padding: "28px 32px", maxWidth: 1200, margin: "0 auto" }}>
+      {/* ── Onboarding banner ── */}
+      {!hasIntegrations && (
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          background: "linear-gradient(135deg, rgba(20,184,166,0.12) 0%, rgba(99,102,241,0.08) 100%)",
+          border: "1px solid rgba(20,184,166,0.3)", borderRadius: 12,
+          padding: "20px 24px", marginBottom: 28, gap: 16,
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+            <div style={{
+              width: 44, height: 44, borderRadius: 10, flexShrink: 0,
+              background: "rgba(20,184,166,0.15)", display: "flex",
+              alignItems: "center", justifyContent: "center",
+            }}>
+              <Zap size={20} color="#14b8a6" />
+            </div>
+            <div>
+              <p style={{ color: "#f1f5f9", fontWeight: 600, margin: 0, fontSize: 14 }}>
+                Connect your first data source to get started
+              </p>
+              <p style={{ color: "#64748b", margin: "4px 0 0", fontSize: 13 }}>
+                OpsLens needs at least one integration to start detecting incidents and generating insights.
+              </p>
+            </div>
+          </div>
+          <Link
+            href="/onboarding"
+            style={{
+              display: "flex", alignItems: "center", gap: 8, flexShrink: 0,
+              background: "#14b8a6", borderRadius: 8, padding: "10px 18px",
+              color: "#fff", fontSize: 13, fontWeight: 600, textDecoration: "none",
+              whiteSpace: "nowrap",
+            }}
+          >
+            Set up workspace
+            <ArrowRight size={14} />
+          </Link>
+        </div>
+      )}
+
       {/* ── Header ── */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 28 }}>
         <div>

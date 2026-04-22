@@ -23,7 +23,7 @@ from .config import settings
 from .db.session import engine, Base
 from .routers import (
     admin, alerts, analytics, billing, dashboard, dev_tools, enterprise, incidents, ingestion, insights,
-    log_ops, manager_dashboard, rag, retention, rrt_briefs,
+    log_ops, manager_dashboard, platform, rag, retention, rrt_briefs,
     settings as settings_router, timeline, users,
 )
 from .utils.logging import configure_logging, get_logger
@@ -455,6 +455,11 @@ def create_app() -> FastAPI:
         dev_tools.router,
         prefix="/api/v1/dev",
         tags=["Dev Tools — Demo & Testing"],
+    )
+    app.include_router(
+        platform.router,
+        prefix="/api/v1/platform",
+        tags=["Platform Admin — Founder Panel"],
     )
 
     # ── Global exception handlers ─────────────────────────────────────────────
