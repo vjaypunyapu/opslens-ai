@@ -1,15 +1,25 @@
-import { NextResponse } from "next/server";
-import type { NextRequest } from "next/server";
+import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 
-// Auth is handled in each protected layout via auth() from @clerk/nextjs/server
-// which runs in Node.js runtime (not Edge). Clerk's clerkMiddleware requires
-// Node.js crypto which is unavailable in Next.js 14 Edge middleware.
-export function middleware(_request: NextRequest) {
-  return NextResponse.next();
-}
+// Routes that do NOT require authentication
+const isPublicRoute = createRouteMatcher([
+  "/",
+  "/sign-in(.*)",
+  "/sign-up(.*)",
+  "/api/webhooks(.*)",
+]);
+
+export default clerkMiddleware(async (auth, request) => {
+  // Protect all non-public routes — unauthenticated users get sent to sign-in
+  if (!isPublicRoute(request)) {
+    await auth.protect();
+  }
+});
 
 export const config = {
   matcher: [
+    // Skip Next.js internals and static files
     "/((?!_next|[^?]*\\.(?:html?|css|js(?!on)|jpe?g|webp|png|gif|svg|ttf|woff2?|ico|csv|docx?|xlsx?|zip|webmanifest)).*)",
+    // Always run for API routes
+    "/(api|trpc)(.*)",
   ],
 };
