@@ -96,6 +96,116 @@ def _magnitude_to_tier(value: Any) -> str:
         return "medium"
 
 
+# ── Data Sufficiency Guard (Q14) ──────────────────────────────────────────────
+# Minimum thresholds before any insight type activates.
+# Below these thresholds the data is too sparse to produce reliable insights —
+# false pattern detection early destroys trust in the feature permanently.
+
+_THRESHOLD_PATTERN_INCIDENTS  = 3    # min incidents for pattern insights
+_THRESHOLD_PATTERN_DAYS       = 14   # min days of history
+_THRESHOLD_TREND_INCIDENTS     = 10   # min incidents for trend insights
+_THRESHOLD_TREND_DAYS          = 30   # min days of history for trends
+_THRESHOLD_DEPLOY_CORRELATION  = 5    # min deploys with incident co-occurrence
+
+
+async def _check_data_sufficiency(tenant_id: str) -> dict:
+    """
+    Returns a dict describing whether each insight type has enough data to activate.
+
+    Example return:
+    {
+      "pattern": {"ready": False, "incidents": 1, "days": 5,
+                  "needs": "2 more incidents, 9 more days"},
+      "trend":   {"ready": False, ...},
+      "deploy":  {"ready": True, ...},
+    }
+    """
+    from apps.api.db.models import Incident, CanonicalDocument as _CD
+
+    now = datetime.now(tz=timezone.utc)
+    cutoff_14 = now - timedelta(days=_THRESHOLD_PATTERN_DAYS)
+    cutoff_30 = now - timedelta(days=_THRESHOLD_TREND_DAYS)
+
+    async with AsyncSession() as db:
+        # Count total incidents in last 30 days
+        inc_result = await db.execute(
+            sa.select(sa.func.count(Incident.id)).where(
+                Incident.tenant_id == tenant_id,
+                Incident.started_at >= cutoff_30,
+            )
+        )
+        total_incidents_30d = inc_result.scalar_one() or 0
+
+        # Count incidents in last 14 days
+        inc_result_14 = await db.execute(
+            sa.select(sa.func.count(Incident.id)).where(
+                Incident.tenant_id == tenant_id,
+                Incident.started_at >= cutoff_14,
+            )
+        )
+        total_incidents_14d = inc_result_14.scalar_one() or 0
+
+        # Earliest incident date (to compute days of history)
+        first_inc_result = await db.execute(
+            sa.select(sa.func.min(Incident.started_at)).where(
+                Incident.tenant_id == tenant_id,
+            )
+        )
+        first_incident_at = first_inc_result.scalar_one()
+        days_of_history = (now - first_incident_at).days if first_incident_at else 0
+
+        # Count GitHub deploys (PRs merged) in last 30 days
+        deploy_result = await db.execute(
+            sa.select(sa.func.count(_CD.id)).where(
+                _CD.tenant_id == tenant_id,
+                _CD.source_type == "github",
+                _CD.source_created_at >= cutoff_30,
+            )
+        )
+        total_deploys = deploy_result.scalar_one() or 0
+
+    def _gap(current: int, needed: int) -> str:
+        diff = needed - current
+        return f"{diff} more" if diff > 0 else "met"
+
+    pattern_ready = (total_incidents_14d >= _THRESHOLD_PATTERN_INCIDENTS
+                     and days_of_history >= _THRESHOLD_PATTERN_DAYS)
+    trend_ready   = (total_incidents_30d >= _THRESHOLD_TREND_INCIDENTS
+                     and days_of_history >= _THRESHOLD_TREND_DAYS)
+    deploy_ready  = total_deploys >= _THRESHOLD_DEPLOY_CORRELATION
+
+    return {
+        "pattern": {
+            "ready":     pattern_ready,
+            "incidents": total_incidents_14d,
+            "days":      days_of_history,
+            "needs": (
+                "Ready" if pattern_ready else
+                f"Need {_gap(total_incidents_14d, _THRESHOLD_PATTERN_INCIDENTS)} incidents "
+                f"and {_gap(days_of_history, _THRESHOLD_PATTERN_DAYS)} days of history"
+            ),
+        },
+        "trend": {
+            "ready":     trend_ready,
+            "incidents": total_incidents_30d,
+            "days":      days_of_history,
+            "needs": (
+                "Ready" if trend_ready else
+                f"Need {_gap(total_incidents_30d, _THRESHOLD_TREND_INCIDENTS)} incidents "
+                f"and {_gap(days_of_history, _THRESHOLD_TREND_DAYS)} days of history"
+            ),
+        },
+        "deploy": {
+            "ready":   deploy_ready,
+            "deploys": total_deploys,
+            "needs": (
+                "Ready" if deploy_ready else
+                f"Need {_gap(total_deploys, _THRESHOLD_DEPLOY_CORRELATION)} more GitHub deploys"
+            ),
+        },
+    }
+
+
 async def _save_insight(db, tenant_id: str, parsed: dict, source_types: list[str]):
     insight = Insight(
         tenant_id=tenant_id,
@@ -239,7 +349,41 @@ async def _detect_eng_bottleneck(tenant_id: str):
 # ── Master scheduler ─────────────────────────────────────────────────────────
 @shared_task(name="insights.run_all_for_tenant")
 def run_all_insights_for_tenant(tenant_id: str):
-    """Dispatches all insight detectors for a single tenant."""
-    detect_complaint_spike.delay(tenant_id)
-    detect_feature_trend.delay(tenant_id)
-    detect_eng_bottleneck.delay(tenant_id)
+    """
+    Dispatches insight detectors for a tenant only if data sufficiency thresholds are met.
+
+    Skips insight generation entirely when data is too sparse — a bad insight seen
+    early permanently destroys trust in the feature. No insight is better than a
+    wrong one. The threshold status is logged so the team can monitor activation rates.
+    """
+    sufficiency = _run_async(_check_data_sufficiency(tenant_id))
+
+    any_ready = any(v.get("ready") for v in sufficiency.values())
+    if not any_ready:
+        logger.info(
+            "[%s] Insights skipped — data thresholds not met. "
+            "Pattern: %s | Trend: %s | Deploy: %s",
+            tenant_id,
+            sufficiency["pattern"]["needs"],
+            sufficiency["trend"]["needs"],
+            sufficiency["deploy"]["needs"],
+        )
+        return {"status": "insufficient_data", "thresholds": sufficiency}
+
+    logger.info(
+        "[%s] Insights running. Pattern ready=%s | Trend ready=%s | Deploy ready=%s",
+        tenant_id,
+        sufficiency["pattern"]["ready"],
+        sufficiency["trend"]["ready"],
+        sufficiency["deploy"]["ready"],
+    )
+
+    # Only dispatch detectors for which the threshold is met
+    if sufficiency["pattern"]["ready"] or sufficiency["deploy"]["ready"]:
+        detect_complaint_spike.delay(tenant_id)
+    if sufficiency["trend"]["ready"]:
+        detect_feature_trend.delay(tenant_id)
+    if sufficiency["pattern"]["ready"]:
+        detect_eng_bottleneck.delay(tenant_id)
+
+    return {"status": "dispatched", "thresholds": sufficiency}

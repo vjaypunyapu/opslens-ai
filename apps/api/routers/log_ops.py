@@ -267,6 +267,11 @@ class CreateRoutingRuleRequest(BaseModel):
         default=False,
         description="Stop evaluating further rules after this one matches."
     )
+    cooldown_minutes:  int = Field(
+        default=10, ge=5, le=1440,
+        description="Minutes before re-alerting on the same error signature (min 5, max 1440). "
+                    "Overrides the global LOG_FAST_ALERT_COOLDOWN_MINUTES for alerts matching this rule."
+    )
     is_active:         bool = True
 
 
@@ -281,6 +286,7 @@ class UpdateRoutingRuleRequest(BaseModel):
     email_recipients:  list[str] | None = None
     priority:          int | None = Field(default=None, ge=1, le=999)
     stop_on_match:     bool | None = None
+    cooldown_minutes:  int | None = Field(default=None, ge=5, le=1440)
     is_active:         bool | None = None
 
 
@@ -297,6 +303,7 @@ class RoutingRuleOut(BaseModel):
     email_recipients:  list[str]
     priority:          int
     stop_on_match:     bool
+    cooldown_minutes:  int
     is_active:         bool
     created_at:        str
 
@@ -376,6 +383,7 @@ async def create_routing_rule(
         email_recipients=body.email_recipients,
         priority=body.priority,
         stop_on_match=body.stop_on_match,
+        cooldown_minutes=max(body.cooldown_minutes, 5),  # enforce 5-min floor
         is_active=body.is_active,
     )
     db.add(rr)
@@ -424,6 +432,7 @@ async def update_routing_rule(
     if body.email_recipients  is not None: rr.email_recipients  = body.email_recipients
     if body.priority          is not None: rr.priority          = body.priority
     if body.stop_on_match     is not None: rr.stop_on_match     = body.stop_on_match
+    if body.cooldown_minutes  is not None: rr.cooldown_minutes  = max(body.cooldown_minutes, 5)
     if body.is_active         is not None: rr.is_active         = body.is_active
     await write_audit(db, tenant_id=ctx.tenant_id, actor_id=ctx.user_id, actor_role=ctx.role,
                       resource="alert_routing_rule", resource_id=rule_id, action="update",
@@ -1274,6 +1283,7 @@ def _rr_to_out(rr: AlertRoutingRule) -> RoutingRuleOut:
         email_recipients=list(rr.email_recipients or []),
         priority=rr.priority,
         stop_on_match=rr.stop_on_match,
+        cooldown_minutes=rr.cooldown_minutes or 10,
         is_active=rr.is_active,
         created_at=rr.created_at.isoformat(),
     )

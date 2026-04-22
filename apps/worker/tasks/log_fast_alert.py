@@ -67,9 +67,11 @@ _CRITICAL_RE = re.compile(
     re.IGNORECASE,
 )
 
-# In-process cooldown store  {signature_hash: datetime_last_fired}
+_MIN_COOLDOWN_MINUTES = 5   # hard floor — prevents 0-minute storms
+
+# In-process cooldown store  {signature_hash: (datetime_last_fired, cooldown_minutes)}
 # Used as a fast local cache; the authoritative suppression check is the DB.
-_cooldown_store: dict[str, datetime] = {}
+_cooldown_store: dict[str, tuple[datetime, int]] = {}
 
 
 # ── DB suppression check ──────────────────────────────────────────────────────
@@ -185,6 +187,7 @@ async def _resolve_routing_async(
                     "slack_webhook":    _decrypt_webhook(rule.slack_webhook),
                     "email_recipients": list(rule.email_recipients or []),
                     "pagerduty_key":    _decrypt_webhook(rule.pagerduty_key),
+                    "cooldown_minutes": max(getattr(rule, "cooldown_minutes", 10) or 10, _MIN_COOLDOWN_MINUTES),
                 })
                 logger.info(
                     "Routing rule matched: team='%s' priority=%d for sig='%s'",
@@ -198,6 +201,7 @@ async def _resolve_routing_async(
                 "team_name":        "Default",
                 "slack_webhook":    fallback_webhook,
                 "email_recipients": [],
+                "cooldown_minutes": settings.LOG_FAST_ALERT_COOLDOWN_MINUTES,
             })
 
         return targets
@@ -205,8 +209,55 @@ async def _resolve_routing_async(
     except Exception as exc:
         logger.warning("Routing resolution failed (using fallback): %s", exc)
         if fallback_webhook:
-            return [{"team_name": "Default", "slack_webhook": fallback_webhook, "email_recipients": []}]
+            return [{"team_name": "Default", "slack_webhook": fallback_webhook,
+                     "email_recipients": [], "cooldown_minutes": settings.LOG_FAST_ALERT_COOLDOWN_MINUTES}]
         return []
+
+
+async def _create_alert_history_async(
+    tenant_id: str,
+    error_signature: str,
+    error_count: int,
+    targets: list[dict],
+) -> str | None:
+    """
+    Create an AlertHistory record when a fast-scan alert fires.
+    Returns the alert_history_id (UUID str) for use in escalation scheduling.
+    """
+    try:
+        import uuid as _uuid
+        import sqlalchemy as sa
+        from apps.worker.db import AsyncSession
+        from apps.api.db.models import AlertHistory
+
+        alert_id = _uuid.uuid4()
+        async with AsyncSession() as db:
+            # AlertHistory.rule_id has a FK to alert_rules — use a sentinel nil UUID
+            # for log-triggered alerts that have no corresponding AlertRule row.
+            nil_rule_id = _uuid.UUID("00000000-0000-0000-0000-000000000000")
+            try:
+                tenant_uuid = _uuid.UUID(tenant_id)
+            except ValueError:
+                tenant_uuid = nil_rule_id
+
+            history = AlertHistory(
+                id=alert_id,
+                rule_id=nil_rule_id,
+                tenant_id=tenant_uuid,
+                trigger_data={
+                    "signature":   error_signature,
+                    "error_count": error_count,
+                    "teams":       [t.get("team_name") for t in targets],
+                },
+                channels_notified=[t.get("team_name", "Default") for t in targets],
+                acknowledged=False,
+            )
+            db.add(history)
+            await db.commit()
+        return str(alert_id)
+    except Exception as exc:
+        logger.warning("Could not create AlertHistory for escalation tracking: %s", exc)
+        return None
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -372,15 +423,19 @@ def _extract_error_groups(lines: list[str]) -> list[ErrorGroup]:
 
 
 def _is_on_cooldown(sig: str) -> bool:
-    last = _cooldown_store.get(sig)
-    if not last:
+    """Check if this error signature is still within its cooldown window."""
+    entry = _cooldown_store.get(sig)
+    if not entry:
         return False
-    cooldown_secs = settings.LOG_FAST_ALERT_COOLDOWN_MINUTES * 60
-    return (datetime.now(tz=timezone.utc) - last).total_seconds() < cooldown_secs
+    last_fired, cooldown_minutes = entry
+    effective = max(cooldown_minutes, _MIN_COOLDOWN_MINUTES)
+    return (datetime.now(tz=timezone.utc) - last_fired).total_seconds() < effective * 60
 
 
-def _mark_fired(sig: str) -> None:
-    _cooldown_store[sig] = datetime.now(tz=timezone.utc)
+def _mark_fired(sig: str, cooldown_minutes: int) -> None:
+    """Record that this signature just fired, with its per-rule cooldown window."""
+    effective = max(cooldown_minutes, _MIN_COOLDOWN_MINUTES)
+    _cooldown_store[sig] = (datetime.now(tz=timezone.utc), effective)
 
 
 # ── RAG enrichment (queries Qdrant for related Jira/Slack/GitHub docs) ────────
@@ -898,14 +953,21 @@ def fast_scan(self, tenant_id: str | None = None):
                 suppressed += 1
                 continue
 
-            # ── Step 2: In-process cooldown (fast dedup within same worker) ───
-            _mark_fired(eg.signature)
-
-            # ── Step 3: Resolve team routing ──────────────────────────────────
-            # (timeline event written after routing is resolved, below)
-            targets = _run_async(
+            # ── Step 2: In-process cooldown — use min cooldown across matched rules ──
+            # Resolve targets first (Step 3) so we have per-rule cooldown values.
+            # The minimum cooldown across all matched rules wins (most permissive,
+            # so the rule with the tightest requirement is respected).
+            targets_pre = _run_async(
                 _resolve_routing_async(tid, eg, container=None, fallback_webhook=fallback_webhook)
             )
+            rule_cooldown = min(
+                (t.get("cooldown_minutes", settings.LOG_FAST_ALERT_COOLDOWN_MINUTES) for t in targets_pre),
+                default=settings.LOG_FAST_ALERT_COOLDOWN_MINUTES,
+            )
+            _mark_fired(eg.signature, rule_cooldown)
+
+            # ── Step 3: Use already-resolved targets from Step 2 ─────────────
+            targets = targets_pre
             if not targets:
                 logger.warning(
                     "No routing targets for exception '%s' — configure routing rules or set LOG_FAST_ALERT_SLACK_WEBHOOK",
@@ -923,30 +985,21 @@ def fast_scan(self, tenant_id: str | None = None):
                 )
             )
 
-            # ── Step 4b: PagerDuty — fire for any rule with a routing key ─────
-            try:
-                from apps.worker.tasks.pagerduty import dispatch_pagerduty_alerts
-                sev = "critical" if eg.count >= 10 else "high"
-                dispatch_pagerduty_alerts(
-                    routing_targets=targets,
-                    tenant_id=tid,
-                    error_signature=eg.signature,
-                    error_summary=eg.first_line[:120],
-                    service_name=None,
-                    severity=sev,
-                    custom_details={
-                        "error_count": eg.count,
-                        "window_minutes": settings.LOG_FAST_ALERT_WINDOW_MINUTES,
-                        "sample": eg.first_line[:300],
-                    },
-                )
-            except Exception as pd_exc:
-                logger.warning("PagerDuty dispatch failed (non-fatal): %s", pd_exc)
-
-            # ── Step 5: Fire immediate raw alert to each team ─────────────────
+            # ── Step 5: Fire immediate Slack alert to each team ───────────────
             from apps.api.services.notifications import (
                 build_fast_alert_payload, send_webhook as _send_notification,
             )
+            # Create an AlertHistory record so engineers can acknowledge the alert
+            # and cancel the pending PagerDuty escalation (Q11).
+            alert_history_id = _run_async(
+                _create_alert_history_async(
+                    tenant_id=tid,
+                    error_signature=eg.signature,
+                    error_count=eg.count,
+                    targets=targets,
+                )
+            )
+
             for target in targets:
                 webhook_url = target.get("slack_webhook")
                 team_name   = target.get("team_name", "Team")
@@ -976,6 +1029,25 @@ def fast_scan(self, tenant_id: str | None = None):
                     error_count=eg.count,
                     window_minutes=settings.LOG_FAST_ALERT_WINDOW_MINUTES,
                 )
+
+            # ── Step 4b: Schedule PagerDuty escalation (fires only if unacked) ─
+            # PagerDuty now fires as a DELAYED task (countdown = escalation window).
+            # If an engineer acknowledges in Slack within that window, the task
+            # checks the DB and cancels itself — no unnecessary page.
+            if alert_history_id and any(t.get("pagerduty_key") for t in targets):
+                try:
+                    from apps.worker.tasks.escalation import schedule_escalation
+                    _run_async(schedule_escalation(
+                        alert_history_id=alert_history_id,
+                        tenant_id=tid,
+                        routing_targets=targets,
+                        error_signature=eg.signature,
+                        error_summary=eg.first_line[:120],
+                        error_count=eg.count,
+                        window_minutes=settings.LOG_FAST_ALERT_WINDOW_MINUTES,
+                    ))
+                except Exception as pd_exc:
+                    logger.warning("PagerDuty escalation scheduling failed (non-fatal): %s", pd_exc)
 
             fired += 1
             logger.info(

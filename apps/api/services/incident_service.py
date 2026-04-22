@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
+import tiktoken
 from langchain_core.prompts import ChatPromptTemplate
 
 from ..config import settings
@@ -25,6 +26,144 @@ from ..db.session import AsyncSessionFactory
 from ..utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+# ── Token budget constants ─────────────────────────────────────────────────────
+# Total context window assumed for the LLM (conservative — works for gpt-4o-mini,
+# GPT-4, Claude, and local Ollama models).
+_CTX_TOKEN_LIMIT   = 12_000
+# Tokens reserved for the LLM's own response (root_cause + factors + recommendations).
+_RESPONSE_RESERVE  = 1_000
+# Tokens reserved for the static parts of the prompt (system message + incident header).
+_PROMPT_OVERHEAD   = 800
+# Available tokens for signals
+_SIGNAL_BUDGET     = _CTX_TOKEN_LIMIT - _RESPONSE_RESERVE - _PROMPT_OVERHEAD
+
+# Priority tier sizes — how many signals from each tier to include first.
+# Tier 1 is always included; later tiers fill the remaining budget.
+_TIER1_LOGS        = 5    # top-scored log signals
+_TIER1_COMMITS     = 1    # most recent commit
+_TIER1_TICKETS     = 1    # most relevant Jira/Zendesk ticket
+_TIER2_LOGS        = 10   # additional logs after Tier 1
+_TIER2_COMMITS     = 3    # additional commits
+_TIER2_ALERTS      = 2    # recent alert history entries
+_DETAIL_CHARS      = 300  # max chars per signal detail line
+
+try:
+    _enc = tiktoken.get_encoding("cl100k_base")
+except Exception:
+    _enc = None  # graceful fallback if tiktoken not installed
+
+
+def _count_tokens(text: str) -> int:
+    if _enc:
+        return len(_enc.encode(text))
+    # Rough fallback: 1 token ≈ 4 chars
+    return max(1, len(text) // 4)
+
+
+def _format_signal(i: int, s: dict) -> str:
+    ts = (s.get("timestamp") or "")[:19]
+    src = s.get("source_type", "unknown").upper()
+    title = s.get("title", "")
+    detail = (s.get("detail") or "")[:_DETAIL_CHARS]
+    return f"[{i}] {ts} | {src} | {title}\n     {detail}"
+
+
+def _build_signals_context(signals: list[dict]) -> tuple[str, int, bool]:
+    """
+    Build the signals context string within the token budget using prioritized truncation.
+
+    Priority order:
+      Tier 1 (always include): top-5 logs by score + most recent commit + top Jira ticket
+      Tier 2 (fill budget):    next-10 logs + 3 more commits + 2 alerts
+      Tier 3 (summarize):      remaining signals as a short count summary
+
+    Returns: (context_str, token_count, was_truncated)
+    """
+    if not signals:
+        return "No correlated signals found across connected data sources.", 0, False
+
+    # Partition by source type, keeping score ordering
+    logs    = [s for s in signals if s.get("source_type") in ("logs", "railway", "cloudwatch",
+                                                                "datadog", "elasticsearch",
+                                                                "splunk", "gcp", "azuremonitor")]
+    commits = [s for s in signals if s.get("source_type") == "github"]
+    tickets = [s for s in signals if s.get("source_type") in ("jira", "zendesk", "linear")]
+    alerts  = [s for s in signals if s.get("source_type") in ("alert", "pagerduty")]
+    others  = [s for s in signals if s not in logs + commits + tickets + alerts]
+
+    # Sort each group: logs by score desc, rest by timestamp desc
+    logs.sort(key=lambda s: s.get("score", 0), reverse=True)
+    for grp in (commits, tickets, alerts, others):
+        grp.sort(key=lambda s: s.get("timestamp") or "", reverse=True)
+
+    chosen: list[dict] = []
+    used_tokens = 0
+    budget = _SIGNAL_BUDGET
+
+    def _try_add(signal: dict) -> bool:
+        nonlocal used_tokens
+        formatted = _format_signal(len(chosen) + 1, signal)
+        cost = _count_tokens(formatted) + 3  # +3 for separator
+        if used_tokens + cost > budget:
+            return False
+        chosen.append(signal)
+        used_tokens += cost
+        return True
+
+    # ── Tier 1: always-include signals ────────────────────────────────────────
+    for s in logs[:_TIER1_LOGS]:
+        _try_add(s)
+    for s in commits[:_TIER1_COMMITS]:
+        _try_add(s)
+    for s in tickets[:_TIER1_TICKETS]:
+        _try_add(s)
+
+    # ── Tier 2: fill remaining budget ─────────────────────────────────────────
+    tier2_logs    = [s for s in logs[_TIER1_LOGS:]   if s not in chosen]
+    tier2_commits = [s for s in commits[_TIER1_COMMITS:] if s not in chosen]
+    tier2_alerts  = [s for s in alerts if s not in chosen]
+    tier2_others  = [s for s in others if s not in chosen]
+
+    for s in tier2_logs[:_TIER2_LOGS]:
+        if not _try_add(s):
+            break
+    for s in tier2_commits[:_TIER2_COMMITS]:
+        if not _try_add(s):
+            break
+    for s in tier2_alerts[:_TIER2_ALERTS]:
+        if not _try_add(s):
+            break
+    for s in tier2_others:
+        if not _try_add(s):
+            break
+
+    was_truncated = len(chosen) < len(signals)
+    omitted = len(signals) - len(chosen)
+
+    if was_truncated:
+        logger.warning(
+            "Context window truncation: included %d/%d signals (%d omitted, ~%d tokens used of %d budget). "
+            "Consider reducing signal retrieval limit or increasing _CTX_TOKEN_LIMIT.",
+            len(chosen), len(signals), omitted, used_tokens, budget,
+        )
+
+    parts = [_format_signal(i + 1, s) for i, s in enumerate(chosen)]
+
+    # ── Tier 3: summary footer for omitted signals ─────────────────────────────
+    if was_truncated:
+        omit_types: dict[str, int] = {}
+        for s in signals:
+            if s not in chosen:
+                t = s.get("source_type", "unknown")
+                omit_types[t] = omit_types.get(t, 0) + 1
+        breakdown = ", ".join(f"{v} {k}" for k, v in sorted(omit_types.items()))
+        parts.append(
+            f"\n[Truncated — {omitted} additional signals omitted to stay within context budget: {breakdown}. "
+            "Focus your analysis on the signals above.]"
+        )
+
+    return "\n\n".join(parts), used_tokens, was_truncated
 
 # ── LLM + embeddings: respects LLM_PROVIDER setting ──────────────────────────
 if settings.LLM_PROVIDER == "ollama":
@@ -201,11 +340,9 @@ async def investigate_incident(
                 })
 
             # ── 5. Generate RCA via LLM ────────────────────────────────────────
-            signals_text = "\n\n".join(
-                f"[{i+1}] {s['timestamp'][:19]} | {s['source_type'].upper()} | "
-                f"{s['title']}\n     {s['detail'][:300]}"
-                for i, s in enumerate(signals[:30])  # cap context
-            ) or "No correlated signals found across connected data sources."
+            # Prioritized truncation: Tier 1 always included, Tier 2 fills budget,
+            # Tier 3 summarized. Never silently exceeds the model's context window.
+            signals_text, _ctx_tokens, _was_truncated = _build_signals_context(signals)
 
             chain = _RCA_PROMPT | _llm
             raw = await chain.ainvoke({

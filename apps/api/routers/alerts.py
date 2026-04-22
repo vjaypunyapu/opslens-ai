@@ -254,6 +254,48 @@ async def get_alert_history(
     ]
 
 
+# ── Alert acknowledgement (Q11 — cancels pending PagerDuty escalation) ────────
+@router.post("/acknowledge/{alert_history_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def acknowledge_alert(
+    alert_history_id: str,
+    ctx: Annotated[TenantContext, Depends(require_viewer)],
+    db=Depends(get_db),
+):
+    """
+    Mark an alert as acknowledged by the current engineer.
+
+    This cancels the pending PagerDuty escalation task — if the escalation
+    countdown hasn't elapsed yet, PagerDuty will NOT be paged.
+
+    Engineers should call this as soon as they start investigating an alert,
+    either via the OpsLens dashboard or a Slack /ack command.
+    """
+    from datetime import datetime, timezone
+
+    result = await db.execute(
+        sa.select(AlertHistory).where(
+            AlertHistory.id == uuid.UUID(alert_history_id),
+            AlertHistory.tenant_id == ctx.tenant_uuid,
+        )
+    )
+    history = result.scalar_one_or_none()
+    if not history:
+        raise HTTPException(status_code=404, detail="Alert not found.")
+
+    if history.acknowledged:
+        return  # idempotent — already acknowledged, nothing to do
+
+    history.acknowledged    = True
+    history.acknowledged_at = datetime.now(timezone.utc)
+    history.acknowledged_by = ctx.user_id
+    await db.commit()
+
+    logger.info(
+        "Alert %s acknowledged by %s — PagerDuty escalation cancelled",
+        alert_history_id, ctx.user_id,
+    )
+
+
 # ── Log scan — trigger on demand ──────────────────────────────────────────────
 @router.post("/logs/scan", status_code=status.HTTP_202_ACCEPTED)
 async def trigger_log_scan(

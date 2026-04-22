@@ -213,6 +213,10 @@ class AlertHistory(Base):
     triggered_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    # Q11: acknowledgement — set by an engineer to cancel pending PagerDuty escalation
+    acknowledged: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    acknowledged_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     rule: Mapped[AlertRule] = relationship("AlertRule", back_populates="history")
 

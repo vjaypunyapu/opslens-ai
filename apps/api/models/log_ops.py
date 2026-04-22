@@ -112,6 +112,10 @@ class AlertRoutingRule(Base):
     priority            = Column(Integer, nullable=False, default=100)
     stop_on_match       = Column(Boolean, nullable=False, default=False)
     is_active           = Column(Boolean, nullable=False, default=True)
+    # Per-rule cooldown: how long to suppress re-alerts for the same error
+    # signature after this rule fires. Overrides global LOG_FAST_ALERT_COOLDOWN_MINUTES.
+    # Minimum enforced floor: 5 minutes. Default: 10 minutes.
+    cooldown_minutes    = Column(Integer, nullable=False, default=10)
 
     created_at          = Column(DateTime(timezone=True), nullable=False,
                                  default=lambda: datetime.now(tz=timezone.utc))
