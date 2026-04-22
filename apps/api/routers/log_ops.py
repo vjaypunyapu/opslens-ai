@@ -32,7 +32,43 @@ from ..auth.dependencies import TenantContext, require_admin, require_viewer
 from ..db.session import get_db
 from ..models.log_ops import AlertRoutingRule, KnownIssue
 from ..utils.audit import write_audit
+from ..utils.crypto import encrypt as _enc, decrypt as _dec
 from ..utils.logging import get_logger
+
+
+# ── Webhook encryption helpers ─────────────────────────────────────────────────
+
+def _encrypt_webhook(url: str | None) -> str | None:
+    """Encrypt a webhook URL or PagerDuty key before storing in PostgreSQL."""
+    if not url:
+        return url
+    try:
+        return _enc(url)
+    except Exception:
+        return url  # never silently drop a webhook — fall back to plaintext
+
+
+def _decrypt_webhook(stored: str | None) -> str | None:
+    """Decrypt a stored webhook URL. Falls back to plaintext for un-encrypted legacy rows."""
+    if not stored:
+        return stored
+    try:
+        return _dec(stored)
+    except Exception:
+        return stored  # graceful migration: existing plaintext rows still work
+
+
+def _mask_webhook(url: str | None) -> str | None:
+    """Return a masked version safe to include in API responses."""
+    if not url:
+        return None
+    decrypted = _decrypt_webhook(url)
+    if not decrypted:
+        return None
+    # Show protocol + first ~20 chars, then mask the rest (which contains the secret token)
+    if len(decrypted) > 24:
+        return decrypted[:24] + "****"
+    return "****"
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -336,7 +372,7 @@ async def create_routing_rule(
         error_patterns=body.error_patterns,
         source_containers=body.source_containers,
         match_all=body.match_all,
-        slack_webhook=body.slack_webhook,
+        slack_webhook=_encrypt_webhook(body.slack_webhook),
         email_recipients=body.email_recipients,
         priority=body.priority,
         stop_on_match=body.stop_on_match,
@@ -384,7 +420,7 @@ async def update_routing_rule(
     if body.error_patterns    is not None: rr.error_patterns    = body.error_patterns
     if body.source_containers is not None: rr.source_containers = body.source_containers
     if body.match_all         is not None: rr.match_all         = body.match_all
-    if body.slack_webhook     is not None: rr.slack_webhook     = body.slack_webhook
+    if body.slack_webhook     is not None: rr.slack_webhook     = _encrypt_webhook(body.slack_webhook)
     if body.email_recipients  is not None: rr.email_recipients  = body.email_recipients
     if body.priority          is not None: rr.priority          = body.priority
     if body.stop_on_match     is not None: rr.stop_on_match     = body.stop_on_match
@@ -1234,10 +1270,15 @@ def _rr_to_out(rr: AlertRoutingRule) -> RoutingRuleOut:
         error_patterns=list(rr.error_patterns or []),
         source_containers=list(rr.source_containers or []),
         match_all=rr.match_all,
-        slack_webhook=rr.slack_webhook,
+        slack_webhook=_mask_webhook(rr.slack_webhook),  # never expose plaintext tokens in API responses
         email_recipients=list(rr.email_recipients or []),
         priority=rr.priority,
         stop_on_match=rr.stop_on_match,
         is_active=rr.is_active,
         created_at=rr.created_at.isoformat(),
     )
+
+
+def _decrypt_routing_rule_webhook(rr: AlertRoutingRule) -> str | None:
+    """Use this — not rr.slack_webhook directly — whenever you need the actual URL to fire a request."""
+    return _decrypt_webhook(rr.slack_webhook)

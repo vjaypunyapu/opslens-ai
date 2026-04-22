@@ -44,7 +44,18 @@ from celery import shared_task
 from celery.utils.log import get_task_logger
 
 from apps.api.config import settings
+from apps.api.utils.crypto import decrypt as _crypto_decrypt
 from apps.worker.async_utils import run_async as _run_async
+
+
+def _decrypt_webhook(stored: str | None) -> str | None:
+    """Decrypt an AES-256 encrypted webhook URL. Falls back gracefully for plaintext legacy rows."""
+    if not stored:
+        return stored
+    try:
+        return _crypto_decrypt(stored)
+    except Exception:
+        return stored  # not yet encrypted — return as-is during migration window
 
 logger = get_task_logger(__name__)
 
@@ -171,9 +182,9 @@ async def _resolve_routing_async(
             if _rule_matches(rule, error_group.first_line, container):
                 targets.append({
                     "team_name":        rule.team_name,
-                    "slack_webhook":    rule.slack_webhook,
+                    "slack_webhook":    _decrypt_webhook(rule.slack_webhook),
                     "email_recipients": list(rule.email_recipients or []),
-                    "pagerduty_key":    rule.pagerduty_key,
+                    "pagerduty_key":    _decrypt_webhook(rule.pagerduty_key),
                 })
                 logger.info(
                     "Routing rule matched: team='%s' priority=%d for sig='%s'",

@@ -501,6 +501,16 @@ async def _get_or_404(db, brief_id: str, tenant_id: str) -> RRTBrief:
 async def _get_team_webhook(db, tenant_id: str, team_name: str | None) -> str | None:
     """Look up the Slack webhook for a team from AlertRoutingRule, falling back to config."""
     from apps.api.config import settings as cfg
+    from ..utils.crypto import decrypt as _crypto_decrypt
+
+    def _safe_decrypt(stored: str | None) -> str | None:
+        if not stored:
+            return stored
+        try:
+            return _crypto_decrypt(stored)
+        except Exception:
+            return stored  # plaintext legacy row — return as-is
+
     if team_name:
         try:
             from ..models.log_ops import AlertRoutingRule
@@ -513,7 +523,7 @@ async def _get_team_webhook(db, tenant_id: str, team_name: str | None) -> str | 
             )
             webhook = result.scalar_one_or_none()
             if webhook:
-                return webhook
+                return _safe_decrypt(webhook)
         except Exception:
             pass
     return cfg.LOG_FAST_ALERT_SLACK_WEBHOOK or cfg.LOG_SCAN_SLACK_WEBHOOK

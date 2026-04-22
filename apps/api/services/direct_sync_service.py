@@ -2098,6 +2098,15 @@ async def run_direct_sync(integration_id: str, tenant_id: str) -> None:
         # pull new records, not re-process everything on every run.
         last_synced_at = integration.last_synced_at
 
+        # Q3 fix: record the fetch start time BEFORE we call the external API.
+        # After a successful sync we advance last_synced_at to this timestamp,
+        # not to datetime.now() — which could be minutes later.
+        # Using pre-fetch time means any records that arrive while we are mid-fetch
+        # will be caught by the NEXT poll (their timestamps > fetch_started_at).
+        # This is intentionally conservative: a small amount of re-fetching is
+        # always safer than silently skipping records.
+        fetch_started_at = datetime.now(tz=timezone.utc)
+
         integration.status = "pending"
         await db.commit()
 
@@ -2112,6 +2121,8 @@ async def run_direct_sync(integration_id: str, tenant_id: str) -> None:
             count = await fetcher(raw_creds, str(tenant_id), integration_id)
     except Exception as exc:
         logger.exception("direct_sync failed for %s/%s: %s", source_type, integration_id, exc)
+        # Do NOT advance last_synced_at on failure — next poll will retry from
+        # the same checkpoint (last_synced_at stays at its previous value).
         async with async_session_factory() as db:
             result = await db.execute(sa.select(Integration).where(Integration.id == uuid.UUID(integration_id)))
             intg = result.scalar_one_or_none()
@@ -2121,15 +2132,18 @@ async def run_direct_sync(integration_id: str, tenant_id: str) -> None:
                 await db.commit()
         return
 
-    # Update stats
+    # Update stats — only reached on full successful sync
     async with async_session_factory() as db:
         result = await db.execute(sa.select(Integration).where(Integration.id == uuid.UUID(integration_id)))
         intg = result.scalar_one_or_none()
         if intg:
             intg.status = "active"
             intg.total_records = (intg.total_records or 0) + count
-            intg.last_synced_at = datetime.now(tz=timezone.utc)
+            # Advance to fetch_started_at (pre-fetch timestamp), not now().
+            # This ensures records arriving mid-fetch are caught next poll.
+            intg.last_synced_at = fetch_started_at
             intg.error_message = None
             await db.commit()
 
-    logger.info("direct_sync complete: %s synced %d records", source_type, count)
+    logger.info("direct_sync complete: %s synced %d records (cursor advanced to %s)",
+                source_type, count, fetch_started_at.isoformat())

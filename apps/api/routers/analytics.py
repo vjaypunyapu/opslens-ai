@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 from ..auth.dependencies import TenantContext, require_viewer, require_member
 from ..config import settings
 from ..db.models import CanonicalDocument, Incident
-from ..db.session import get_db
+from ..db.session import get_db, tenant_select
 from ..utils.logging import get_logger
 
 router = APIRouter()
@@ -84,7 +84,7 @@ async def get_error_trends(
             sa.func.count(Incident.id).label("cnt"),
         )
         .where(
-            Incident.tenant_id == ctx.tenant_uuid,
+            Incident.tenant_id == ctx.tenant_uuid,  # kept explicit — aggregate query needs column ref
             Incident.started_at >= cutoff,
         )
         .group_by("day", "service")
@@ -175,9 +175,8 @@ async def generate_retrospective(
 
     # ── 1. Fetch incidents ────────────────────────────────────────────────────
     inc_result = await db.execute(
-        sa.select(Incident)
+        tenant_select(Incident, tenant_uuid)
         .where(
-            Incident.tenant_id == tenant_uuid,
             Incident.started_at >= start_dt,
             Incident.started_at <= end_dt,
         )
@@ -187,7 +186,8 @@ async def generate_retrospective(
 
     # ── 2. Fetch canonical documents (GitHub PRs, Jira, Slack) ───────────────
     doc_result = await db.execute(
-        sa.select(
+        tenant_select(CanonicalDocument, tenant_uuid)
+        .with_only_columns(
             CanonicalDocument.source_type,
             CanonicalDocument.title,
             CanonicalDocument.author,
@@ -195,7 +195,6 @@ async def generate_retrospective(
             CanonicalDocument.source_created_at,
         )
         .where(
-            CanonicalDocument.tenant_id == tenant_uuid,
             CanonicalDocument.source_created_at >= start_dt,
             CanonicalDocument.source_created_at <= end_dt,
             CanonicalDocument.source_type.in_(["github", "jira", "slack"]),

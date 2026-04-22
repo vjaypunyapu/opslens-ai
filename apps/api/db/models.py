@@ -115,7 +115,9 @@ class Integration(Base):
 class CanonicalDocument(Base):
     __tablename__ = "canonical_documents"
     __table_args__ = (
-        UniqueConstraint("tenant_id", "content_hash", name="uq_canonical_documents_hash"),
+        # Primary identity key: one row per external document per tenant.
+        # Enables atomic ON CONFLICT upserts — see migration 0010.
+        UniqueConstraint("tenant_id", "source_type", "source_id", name="uq_canonical_documents_source"),
         {"schema": "opslens"},
     )
 

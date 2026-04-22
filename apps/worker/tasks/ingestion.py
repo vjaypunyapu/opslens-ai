@@ -5,6 +5,7 @@ Normalise → Deduplicate → Chunk → Embed → Upsert to Qdrant
 from __future__ import annotations
 
 import hashlib
+import json
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -931,36 +932,61 @@ async def _process_staging_batch(tenant_id: str, source_type: str, limit: int) -
 
                 chash = content_hash(record)
 
-                # Check for existing doc with same hash — skip if unchanged
-                existing = (await db.execute(
-                    sa.text(
-                        "SELECT id FROM opslens.canonical_documents "
-                        "WHERE tenant_id=:tid AND source_id=:sid AND content_hash=:ch"
-                    ),
-                    {"tid": tenant_id, "sid": record.source_id, "ch": chash},
-                )).scalar_one_or_none()
+                # ── Atomic upsert — race-condition-free dedup (Q4) ────────
+                # Uses INSERT ... ON CONFLICT (tenant_id, source_type, source_id):
+                #   - New document         → inserts, RETURNING id + inserted=true
+                #   - Unchanged document   → DO NOTHING (content_hash matches),
+                #                            RETURNING returns nothing → skipped
+                #   - Updated document     → updates fields, RETURNING id + inserted=false
+                #                            → re-queue for embedding
+                # This replaces the previous SELECT + INSERT pattern which had a
+                # race window where two concurrent workers could both insert the
+                # same document, causing a constraint violation.
+                upsert_result = (await db.execute(
+                    sa.text("""
+                        INSERT INTO opslens.canonical_documents
+                            (id, tenant_id, source_type, source_id, content_hash,
+                             title, content, author, url, doc_metadata,
+                             source_created_at, source_updated_at, embedding_status)
+                        VALUES
+                            (gen_random_uuid(), :tid, :src_type, :src_id, :chash,
+                             :title, :content, :author, :url, :metadata::jsonb,
+                             :created_at, :updated_at, 'pending')
+                        ON CONFLICT (tenant_id, source_type, source_id)
+                        DO UPDATE SET
+                            content_hash      = EXCLUDED.content_hash,
+                            title             = EXCLUDED.title,
+                            content           = EXCLUDED.content,
+                            author            = EXCLUDED.author,
+                            url               = EXCLUDED.url,
+                            doc_metadata      = EXCLUDED.doc_metadata,
+                            source_updated_at = EXCLUDED.source_updated_at,
+                            embedding_status  = 'pending',
+                            updated_at        = now()
+                        WHERE opslens.canonical_documents.content_hash != EXCLUDED.content_hash
+                        RETURNING id, (xmax = 0) AS inserted
+                    """),
+                    {
+                        "tid":        tenant_id,
+                        "src_type":   record.source_type,
+                        "src_id":     record.source_id,
+                        "chash":      chash,
+                        "title":      record.title,
+                        "content":    record.content,
+                        "author":     record.author,
+                        "url":        record.url,
+                        "metadata":   json.dumps(record.metadata or {}),
+                        "created_at": record.created_at,
+                        "updated_at": record.updated_at,
+                    },
+                )).fetchone()
 
-                if existing:
+                if upsert_result is None:
+                    # ON CONFLICT DO UPDATE WHERE clause was false → content unchanged → skip
                     skipped += 1
                 else:
-                    from ..models.document import CanonicalDocument
-                    doc = CanonicalDocument(
-                        tenant_id=uuid.UUID(tenant_id),
-                        source_type=record.source_type,
-                        source_id=record.source_id,
-                        content_hash=chash,
-                        title=record.title,
-                        content=record.content,
-                        author=record.author,
-                        url=record.url,
-                        doc_metadata=record.metadata,
-                        source_created_at=record.created_at,
-                        source_updated_at=record.updated_at,
-                        embedding_status="pending",
-                    )
-                    db.add(doc)
-                    await db.flush()          # get doc.id
-                    process_document.delay(str(doc.id), tenant_id)
+                    doc_id = str(upsert_result.id)
+                    process_document.delay(doc_id, tenant_id)
                     processed += 1
 
                 # Mark queue record as processed

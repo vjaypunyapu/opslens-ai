@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 
 from ..auth.dependencies import TenantContext, require_member, require_viewer
 from ..db.models import Incident
-from ..db.session import get_db
+from ..db.session import get_db, tenant_select
 from ..utils.logging import get_logger
 
 router = APIRouter()
@@ -118,7 +118,7 @@ async def list_incidents(
     limit: int = Query(20, le=100),
     offset: int = 0,
 ):
-    q = sa.select(Incident).where(Incident.tenant_id == ctx.tenant_id)
+    q = tenant_select(Incident, ctx.tenant_id)
     if status_filter:
         q = q.where(Incident.status == status_filter)
     if severity:
@@ -209,10 +209,7 @@ async def _trigger_investigation(incident_id: str, tenant_id: str, company_name:
 
 async def _get_or_404(db, incident_id: uuid.UUID, tenant_id: uuid.UUID) -> Incident:
     result = await db.execute(
-        sa.select(Incident).where(
-            Incident.id == incident_id,
-            Incident.tenant_id == tenant_id,
-        )
+        tenant_select(Incident, tenant_id).where(Incident.id == incident_id)
     )
     inc = result.scalar_one_or_none()
     if not inc:
