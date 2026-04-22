@@ -8,10 +8,10 @@ const isPublicRoute = createRouteMatcher([
   "/api/webhooks(.*)",
 ]);
 
-export default clerkMiddleware(async (auth, request) => {
+export default clerkMiddleware((auth, request) => {
   // Protect all non-public routes — unauthenticated users get sent to sign-in
   if (!isPublicRoute(request)) {
-    await auth.protect();
+    auth().protect();
   }
 });
 
