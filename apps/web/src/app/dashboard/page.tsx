@@ -129,7 +129,7 @@ export default function DashboardPage() {
   const { insights, documents, integrations, chat, alerts } = data;
 
   // ── "Get started" banner — shown when no integrations are connected yet ──
-  const hasIntegrations = integrations.active_count > 0;
+  const hasIntegrations = integrations.active > 0;
 
   return (
     <div style={{ padding: "28px 32px", maxWidth: 1200, margin: "0 auto" }}>
