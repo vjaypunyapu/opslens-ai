@@ -31,8 +31,14 @@ app.conf.update(
     timezone="UTC",
     enable_utc=True,
     task_track_started=True,
+    # Global default — periodic/log tasks use acks_late so they're retried on
+    # worker crash. sync_integration overrides this to acks_late=False because
+    # it's a one-shot user-triggered task that must not loop forever on timeout.
     task_acks_late=True,
     worker_prefetch_multiplier=1,
+    # Global defaults for short-running tasks. sync_integration overrides these
+    # with much higher limits (20/25 min) because full contextual syncs
+    # (GitHub 50 repos, Slack 2yr history) legitimately need more time.
     task_soft_time_limit=300,   # 5 min soft limit
     task_time_limit=600,        # 10 min hard limit
     result_expires=86400,       # keep results for 24h
