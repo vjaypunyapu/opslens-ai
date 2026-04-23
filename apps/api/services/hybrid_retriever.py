@@ -302,10 +302,31 @@ async def _id_lookup(id_string: str, tenant_id: str) -> list[Document]:
     from ..db.models import CanonicalDocument
     from ..db.session import AsyncSessionFactory as async_session_factory
 
-    # Normalise: strip leading # for numeric GitHub IDs
-    raw = id_string.lstrip("#")
     async with async_session_factory() as db:
-        # source_id patterns: "issue:12345", "commit:repo:abc123", "PROJ-45"
+        # Match strategy depends on ID format:
+        #   Jira-style (PROJ-45)  → exact source_id match or title match
+        #   GitHub numeric (#3)   → title only ("source_id" is GitHub's global int, not the PR#)
+        #   Commit SHA            → source_id suffix match (stored as "commit:repo:abc123")
+        import re as _re
+        is_jira    = bool(_re.match(r'^[A-Z]{2,10}-\d+$', id_string))
+        is_commit  = bool(_re.match(r'^[0-9a-f]{7,40}$', id_string, _re.IGNORECASE))
+        is_numeric = id_string.startswith("#")
+
+        if is_jira:
+            where = sa.or_(
+                CanonicalDocument.source_id.ilike(f"%{id_string}%"),
+                CanonicalDocument.title.ilike(f"%{id_string}%"),
+            )
+        elif is_commit:
+            where = sa.or_(
+                CanonicalDocument.source_id.ilike(f"%{id_string}%"),
+                CanonicalDocument.title.ilike(f"%{id_string}%"),
+            )
+        else:
+            # Numeric GitHub ID — search title only to avoid matching
+            # unrelated source_ids that happen to contain the digit sequence.
+            where = CanonicalDocument.title.ilike(f"%{id_string}%")
+
         q = (
             sa.select(
                 CanonicalDocument.id, CanonicalDocument.content,
@@ -315,12 +336,7 @@ async def _id_lookup(id_string: str, tenant_id: str) -> list[Document]:
                 CanonicalDocument.doc_metadata,
             )
             .where(CanonicalDocument.tenant_id == uuid.UUID(tenant_id))
-            .where(
-                sa.or_(
-                    CanonicalDocument.source_id.ilike(f"%{raw}%"),
-                    CanonicalDocument.title.ilike(f"%{id_string}%"),
-                )
-            )
+            .where(where)
             .limit(3)
         )
         rows = (await db.execute(q)).fetchall()

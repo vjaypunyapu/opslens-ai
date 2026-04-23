@@ -100,6 +100,9 @@ class PlannerState:
     metadata:        dict[str, Any]        = field(default_factory=dict)
     # None = admin/unrestricted; [] = no access; [...] = restricted source list
     allowed_sources: list[dict] | None     = None
+    # Last N turns of chat history — used by planner and generate nodes so
+    # follow-up questions like "who opened that PR?" resolve correctly.
+    history:         list[dict]            = field(default_factory=list)
 
 
 # ── Node: Plan ────────────────────────────────────────────────────────────────
@@ -139,12 +142,19 @@ async def _plan_node(state: PlannerState) -> PlannerState:
     try:
         from openai import AsyncOpenAI
         client = AsyncOpenAI(api_key=_openai_key())
+        # Include recent history so the planner can resolve pronouns and
+        # references like "who opened that PR?" or "what about the second one?"
+        history_msgs = [
+            {"role": m["role"], "content": m["content"][:400]}
+            for m in state.history[-6:]  # last 3 turns (6 messages)
+        ]
         resp = await client.chat.completions.create(
             model=model,
             temperature=0.0,
             response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": _PLAN_SYSTEM},
+                *history_msgs,
                 {"role": "user",   "content": state.question},
             ],
         )
@@ -262,8 +272,13 @@ async def _generate_node(state: PlannerState) -> PlannerState:
         )
         return state
 
+    history_msgs = [
+        {"role": m["role"], "content": m["content"][:600]}
+        for m in state.history[-6:]
+    ]
     messages = [
         {"role": "system", "content": _GENERATE_SYSTEM},
+        *history_msgs,
         {"role": "user",   "content": f"Context:\n{context}\n\nQuestion: {state.question}"},
     ]
 
@@ -350,6 +365,7 @@ async def _run_graph(
     question: str,
     tenant_id: str,
     allowed_sources: list[dict] | None = None,
+    history: list[dict] | None = None,
 ) -> PlannerState:
     """
     Execute the planner graph: plan → retrieve → generate → validate,
@@ -359,8 +375,15 @@ async def _run_graph(
         None  → unrestricted (admin)
         []    → no access
         [...] → restricted to these source_ids
+    history: recent chat turns passed so the planner can resolve pronouns
+        ("who opened that PR?") and the generator can maintain conversational context.
     """
-    state = PlannerState(question=question, tenant_id=tenant_id, allowed_sources=allowed_sources)
+    state = PlannerState(
+        question=question,
+        tenant_id=tenant_id,
+        allowed_sources=allowed_sources,
+        history=history or [],
+    )
 
     # Step 1: plan
     state = await _plan_node(state)
@@ -401,14 +424,16 @@ async def plan_and_answer(
     question: str,
     tenant_id: str,
     allowed_sources: list[dict] | None = None,
+    history: list[dict] | None = None,
 ) -> tuple[str, PlannerState]:
     """
     Non-streaming version. Returns (answer_text, final_state).
     The caller can inspect state.validation for scores/issues.
 
     allowed_sources: from permissions.get_allowed_sources(). None = unrestricted.
+    history: recent chat turns for conversational context.
     """
-    state = await _run_graph(question, tenant_id, allowed_sources=allowed_sources)
+    state = await _run_graph(question, tenant_id, allowed_sources=allowed_sources, history=history)
 
     answer = state.answer
     if state.validation and not state.validation.passed:
