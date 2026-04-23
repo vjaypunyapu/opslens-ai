@@ -107,14 +107,25 @@ class PlannerState:
 
 # ── Node: Plan ────────────────────────────────────────────────────────────────
 _PLAN_SYSTEM = """\
-You are a query planning assistant for an enterprise knowledge-retrieval system
-that has data from GitHub, Jira, and Slack.
+You are a query planning assistant for an enterprise knowledge-retrieval system.
+
+Connected data sources (search across ALL of them unless the question is specific):
+  - GitHub: issues, pull requests, commits, repositories
+  - Jira: tickets, sprints, bugs, tasks
+  - Slack: channel messages, discussions, announcements
+  - Railway: deployment logs, application errors, crash traces
+  - RRT briefs: AI-generated incident reports (what happened, impact, suspected cause, next actions)
+  - Zendesk / HubSpot: customer support tickets
+  - Log sources: Datadog, CloudWatch, Splunk, Elasticsearch, GCP Logging, Azure Monitor
 
 Given a user question, do two things in a single JSON response:
 
 1. DECOMPOSE into 1–{max_sub} specific search queries that together retrieve all
    evidence needed to answer the question completely.
    - Simple, single-topic questions → exactly 1 query.
+   - Operational questions ("issues", "errors", "problems", "incidents", "what went wrong")
+     MUST fan out across sources: generate one sub-query per relevant source type
+     (e.g. "Railway deployment errors", "incident briefs", "GitHub issues").
    - Questions spanning multiple sources or concepts → 2–{max_sub} targeted queries.
    - Each query should be a natural search phrase optimised for keyword and semantic retrieval.
 
@@ -126,7 +137,7 @@ Given a user question, do two things in a single JSON response:
    - "complex": requires reasoning, comparison, cross-source analysis, time-range
      synthesis, or the answer depends on multiple interconnected facts.
      Examples: "what's blocking the sprint", "why did error rate spike yesterday",
-               "compare PR review time across teams", "summarise all open bugs"
+               "recent issues and errors in the application", "summarise all open bugs"
 
 Output JSON only — two keys, nothing else:
   {{"queries": ["query1", ...], "complexity": "simple" | "complex"}}
@@ -216,6 +227,21 @@ async def _retrieve_node(state: PlannerState) -> PlannerState:
                 merged.append(doc)
 
     merged.sort(key=lambda d: -d.metadata.get("_rrf_score", 0.0))
+
+    # Source diversity: cap any single source_type to 40% of the final set so
+    # one source (e.g. GitHub issues) can't crowd out Railway logs or RRT briefs.
+    # Only applied when no explicit source filter is active.
+    if state.allowed_sources is None or len(state.sub_queries) > 1:
+        cap = max(3, int(TOP_K * 2 * 0.4))
+        counts: dict[str, int] = {}
+        diverse: list[Document] = []
+        for doc in merged:
+            src = doc.metadata.get("source_type", "unknown")
+            if counts.get(src, 0) < cap:
+                diverse.append(doc)
+                counts[src] = counts.get(src, 0) + 1
+        merged = diverse
+
     state.retrieved_docs = merged[:TOP_K * 2]
 
     telemetry.record_latency_span(

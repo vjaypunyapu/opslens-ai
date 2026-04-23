@@ -23,7 +23,8 @@ export type SourceType =
   | "splunk"
   | "azure_monitor"
   | "gcp_logging"
-  | "railway";
+  | "railway"
+  | "rrt_brief";
 export type AlertOperator = "gt" | "gte" | "lt" | "lte" | "eq" | "contains";
 
 // ─── Chat ─────────────────────────────────────────────────────────────────────
