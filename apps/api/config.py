@@ -90,7 +90,7 @@ class Settings(BaseSettings):
     JWT_ISSUER: str | None = None
 
     # ── Airbyte ───────────────────────────────────────────────────────────────
-    AIRBYTE_API_URL: str = "http://localhost:8000/api/v1"
+    AIRBYTE_API_URL: str = "http://localhost:8006/api/v1"
     AIRBYTE_USERNAME: str = "airbyte"
     AIRBYTE_PASSWORD: str = "password"
 
