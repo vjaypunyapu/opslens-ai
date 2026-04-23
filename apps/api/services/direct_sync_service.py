@@ -1655,8 +1655,8 @@ async def _fetch_railway(creds: dict, tenant_id: str, integration_id: str, since
             }"""
             resp = await client.post(gql_url, json={"query": proj_query})
             resp.raise_for_status()
-            edges    = resp.json().get("data", {}).get("projects", {}).get("edges", [])
-            projects = [e["node"] for e in edges]
+            edges    = (resp.json().get("data") or {}).get("projects") or {}
+            projects = [e["node"] for e in edges.get("edges", [])]
 
         if not projects:
             logger.warning("Railway: no projects found for tenant %s", tenant_id)
@@ -1682,7 +1682,7 @@ async def _fetch_railway(creds: dict, tenant_id: str, integration_id: str, since
         for project in projects:
             p_id   = project.get("id", "")
             p_name = project.get("name", "unknown-project")
-            services = [e["node"] for e in project.get("services", {}).get("edges", [])]
+            services = [e["node"] for e in (project.get("services") or {}).get("edges", [])]
 
             for svc in services:
                 s_id   = svc.get("id", "")
@@ -1699,7 +1699,7 @@ async def _fetch_railway(creds: dict, tenant_id: str, integration_id: str, since
 
                 deployments = [
                     e["node"]
-                    for e in dresp.json().get("data", {}).get("deployments", {}).get("edges", [])
+                    for e in ((dresp.json().get("data") or {}).get("deployments") or {}).get("edges", [])
                 ]
 
                 for depl in deployments[:5]:  # last 5 deployments per service
