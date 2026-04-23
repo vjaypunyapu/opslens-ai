@@ -126,9 +126,13 @@ class FullValidation:
         return issues
 
     def disclaimer(self) -> str | None:
-        """Return a short caveat to prepend to the answer, or None if clean."""
-        issues = self.blocking_issues()
-        if not issues:
+        """Return a caveat only when the Auditor detects hallucination.
+
+        Gatekeeper/Strategist failures are advisory — completeness concerns
+        (e.g. 'maybe there are more PRs') should not show a warning to the
+        user when the Auditor confirms every claim is grounded in context.
+        """
+        if self.auditor.passed:
             return None
         return (
             "⚠️ *Note: this answer may be incomplete or unverified in places. "
@@ -181,14 +185,19 @@ async def run_auditor(
 # ── Node: Gatekeeper (completeness) ──────────────────────────────────────────
 _GATEKEEPER_SYSTEM = """\
 You are an expert reviewer called the Gatekeeper.
-Given a question and a generated answer, your job is to determine whether the
-answer fully and directly addresses every part of the question.
+Given a question, the retrieved context passages the answer was based on, and a
+generated answer, determine whether the answer fully addresses the question
+GIVEN THE AVAILABLE CONTEXT.
+
+Important: evaluate completeness relative to what the context contains, not
+relative to what might theoretically exist. If the context has one PR and the
+answer describes it, that is complete — do not flag "maybe there are more PRs."
 
 Output JSON with exactly these keys:
-  "passed":          boolean — true if the answer fully addresses the question
+  "passed":          boolean — true if the answer fully addresses the question given the context
   "score":           float   — 0.0 (totally incomplete) to 1.0 (fully complete)
-  "issues":          list of strings — aspects of the question left unanswered
-  "missing_queries": list of strings — additional search queries that could fill the gaps
+  "issues":          list of strings — aspects of the question the context could answer but the answer skipped
+  "missing_queries": list of strings — additional search queries that could fill genuine gaps
   "suggestions":     list of strings — improvements to the answer
 
 Output raw JSON only, no markdown."""
@@ -197,8 +206,18 @@ Output raw JSON only, no markdown."""
 async def run_gatekeeper(
     question: str,
     answer: str,
+    context_docs: list[Document] | None = None,
 ) -> ValidationResult:
-    user_content = f"QUESTION:\n{question}\n\nGENERATED ANSWER:\n{answer}"
+    context_text = ""
+    if context_docs:
+        context_text = "\n\n---\n\n".join(
+            f"[{i+1}] {d.page_content[:300]}" for i, d in enumerate(context_docs[:8])
+        )
+    user_content = (
+        f"QUESTION:\n{question}\n\n"
+        + (f"RETRIEVED CONTEXT:\n{context_text}\n\n" if context_text else "")
+        + f"GENERATED ANSWER:\n{answer}"
+    )
     raw = await _call_validator("gatekeeper", _GATEKEEPER_SYSTEM, user_content)
     result = ValidationResult(
         node="gatekeeper",
@@ -259,7 +278,7 @@ async def validate_answer(
     import asyncio
 
     auditor_task    = asyncio.create_task(run_auditor(question, context_docs, answer))
-    gatekeeper_task = asyncio.create_task(run_gatekeeper(question, answer))
+    gatekeeper_task = asyncio.create_task(run_gatekeeper(question, answer, context_docs))
     strategist_task = asyncio.create_task(run_strategist(question, answer))
 
     auditor_result, gatekeeper_result, strategist_result = await asyncio.gather(

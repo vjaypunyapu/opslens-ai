@@ -42,6 +42,19 @@ TOP_K         = settings.QDRANT_TOP_K   # e.g. 10
 RRF_K         = 60                      # RRF constant (standard = 60)
 COHERE_MODEL  = "rerank-english-v3.0"
 
+# Keywords that signal the user wants the most recent document, not just the
+# most semantically relevant one.  When any of these appear in the query we
+# re-sort the final candidate set by source_created_at so the LLM sees the
+# newest items first and can correctly answer "last / latest / most recent X".
+_TEMPORAL_KEYWORDS = frozenset([
+    "last", "latest", "most recent", "newest", "recent",
+    "just", "today", "yesterday", "this week", "this month",
+])
+
+def _is_temporal_query(query: str) -> bool:
+    q = query.lower()
+    return any(kw in q for kw in _TEMPORAL_KEYWORDS)
+
 # ── API key helpers ────────────────────────────────────────────────────────────
 def _openai_key() -> str:
     return (
@@ -376,5 +389,16 @@ async def hybrid_retrieve(
         latency_ms=(time.monotonic() - t0) * 1000,
         metadata={"candidates_in": len(merged), "docs_out": len(final)},
     )
+
+    # For temporal queries ("last PR", "latest commit", "most recent deploy"),
+    # re-sort candidates by date so the LLM sees the newest documents first.
+    # Documents without a date are pushed to the end.
+    if _is_temporal_query(query):
+        final.sort(
+            key=lambda d: d.metadata.get("created_at") or "",
+            reverse=True,
+        )
+        logger.info("hybrid_retrieve: applied recency sort for temporal query")
+
     logger.info("hybrid_retrieve: final=%d docs", len(final))
     return final

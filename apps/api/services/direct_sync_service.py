@@ -530,10 +530,18 @@ async def _fetch_github(creds: dict, tenant_id: str, integration_id: str) -> int
             if issues_resp.status_code == 200:
                 for issue in issues_resp.json():
                     body = issue.get("body") or ""
-                    content = f"{issue['title']}\n\n{body}".strip()
+                    kind = "PR" if issue.get("pull_request") else "Issue"
+                    content = (
+                        f"Repository: {repo_name}\n"
+                        f"{kind} #{issue['number']}: {issue['title']}\n"
+                        f"State: {issue.get('state', 'unknown')}\n"
+                        f"Author: {issue.get('user', {}).get('login', '')}\n"
+                        f"Created: {issue.get('created_at', '')}\n"
+                        f"Updated: {issue.get('updated_at', '')}\n\n"
+                        f"{body}"
+                    ).strip()
                     if not content:
                         continue
-                    kind = "PR" if issue.get("pull_request") else "Issue"
                     records.append(RawRecord(
                         source_type="github",
                         source_id=f"issue:{issue['id']}",
