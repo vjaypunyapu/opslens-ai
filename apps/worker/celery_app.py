@@ -18,8 +18,9 @@ app = Celery(
         "apps.worker.tasks.log_fast_alert", # 5-min fast alert + RAG enrichment
         "apps.worker.tasks.rrt_briefing",   # structured RRT incident brief generation
         "apps.worker.tasks.master",         # fan-out tasks used by Beat schedule
-        "apps.worker.tasks.retention",      # daily data retention cleanup
-        "apps.worker.tasks.pagerduty",      # PagerDuty Events API v2 helpers
+        "apps.worker.tasks.retention",       # daily data retention cleanup
+        "apps.worker.tasks.pagerduty",       # PagerDuty Events API v2 helpers
+        "apps.worker.tasks.log_source_poller",  # sync_integration + poll_log_source
     ],
 )
 
@@ -85,5 +86,11 @@ app.conf.beat_schedule = {
         "task": "retention.run_cleanup",
         "schedule": crontab(hour=2, minute=0),
         "kwargs": {"tenant_id": None},   # None = run for all tenants
+    },
+    # Re-embed any documents stuck in embedding_status='pending' due to
+    # transient OpenAI or Qdrant failures. Runs every 30 minutes.
+    "retry-pending-embeddings": {
+        "task": "ingestion.retry_pending_embeddings",
+        "schedule": crontab(minute="*/30"),
     },
 }

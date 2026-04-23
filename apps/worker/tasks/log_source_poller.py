@@ -73,6 +73,37 @@ def poll_log_source(self, integration_id: str, tenant_id: str, source_type: str)
             return {"status": "error", "integration_id": integration_id, "error": str(exc)}
 
 
+@shared_task(
+    name="ingestion.sync_integration",
+    bind=True,
+    max_retries=2,
+    default_retry_delay=60,
+    soft_time_limit=240,
+    time_limit=300,
+    acks_late=True,
+)
+def sync_integration(self, integration_id: str, tenant_id: str) -> dict:
+    """
+    Run a full direct sync for any integration type (GitHub, Jira, Slack,
+    Railway, etc.) as a Celery task so it survives pod restarts and can be
+    retried on failure. Used by the manual sync endpoint and initial sync
+    on integration creation.
+    """
+    logger.info("sync_integration: starting integration=%s tenant=%s", integration_id, tenant_id)
+    try:
+        from ...api.services.direct_sync_service import run_direct_sync
+        _run_async(run_direct_sync(integration_id, tenant_id))
+        logger.info("sync_integration: done integration=%s", integration_id)
+        return {"status": "ok", "integration_id": integration_id}
+    except Exception as exc:
+        logger.warning("sync_integration: failed integration=%s: %s", integration_id, exc)
+        try:
+            raise self.retry(exc=exc)
+        except self.MaxRetriesExceededError:
+            _run_async(_mark_integration_error(integration_id, str(exc)))
+            return {"status": "error", "integration_id": integration_id, "error": str(exc)}
+
+
 async def _mark_integration_error(integration_id: str, error_msg: str) -> None:
     """Mark the integration as error in the DB so the UI can surface it."""
     import uuid

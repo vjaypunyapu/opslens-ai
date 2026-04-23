@@ -1019,3 +1019,30 @@ async def _process_staging_batch(tenant_id: str, source_type: str, limit: int) -
         "skipped":     skipped,
         "errors":      errors,
     }
+
+
+# ── Embedding retry ───────────────────────────────────────────────────────────
+
+@shared_task(name="ingestion.retry_pending_embeddings")
+def retry_pending_embeddings() -> dict:
+    """
+    Find CanonicalDocuments stuck in embedding_status='pending' and re-dispatch
+    process_document for each one. Runs on a schedule so transient OpenAI or
+    Qdrant failures are automatically recovered without manual intervention.
+    Capped at 100 docs per run to avoid overwhelming the queue.
+    """
+    async def _get_pending() -> list[str]:
+        import sqlalchemy as sa
+        async with AsyncSession() as db:
+            rows = await db.execute(
+                sa.select(CanonicalDocument.id)
+                .where(CanonicalDocument.embedding_status == "pending")
+                .limit(100)
+            )
+            return [str(r) for r in rows.scalars().all()]
+
+    doc_ids = _run_async(_get_pending())
+    for doc_id in doc_ids:
+        process_document.delay(doc_id)
+    logger.info("retry_pending_embeddings: dispatched %d docs", len(doc_ids))
+    return {"dispatched": len(doc_ids)}

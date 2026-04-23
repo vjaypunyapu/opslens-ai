@@ -26,7 +26,6 @@ from ..auth.dependencies import TenantContext, require_admin, require_viewer
 from ..config import settings
 from ..db.session import get_db
 from ..models.integration import Integration
-from ..services.direct_sync_service import run_direct_sync
 from ..utils.logging import get_logger
 from ..utils.crypto import encrypt_credentials, decrypt_credentials
 
@@ -148,12 +147,13 @@ async def connect_integration(
     await db.commit()
     await db.refresh(integration)
 
-    # Trigger initial sync in background
+    # Trigger initial sync
     if airbyte_connection_id:
         background_tasks.add_task(_trigger_airbyte_sync, airbyte_connection_id, str(integration.id))
     else:
-        # No Airbyte (dev mode) — sync directly from the source API
-        background_tasks.add_task(run_direct_sync, str(integration.id), str(ctx.tenant_uuid))
+        # No Airbyte — dispatch to Celery so the sync survives pod restarts
+        from apps.worker.tasks.log_source_poller import sync_integration
+        sync_integration.delay(str(integration.id), str(ctx.tenant_uuid))
     logger.info("Integration %s created for tenant %s", body.source_type, ctx.tenant_uuid)
 
     return _integration_to_out(integration)
@@ -198,8 +198,9 @@ async def trigger_sync(
         )
         return {"message": "Sync triggered via Airbyte", "integration_id": integration_id}
 
-    # No Airbyte — fall back to direct API sync
-    background_tasks.add_task(run_direct_sync, integration_id, str(ctx.tenant_uuid))
+    # No Airbyte — dispatch to Celery so the sync survives pod restarts
+    from apps.worker.tasks.log_source_poller import sync_integration
+    sync_integration.delay(integration_id, str(ctx.tenant_uuid))
     return {"message": "Sync triggered (direct)", "integration_id": integration_id}
 
 
