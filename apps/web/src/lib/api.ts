@@ -344,6 +344,16 @@ export const integrationsApi = {
       method: "POST",
       token,
     }),
+
+  getStatus: (id: string, token: string) =>
+    request<{
+      integration_id: string;
+      source_type: string;
+      status: string;
+      last_synced_at: string | null;
+      total_records: number;
+      error_message: string | null;
+    }>(`/integrations/${id}/status`, { token }),
 };
 
 // ─── Log Ops / Simulate ───────────────────────────────────────────────────────
