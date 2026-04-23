@@ -501,7 +501,11 @@ async def _fetch_github(creds: dict, tenant_id: str, integration_id: str) -> int
         # Sort by most recently updated and cap to avoid extremely long syncs
         repos.sort(key=lambda r: r.get("updated_at", ""), reverse=True)
 
-        for repo in repos[:20]:  # cap at 20 repos per sync
+        max_repos   = settings.GITHUB_SYNC_MAX_REPOS
+        max_issues  = settings.GITHUB_SYNC_MAX_ISSUES
+        max_commits = settings.GITHUB_SYNC_MAX_COMMITS
+
+        for repo in repos[:max_repos]:
             repo_name  = repo["full_name"]
             repo_url   = repo.get("html_url", "")
             repo_desc  = repo.get("description") or ""
@@ -522,13 +526,26 @@ async def _fetch_github(creds: dict, tenant_id: str, integration_id: str) -> int
                 metadata={"repo": repo_name},
             ))
 
-            # Issues + PRs
-            issues_resp = await client.get(
-                f"https://api.github.com/repos/{repo_name}/issues",
-                params={"state": "all", "per_page": 50, "sort": "updated"},
-            )
-            if issues_resp.status_code == 200:
-                for issue in issues_resp.json():
+            # Issues + PRs — paginate up to max_issues (100 per page, GitHub max)
+            issues_fetched: list[dict] = []
+            page = 1
+            while len(issues_fetched) < max_issues:
+                batch_size = min(100, max_issues - len(issues_fetched))
+                issues_resp = await client.get(
+                    f"https://api.github.com/repos/{repo_name}/issues",
+                    params={"state": "all", "per_page": batch_size, "sort": "updated", "page": page},
+                )
+                if issues_resp.status_code != 200:
+                    break
+                batch = issues_resp.json()
+                if not batch:
+                    break
+                issues_fetched.extend(batch)
+                if len(batch) < batch_size:
+                    break  # last page
+                page += 1
+
+            for issue in issues_fetched:
                     body = issue.get("body") or ""
                     kind = "PR" if issue.get("pull_request") else "Issue"
                     content = (
@@ -554,15 +571,13 @@ async def _fetch_github(creds: dict, tenant_id: str, integration_id: str) -> int
                         metadata={"repo": repo_name, "state": issue.get("state"), "type": kind.lower()},
                     ))
 
-            # Recent commits — fetch the last 30 per repo so "what was the last
-            # commit" queries have something to retrieve.  The date is embedded
-            # in the content body so the LLM can identify recency.
+            # Recent commits — paginated up to max_commits
             commits_resp = await client.get(
                 f"https://api.github.com/repos/{repo_name}/commits",
-                params={"per_page": 30},
+                params={"per_page": min(100, max_commits)},
             )
             if commits_resp.status_code == 200:
-                for commit in commits_resp.json():
+                for commit in commits_resp.json()[:max_commits]:
                     c      = commit.get("commit", {})
                     msg    = (c.get("message") or "").strip()
                     if not msg:

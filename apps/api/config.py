@@ -155,6 +155,11 @@ class Settings(BaseSettings):
     # GitHub webhook integration
     GITHUB_WEBHOOK_SECRET: str = ""        # GitHub webhook secret (from repo/org settings)
     GITHUB_ORG: str = ""                   # Restrict to a specific GitHub org (optional)
+    # Sync depth — increase these if you want more historical data per sync.
+    # Higher values mean longer sync times and more API calls (5000 req/hr limit).
+    GITHUB_SYNC_MAX_REPOS: int = 50        # repos to sync (sorted by most recently updated)
+    GITHUB_SYNC_MAX_ISSUES: int = 200      # issues+PRs per repo (paginated, 100/page)
+    GITHUB_SYNC_MAX_COMMITS: int = 100     # commits per repo
 
     # Jira webhook integration
     JIRA_WEBHOOK_TOKEN: str = ""           # Secret token set in Jira webhook config

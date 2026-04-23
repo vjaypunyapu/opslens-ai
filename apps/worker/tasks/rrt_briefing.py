@@ -1169,6 +1169,42 @@ async def _save_rrt_brief(
             db.add(brief)
             await db.commit()
             logger.info("RRT brief %s saved for tenant=%s", brief_id, tenant_id)
+
+        # Index into canonical_documents so the chat RAG can surface incidents
+        try:
+            from apps.api.services.direct_sync_service import RawRecord, _batch_save_and_embed_logs
+            next_actions_text = "\n".join(
+                f"- {a}" for a in (fields.get("next_actions") or [])
+            )
+            record = RawRecord(
+                source_type="rrt_brief",
+                source_id=f"rrt:{brief_id}",
+                title=fields.get("title", "Incident Brief"),
+                content=(
+                    f"Incident: {fields.get('title', '')}\n"
+                    f"Detected: {detected_at.isoformat()}\n"
+                    f"Status: open\n\n"
+                    f"What happened:\n{fields.get('what_happened', '')}\n\n"
+                    f"Impact:\n{fields.get('impact', '')}\n\n"
+                    f"Suspected cause:\n{fields.get('suspected_cause', '')}\n\n"
+                    f"Next actions:\n{next_actions_text}\n\n"
+                    f"Error sample:\n{error_sample[:500]}"
+                ),
+                author="opslens-rrt",
+                url="",
+                created_at=detected_at,
+                updated_at=detected_at,
+                metadata={
+                    "brief_id": brief_id,
+                    "status": "open",
+                    "owner_team": owner_team or "",
+                    "error_signature": error_signature[:200],
+                },
+            )
+            await _batch_save_and_embed_logs([record], tenant_id, trigger_incidents=False)
+            logger.info("RRT brief %s indexed for RAG", brief_id)
+        except Exception as exc:
+            logger.warning("Failed to index RRT brief %s for RAG: %s", brief_id, exc)
     except Exception as exc:
         logger.warning("Failed to save RRT brief: %s", exc)
 
