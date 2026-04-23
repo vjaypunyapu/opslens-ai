@@ -547,13 +547,7 @@ async def _fetch_github(creds: dict, tenant_id: str, integration_id: str) -> int
                     ))
 
     logger.info("GitHub direct sync: %d records for tenant %s", len(records), tenant_id)
-    for rec in records:
-        try:
-            await _save_and_embed(rec, tenant_id)
-        except Exception as exc:
-            logger.warning("Skipping record %s: %s", rec.source_id, exc)
-
-    return len(records)
+    return await _batch_save_and_embed_logs(records, tenant_id, trigger_incidents=False)
 
 
 # ── Bitbucket fetcher ─────────────────────────────────────────────────────────
@@ -667,13 +661,7 @@ async def _fetch_bitbucket(creds: dict, tenant_id: str, integration_id: str) -> 
                     ))
 
     logger.info("Bitbucket direct sync: %d records for tenant %s", len(records), tenant_id)
-    for rec in records:
-        try:
-            await _save_and_embed(rec, tenant_id)
-        except Exception as exc:
-            logger.warning("Skipping Bitbucket record %s: %s", rec.source_id, exc)
-
-    return len(records)
+    return await _batch_save_and_embed_logs(records, tenant_id, trigger_incidents=False)
 
 
 # ── Jira fetcher ──────────────────────────────────────────────────────────────
@@ -762,13 +750,7 @@ async def _fetch_jira(creds: dict, tenant_id: str, integration_id: str) -> int:
                 break
 
     logger.info("Jira direct sync: %d records for tenant %s", len(records), tenant_id)
-    for rec in records:
-        try:
-            await _save_and_embed(rec, tenant_id)
-        except Exception as exc:
-            logger.warning("Skipping record %s: %s", rec.source_id, exc)
-
-    return len(records)
+    return await _batch_save_and_embed_logs(records, tenant_id, trigger_incidents=False)
 
 
 # ── Slack fetcher ─────────────────────────────────────────────────────────────
@@ -817,13 +799,7 @@ async def _fetch_slack(creds: dict, tenant_id: str, integration_id: str) -> int:
                 ))
 
     logger.info("Slack direct sync: %d records for tenant %s", len(records), tenant_id)
-    for rec in records:
-        try:
-            await _save_and_embed(rec, tenant_id)
-        except Exception as exc:
-            logger.warning("Skipping record %s: %s", rec.source_id, exc)
-
-    return len(records)
+    return await _batch_save_and_embed_logs(records, tenant_id, trigger_incidents=False)
 
 
 # ── HubSpot fetcher ───────────────────────────────────────────────────────────
@@ -871,13 +847,7 @@ async def _fetch_hubspot(creds: dict, tenant_id: str, integration_id: str) -> in
                 ))
 
     logger.info("HubSpot direct sync: %d records for tenant %s", len(records), tenant_id)
-    for rec in records:
-        try:
-            await _save_and_embed(rec, tenant_id)
-        except Exception as exc:
-            logger.warning("Skipping record %s: %s", rec.source_id, exc)
-
-    return len(records)
+    return await _batch_save_and_embed_logs(records, tenant_id, trigger_incidents=False)
 
 
 # ── Elasticsearch fetcher ─────────────────────────────────────────────────────
@@ -1481,12 +1451,7 @@ async def _fetch_zendesk(creds: dict, tenant_id: str, integration_id: str) -> in
             pages += 1
 
     logger.info("Zendesk direct sync: %d tickets for tenant %s", len(records), tenant_id)
-    for rec in records:
-        try:
-            await _save_and_embed(rec, tenant_id)
-        except Exception as exc:
-            logger.warning("Skipping Zendesk record %s: %s", rec.source_id, exc)
-    return len(records)
+    return await _batch_save_and_embed_logs(records, tenant_id, trigger_incidents=False)
 
 
 def _parse_dt(value: str | None) -> datetime:
@@ -1598,12 +1563,7 @@ async def _fetch_google_drive(creds: dict, tenant_id: str, integration_id: str) 
             ))
 
     logger.info("Google Drive direct sync: %d files for tenant %s", len(records), tenant_id)
-    for rec in records:
-        try:
-            await _save_and_embed(rec, tenant_id)
-        except Exception as exc:
-            logger.warning("Skipping Google Drive record %s: %s", rec.source_id, exc)
-    return len(records)
+    return await _batch_save_and_embed_logs(records, tenant_id, trigger_incidents=False)
 
 
 # ── Railway fetcher ───────────────────────────────────────────────────────────

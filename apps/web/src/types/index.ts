@@ -121,5 +121,6 @@ export interface Integration {
   source_type: SourceType;
   status: "pending" | "active" | "error" | "disconnected";
   last_synced_at: string | null;
+  total_records: number;
   created_at: string;
 }

@@ -251,6 +251,7 @@ function SourceGrid({
   getIntegration,
   connecting,
   syncing,
+  syncProgress,
   onConnect,
   onDisconnect,
   onSync,
@@ -259,6 +260,7 @@ function SourceGrid({
   getIntegration: (t: SourceType) => Integration | undefined;
   connecting: SourceType | null;
   syncing: string | null;
+  syncProgress: Record<string, number>;
   onConnect: (t: SourceType) => void;
   onDisconnect: (id: string, t: SourceType) => void;
   onSync: (id: string, t: SourceType) => void;
@@ -272,8 +274,10 @@ function SourceGrid({
       {sources.map(({ type, description }) => {
         const existing = getIntegration(type);
         const isActive = existing?.status === "active";
-        const isPending = connecting === type || syncing === existing?.id;
+        const isSyncing = !!(existing && (syncProgress[existing.id] !== undefined || existing.status === "pending"));
+        const isPending = connecting === type || syncing === existing?.id || isSyncing;
         const statusVariant = (existing?.status ?? "disconnected") as StatusVariant;
+        const recordCount = existing ? (syncProgress[existing.id] ?? existing.total_records ?? 0) : 0;
 
         return (
           <div
@@ -307,10 +311,32 @@ function SourceGrid({
               </div>
             </div>
 
-            {existing?.last_synced_at && (
-              <p style={{ color: "#475569", fontSize: "0.75rem", margin: 0 }}>
-                Last synced {formatDistanceToNow(new Date(existing.last_synced_at), { addSuffix: true })}
-              </p>
+            {isSyncing && (
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.375rem" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ color: "#eab308", fontSize: "0.75rem" }}>Syncing…</span>
+                  <span style={{ color: "#64748b", fontSize: "0.75rem" }}>{recordCount} records indexed</span>
+                </div>
+                <div style={{ height: "4px", borderRadius: "9999px", background: "rgba(255,255,255,0.07)", overflow: "hidden" }}>
+                  <div style={{
+                    height: "100%", borderRadius: "9999px", background: "#eab308",
+                    width: "40%",
+                    animation: "indeterminate 1.5s ease-in-out infinite",
+                  }} />
+                </div>
+              </div>
+            )}
+            {!isSyncing && existing && (
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                {existing.last_synced_at ? (
+                  <p style={{ color: "#475569", fontSize: "0.75rem", margin: 0 }}>
+                    Last synced {formatDistanceToNow(new Date(existing.last_synced_at), { addSuffix: true })}
+                  </p>
+                ) : <span />}
+                {recordCount > 0 && (
+                  <span style={{ color: "#475569", fontSize: "0.75rem" }}>{recordCount} records</span>
+                )}
+              </div>
             )}
 
             {/* Action buttons */}
@@ -369,8 +395,9 @@ export default function IntegrationsPage() {
   const [loading, setLoading]           = useState(true);
   const [connecting, setConnecting]     = useState<SourceType | null>(null);
   const [syncing, setSyncing]           = useState<string | null>(null);
-  // Modal state: which source type is waiting for credentials
   const [pendingConnect, setPendingConnect] = useState<SourceType | null>(null);
+  // Track integration IDs actively syncing (DB status = pending) + their live record count
+  const [syncProgress, setSyncProgress] = useState<Record<string, number>>({});
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -385,6 +412,45 @@ export default function IntegrationsPage() {
   }, [getToken]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Poll status for any integration that is pending
+  useEffect(() => {
+    const pendingIds = integrations
+      .filter((i) => i.status === "pending" || syncProgress[i.id] !== undefined)
+      .map((i) => i.id);
+
+    if (pendingIds.length === 0) return;
+
+    const interval = setInterval(async () => {
+      const token = await getToken();
+      if (!token) return;
+      let anyStillPending = false;
+      await Promise.all(
+        pendingIds.map(async (id) => {
+          try {
+            const s = await integrationsApi.getStatus(id, token);
+            setSyncProgress((prev) => ({ ...prev, [id]: s.total_records }));
+            if (s.status === "pending") {
+              anyStillPending = true;
+            } else {
+              // Sync finished — refresh list and clear progress entry
+              setIntegrations((prev) =>
+                prev.map((i) =>
+                  i.id === id ? { ...i, status: s.status as Integration["status"], total_records: s.total_records } : i
+                )
+              );
+              setSyncProgress((prev) => { const n = { ...prev }; delete n[id]; return n; });
+              if (s.status === "active") toast.success(`Sync complete — ${s.total_records} records indexed`);
+              if (s.status === "error") toast.error(s.error_message ?? "Sync failed");
+            }
+          } catch { /* ignore transient fetch errors */ }
+        })
+      );
+      if (!anyStillPending) clearInterval(interval);
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [integrations, getToken]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const getIntegration = (type: SourceType) =>
     integrations.find((i) => i.source_type === type);
@@ -401,9 +467,11 @@ export default function IntegrationsPage() {
     setConnecting(type);
     try {
       const token = await getToken();
-      await integrationsApi.connect(token!, type, credentials);
-      toast.success(`${SOURCE_TYPE_LABELS[type]} connected — first sync starting…`);
+      const integration = await integrationsApi.connect(token!, type, credentials);
+      toast.success(`${SOURCE_TYPE_LABELS[type]} connected — syncing now…`);
       setPendingConnect(null);
+      // Mark as pending immediately so polling starts
+      setSyncProgress((prev) => ({ ...prev, [integration.id]: 0 }));
       await load();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed to connect";
@@ -431,7 +499,9 @@ export default function IntegrationsPage() {
       const token = await getToken();
       await integrationsApi.triggerSync(id, token!);
       toast.success(`${SOURCE_TYPE_LABELS[type]} sync triggered`);
-      setTimeout(load, 2000);
+      // Mark as pending immediately so polling starts
+      setSyncProgress((prev) => ({ ...prev, [id]: 0 }));
+      setIntegrations((prev) => prev.map((i) => i.id === id ? { ...i, status: "pending" } : i));
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : "Sync failed");
     } finally {
@@ -443,6 +513,7 @@ export default function IntegrationsPage() {
     getIntegration,
     connecting,
     syncing,
+    syncProgress,
     onConnect: handleConnect,
     onDisconnect: handleDisconnect,
     onSync: handleSync,
@@ -452,6 +523,12 @@ export default function IntegrationsPage() {
 
   return (
     <AppShell>
+      <style>{`
+        @keyframes indeterminate {
+          0%   { transform: translateX(-100%); }
+          100% { transform: translateX(350%); }
+        }
+      `}</style>
       {/* Credentials modal */}
       {pendingConnect && (
         <CredentialsModal
