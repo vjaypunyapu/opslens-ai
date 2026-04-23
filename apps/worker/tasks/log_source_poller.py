@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 
 from celery import shared_task
+from celery.exceptions import SoftTimeLimitExceeded
 
 from ..async_utils import run_async as _run_async
 
@@ -58,6 +59,16 @@ def poll_log_source(self, integration_id: str, tenant_id: str, source_type: str)
         )
         return {"status": "ok", "integration_id": integration_id, "source_type": source_type}
 
+    except SoftTimeLimitExceeded:
+        # Soft limit hit — we have a brief window before the hard SIGKILL.
+        # Mark the integration as error so status doesn't stay "pending" forever.
+        logger.warning(
+            "poll_log_source: soft time limit exceeded source_type=%s integration=%s",
+            source_type, integration_id,
+        )
+        _run_async(_mark_integration_error(integration_id, "Sync timed out (source too large or slow)"))
+        return {"status": "timeout", "integration_id": integration_id}
+
     except Exception as exc:
         logger.warning(
             "poll_log_source: failed source_type=%s integration=%s: %s",
@@ -67,8 +78,6 @@ def poll_log_source(self, integration_id: str, tenant_id: str, source_type: str)
         try:
             raise self.retry(exc=exc)
         except self.MaxRetriesExceededError:
-            # After all retries exhausted, mark the integration as error
-            # so the customer sees it in the UI rather than silent failure
             _run_async(_mark_integration_error(integration_id, str(exc)))
             return {"status": "error", "integration_id": integration_id, "error": str(exc)}
 
@@ -76,11 +85,17 @@ def poll_log_source(self, integration_id: str, tenant_id: str, source_type: str)
 @shared_task(
     name="ingestion.sync_integration",
     bind=True,
-    max_retries=2,
-    default_retry_delay=60,
-    soft_time_limit=240,
-    time_limit=300,
-    acks_late=True,
+    # Full contextual syncs (GitHub 50 repos, Slack 2yr history) need much
+    # more than 5 min. Hard kill at 25 min; soft limit at 20 min gives us a
+    # clean window to mark status=error before SIGKILL arrives.
+    # acks_late=False (default) so the message is acked on delivery — a
+    # one-shot user-triggered sync should not loop forever if the worker
+    # crashes mid-run.
+    max_retries=1,
+    default_retry_delay=30,
+    soft_time_limit=1200,   # 20 min soft — throws SoftTimeLimitExceeded
+    time_limit=1500,        # 25 min hard kill
+    acks_late=False,
 )
 def sync_integration(self, integration_id: str, tenant_id: str) -> dict:
     """
@@ -95,6 +110,17 @@ def sync_integration(self, integration_id: str, tenant_id: str) -> dict:
         _run_async(run_direct_sync(integration_id, tenant_id))
         logger.info("sync_integration: done integration=%s", integration_id)
         return {"status": "ok", "integration_id": integration_id}
+
+    except SoftTimeLimitExceeded:
+        # Mark error before the hard SIGKILL arrives so status never stays pending
+        logger.warning("sync_integration: soft time limit exceeded integration=%s", integration_id)
+        _run_async(_mark_integration_error(
+            integration_id,
+            "Sync timed out after 20 min — your data source may be very large. "
+            "Partial data has been indexed. Trigger a manual sync to continue.",
+        ))
+        return {"status": "timeout", "integration_id": integration_id}
+
     except Exception as exc:
         logger.warning("sync_integration: failed integration=%s: %s", integration_id, exc)
         try:
