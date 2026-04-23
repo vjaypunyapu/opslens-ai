@@ -34,6 +34,7 @@ from langchain_core.documents import Document
 from ..config import settings
 from ..utils.logging import get_logger
 from . import telemetry
+from .query_intent import QueryIntent, detect as detect_intent
 
 logger = get_logger(__name__)
 
@@ -291,6 +292,156 @@ async def _cohere_rerank(
 
 
 # ── Embed query ───────────────────────────────────────────────────────────────
+async def _id_lookup(id_string: str, tenant_id: str) -> list[Document]:
+    """Return the single document that matches an exact identifier.
+
+    Tries source_id prefix/suffix match first, then falls back to title ILIKE.
+    Bypasses vector search entirely so the right document is always returned.
+    """
+    import sqlalchemy as sa
+    from ..db.models import CanonicalDocument
+    from ..db.session import AsyncSessionFactory as async_session_factory
+
+    # Normalise: strip leading # for numeric GitHub IDs
+    raw = id_string.lstrip("#")
+    async with async_session_factory() as db:
+        # source_id patterns: "issue:12345", "commit:repo:abc123", "PROJ-45"
+        q = (
+            sa.select(
+                CanonicalDocument.id, CanonicalDocument.content,
+                CanonicalDocument.title, CanonicalDocument.url,
+                CanonicalDocument.source_type, CanonicalDocument.source_id,
+                CanonicalDocument.author, CanonicalDocument.source_created_at,
+                CanonicalDocument.doc_metadata,
+            )
+            .where(CanonicalDocument.tenant_id == uuid.UUID(tenant_id))
+            .where(
+                sa.or_(
+                    CanonicalDocument.source_id.ilike(f"%{raw}%"),
+                    CanonicalDocument.title.ilike(f"%{id_string}%"),
+                )
+            )
+            .limit(3)
+        )
+        rows = (await db.execute(q)).fetchall()
+
+    docs: list[Document] = []
+    for row in rows:
+        docs.append(Document(
+            page_content=row.content,
+            metadata={
+                "document_id": str(row.id),
+                "source_type": row.source_type,
+                "title":       row.title or "",
+                "url":         row.url or "",
+                "author":      row.author or "",
+                "created_at":  row.source_created_at.isoformat() if row.source_created_at else None,
+                "_intent":     "id_lookup",
+            },
+        ))
+    logger.info("id_lookup: id=%r tenant=%s → %d docs", id_string, tenant_id, len(docs))
+    return docs
+
+
+async def _resolve_filter_source_ids(
+    tenant_id: str,
+    filters: dict[str, str],
+    allowed_sources: list[dict] | None,
+) -> list[dict] | None:
+    """Translate intent filters (state, author, since) into a source_id allow-list.
+
+    Returns None when no filtering is needed (pass-through), an empty list when
+    no documents match (dead-end), or a list of {source_id} dicts that gets
+    intersected with the user's existing allowed_sources permission set.
+    """
+    if not filters:
+        return allowed_sources  # nothing to resolve
+
+    import sqlalchemy as sa
+    from ..db.models import CanonicalDocument
+    from ..db.session import AsyncSessionFactory as async_session_factory
+
+    async with async_session_factory() as db:
+        q = sa.select(CanonicalDocument.source_id).where(
+            CanonicalDocument.tenant_id == uuid.UUID(tenant_id)
+        )
+        if "state" in filters:
+            q = q.where(
+                CanonicalDocument.doc_metadata["state"].astext == filters["state"]
+            )
+        if "author" in filters:
+            q = q.where(
+                sa.or_(
+                    CanonicalDocument.author.ilike(f"%{filters['author']}%"),
+                    CanonicalDocument.doc_metadata["author"].astext.ilike(
+                        f"%{filters['author']}%"
+                    ),
+                )
+            )
+        if "source_type" in filters:
+            q = q.where(CanonicalDocument.source_type == filters["source_type"])
+        if "since" in filters:
+            from datetime import datetime
+            since_dt = datetime.fromisoformat(filters["since"])
+            q = q.where(CanonicalDocument.source_created_at >= since_dt)
+        q = q.limit(2000)
+        rows = (await db.execute(q)).scalars().all()
+
+    if not rows:
+        logger.info("resolve_filter_source_ids: no docs match filters %s", filters)
+        return []  # signal: nothing matches
+
+    filter_ids = {r for r in rows}
+
+    # Intersect with the user's existing permission set when restricted
+    if allowed_sources is not None:
+        permitted_ids = {s["source_id"] for s in allowed_sources}
+        intersected = filter_ids & permitted_ids
+        return [{"source_id": sid} for sid in intersected]
+
+    return [{"source_id": sid} for sid in filter_ids]
+
+
+async def _aggregate_count(
+    query: str,
+    tenant_id: str,
+    filters: dict[str, str],
+) -> Document:
+    """Run a SQL COUNT(*) with any detected filters and return a synthetic Document
+    containing the number so the LLM can answer count questions accurately.
+    """
+    import sqlalchemy as sa
+    from ..db.models import CanonicalDocument
+    from ..db.session import AsyncSessionFactory as async_session_factory
+
+    async with async_session_factory() as db:
+        q = sa.select(sa.func.count()).select_from(CanonicalDocument).where(
+            CanonicalDocument.tenant_id == uuid.UUID(tenant_id)
+        )
+        if "state" in filters:
+            q = q.where(
+                CanonicalDocument.doc_metadata["state"].astext == filters["state"]
+            )
+        if "author" in filters:
+            q = q.where(CanonicalDocument.author.ilike(f"%{filters['author']}%"))
+        if "source_type" in filters:
+            q = q.where(CanonicalDocument.source_type == filters["source_type"])
+        if "since" in filters:
+            from datetime import datetime
+            since_dt = datetime.fromisoformat(filters["since"])
+            q = q.where(CanonicalDocument.source_created_at >= since_dt)
+        total = (await db.execute(q)).scalar() or 0
+
+    filter_desc = ", ".join(f"{k}={v}" for k, v in filters.items())
+    label = f"filtered by {filter_desc}" if filter_desc else "across all sources"
+    content = f"Aggregate count result: {total} documents ({label})."
+    logger.info("aggregate_count: %d docs %s for tenant=%s", total, label, tenant_id)
+    return Document(
+        page_content=content,
+        metadata={"_intent": "aggregate", "count": total, "filters": filters},
+    )
+
+
 async def _embed_query(query: str) -> list[float]:
     if settings.LLM_PROVIDER == "ollama":
         async with httpx.AsyncClient(timeout=60) as client:
@@ -315,13 +466,11 @@ async def hybrid_retrieve(
     allowed_sources: list[dict] | None = None,
 ) -> list[Document]:
     """
-    Full hybrid retrieval pipeline:
-      1. Embed query
-      2. Dense Qdrant search  (filtered by allowed_sources when provided)
-      3. BM25 search over tenant corpus  (filtered by allowed_sources when provided)
-      4. RRF fusion
-      5. Cohere rerank (optional)
-    Returns a list of LangChain Document objects.
+    Full hybrid retrieval pipeline with intent-aware routing:
+      - ID lookup queries  → direct DB match, skips vector search
+      - Count/aggregate    → SQL COUNT(*) + semantic docs for context
+      - Status/author/date → filter candidate set before ranking
+      - All others         → dense + BM25 → RRF → Cohere rerank
 
     allowed_sources: list of {source_type, source_id} from permissions.get_allowed_sources().
         None  → unrestricted (admin): searches all tenant documents.
@@ -335,17 +484,49 @@ async def hybrid_retrieve(
     k = top_k or TOP_K
     collection = f"{settings.QDRANT_COLLECTION_PREFIX}{tenant_id}"
 
+    # ── Intent detection ──────────────────────────────────────────────────────
+    intent: QueryIntent = detect_intent(query)
     logger.info(
-        "hybrid_retrieve: tenant=%s query=%r top_k=%d sources=%s",
-        tenant_id, query[:80], k,
-        "unrestricted" if allowed_sources is None else f"{len(allowed_sources)} allowed",
+        "hybrid_retrieve: tenant=%s query=%r intent=%s filters=%s",
+        tenant_id, query[:80], intent.type, intent.filters,
     )
+
+    # ── Route: exact ID lookup ────────────────────────────────────────────────
+    if intent.type == "id_lookup" and intent.id_string:
+        docs = await _id_lookup(intent.id_string, tenant_id)
+        if docs:
+            return docs
+        # No exact match — fall through to semantic search so we still return something
+
+    # ── Route: aggregate count ────────────────────────────────────────────────
+    # Run the COUNT query, then also do semantic retrieval for example docs
+    count_doc: Document | None = None
+    if intent.type == "aggregate":
+        try:
+            count_doc = await _aggregate_count(query, tenant_id, intent.filters)
+        except Exception as exc:
+            logger.warning("hybrid_retrieve: aggregate_count failed: %s", exc)
+
+    # ── Apply intent filters to narrow candidate set ──────────────────────────
+    # Translates state/author/source_type/since into a source_id allow-list.
+    # Intersected with the user's existing permission set when restricted.
+    effective_sources = allowed_sources
+    if intent.filters:
+        try:
+            effective_sources = await _resolve_filter_source_ids(
+                tenant_id, intent.filters, allowed_sources
+            )
+        except Exception as exc:
+            logger.warning("hybrid_retrieve: filter resolution failed: %s", exc)
+        if effective_sources is not None and not effective_sources:
+            # Filters matched nothing — return count doc alone (if any), else empty
+            return [count_doc] if count_doc else []
 
     try:
         query_vector = await _embed_query(query)
     except Exception as exc:
         logger.error("hybrid_retrieve: embed failed: %s", exc)
-        return []
+        return [count_doc] if count_doc else []
 
     dense_docs, bm25_docs = [], []
 
@@ -353,7 +534,7 @@ async def hybrid_retrieve(
 
     try:
         t0 = time.monotonic()
-        dense_docs = await _dense_search(query_vector, collection, top_k=k * 2, allowed_sources=allowed_sources)
+        dense_docs = await _dense_search(query_vector, collection, top_k=k * 2, allowed_sources=effective_sources)
         telemetry.record_latency_span(
             "retrieval_dense",
             latency_ms=(time.monotonic() - t0) * 1000,
@@ -365,7 +546,7 @@ async def hybrid_retrieve(
 
     try:
         t0 = time.monotonic()
-        bm25_docs = await _bm25_search(query, tenant_id, top_k=k * 2, allowed_sources=allowed_sources)
+        bm25_docs = await _bm25_search(query, tenant_id, top_k=k * 2, allowed_sources=effective_sources)
         telemetry.record_latency_span(
             "retrieval_bm25",
             latency_ms=(time.monotonic() - t0) * 1000,
@@ -377,7 +558,7 @@ async def hybrid_retrieve(
 
     if not dense_docs and not bm25_docs:
         logger.warning("hybrid_retrieve: both searches returned 0 docs")
-        return []
+        return [count_doc] if count_doc else []
 
     merged = _rrf_merge(dense_docs, bm25_docs)
     logger.info("hybrid_retrieve: after RRF merge=%d", len(merged))
@@ -399,6 +580,10 @@ async def hybrid_retrieve(
             reverse=True,
         )
         logger.info("hybrid_retrieve: applied recency sort for temporal query")
+
+    # Prepend the aggregate count doc so the LLM sees the exact number first
+    if count_doc:
+        final = [count_doc] + final[:k - 1]
 
     logger.info("hybrid_retrieve: final=%d docs", len(final))
     return final
