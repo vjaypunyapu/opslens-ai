@@ -239,7 +239,11 @@ class RagService:
         try:
             from .planner import plan_and_answer
 
-            answer, state = await plan_and_answer(question, tenant_id, allowed_sources=allowed_sources)
+            answer, state = await plan_and_answer(
+                question, tenant_id,
+                allowed_sources=allowed_sources,
+                history=history,
+            )
 
             if state.validation:
                 validation_passed = state.validation.passed
