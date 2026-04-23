@@ -546,6 +546,50 @@ async def _fetch_github(creds: dict, tenant_id: str, integration_id: str) -> int
                         metadata={"repo": repo_name, "state": issue.get("state"), "type": kind.lower()},
                     ))
 
+            # Recent commits — fetch the last 30 per repo so "what was the last
+            # commit" queries have something to retrieve.  The date is embedded
+            # in the content body so the LLM can identify recency.
+            commits_resp = await client.get(
+                f"https://api.github.com/repos/{repo_name}/commits",
+                params={"per_page": 30},
+            )
+            if commits_resp.status_code == 200:
+                for commit in commits_resp.json():
+                    c      = commit.get("commit", {})
+                    msg    = (c.get("message") or "").strip()
+                    if not msg:
+                        continue
+                    sha        = commit.get("sha", "")
+                    short_sha  = sha[:8]
+                    author_obj = c.get("author") or c.get("committer") or {}
+                    author     = (
+                        (commit.get("author") or {}).get("login")
+                        or author_obj.get("name", "")
+                    )
+                    date_str   = author_obj.get("date", "")
+                    commit_url = commit.get("html_url", "")
+                    try:
+                        committed_at = datetime.fromisoformat(date_str.rstrip("Z")).replace(tzinfo=timezone.utc)
+                    except (ValueError, AttributeError):
+                        committed_at = None
+                    records.append(RawRecord(
+                        source_type="github",
+                        source_id=f"commit:{repo_name}:{short_sha}",
+                        title=f"[Commit] {repo_name}: {msg.splitlines()[0][:80]}",
+                        content=(
+                            f"Repository: {repo_name}\n"
+                            f"Commit: {short_sha}\n"
+                            f"Date: {date_str}\n"
+                            f"Author: {author}\n\n"
+                            f"{msg}"
+                        ),
+                        author=author,
+                        url=commit_url,
+                        created_at=committed_at,
+                        updated_at=committed_at,
+                        metadata={"repo": repo_name, "sha": sha, "type": "commit"},
+                    ))
+
     logger.info("GitHub direct sync: %d records for tenant %s", len(records), tenant_id)
     return await _batch_save_and_embed_logs(records, tenant_id, trigger_incidents=False)
 
