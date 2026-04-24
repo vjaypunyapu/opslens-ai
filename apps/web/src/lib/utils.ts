@@ -43,6 +43,7 @@ export const SOURCE_TYPE_LABELS: Record<SourceType, string> = {
   azure_monitor: "Azure Monitor",
   gcp_logging:   "GCP Logging",
   railway:       "Railway",
+  rrt_brief:     "Incident Brief",
 };
 
 export const SOURCE_TYPE_ICONS: Record<SourceType, string> = {
@@ -60,4 +61,5 @@ export const SOURCE_TYPE_ICONS: Record<SourceType, string> = {
   azure_monitor: "🔷",
   gcp_logging:   "🌐",
   railway:       "🚂",
+  rrt_brief:     "🚨",
 };
