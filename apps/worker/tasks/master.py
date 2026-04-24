@@ -121,6 +121,54 @@ def poll_all_log_sources():
     return {"dispatched": len(integrations)}
 
 
+# ── Contextual source daily re-sync fan-out ───────────────────────────────────
+@shared_task(name="ingestion.sync_all_contextual_sources")
+def sync_all_contextual_sources():
+    """
+    Re-sync all contextual integrations (GitHub, Jira, Slack, HubSpot, Zendesk,
+    Google Drive, Bitbucket) across every tenant on the configured cron schedule.
+
+    Each integration is dispatched as an independent sync_integration subtask so
+    a slow or failing source doesn't block others. Jitter is applied across the
+    first 10 minutes to avoid thundering-herd on external APIs.
+
+    Schedule is configurable via env vars:
+        CONTEXTUAL_SYNC_CRON_HOUR   (default "3"  → 03:xx UTC)
+        CONTEXTUAL_SYNC_CRON_MINUTE (default "0"  → xx:00 UTC)
+    """
+    from .log_source_poller import sync_integration
+    from ..services.direct_sync_service import LOG_SOURCE_TYPES
+
+    async def _get_contextual_integrations():
+        from ..models.integration import Integration
+        async with AsyncSession() as db:
+            rows = await db.execute(
+                sa.select(Integration.id, Integration.tenant_id, Integration.source_type)
+                .where(
+                    Integration.status == "active",
+                    Integration.source_type.notin_(list(LOG_SOURCE_TYPES)),
+                )
+            )
+            return [(str(r.id), str(r.tenant_id), r.source_type) for r in rows.all()]
+
+    integrations = _run_async(_get_contextual_integrations())
+    logger.info(
+        "sync_all_contextual_sources: dispatching %d integrations", len(integrations)
+    )
+    for integration_id, tenant_id, source_type in integrations:
+        # Spread over 10 min so all tenants don't hit GitHub/Jira at the same second
+        jitter = random.randint(0, 600)
+        sync_integration.apply_async(
+            args=[integration_id, tenant_id],
+            countdown=jitter,
+        )
+        logger.info(
+            "sync_all_contextual_sources: queued %s/%s (jitter=%ds)",
+            source_type, integration_id, jitter,
+        )
+    return {"dispatched": len(integrations)}
+
+
 # ── Fast log alert fan-out ────────────────────────────────────────────────────
 @shared_task(name="logs.fast_scan_all_tenants")
 def fast_scan_all_tenants():
