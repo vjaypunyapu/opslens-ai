@@ -99,4 +99,19 @@ app.conf.beat_schedule = {
         "task": "ingestion.retry_pending_embeddings",
         "schedule": crontab(minute="*/30"),
     },
+    # Daily re-sync for contextual sources (GitHub, Jira, Slack, HubSpot,
+    # Zendesk, Google Drive, Bitbucket). Schedule is configurable via env:
+    #   CONTEXTUAL_SYNC_CRON_HOUR   — hour(s) in crontab syntax (default "3")
+    #   CONTEXTUAL_SYNC_CRON_MINUTE — minute(s) in crontab syntax (default "0")
+    # Examples:
+    #   Every 6 hours:  CONTEXTUAL_SYNC_CRON_HOUR="*/6" CONTEXTUAL_SYNC_CRON_MINUTE="0"
+    #   Twice daily:    CONTEXTUAL_SYNC_CRON_HOUR="3,15"
+    #   Hourly:         CONTEXTUAL_SYNC_CRON_HOUR="*"
+    "contextual-source-sync": {
+        "task": "ingestion.sync_all_contextual_sources",
+        "schedule": crontab(
+            hour=settings.CONTEXTUAL_SYNC_CRON_HOUR,
+            minute=settings.CONTEXTUAL_SYNC_CRON_MINUTE,
+        ),
+    },
 }

@@ -161,6 +161,14 @@ class Settings(BaseSettings):
     GITHUB_SYNC_MAX_ISSUES: int = 200      # issues+PRs per repo (paginated, 100/page)
     GITHUB_SYNC_MAX_COMMITS: int = 100     # commits per repo
 
+    # ── Contextual source re-sync schedule ───────────────────────────────────
+    # GitHub, Jira, Slack, HubSpot, Zendesk, Google Drive are re-synced on a
+    # daily cron so new content is picked up automatically without manual "Sync now".
+    # Set CONTEXTUAL_SYNC_CRON_HOUR=* to sync every hour, or adjust to taste.
+    # Times are UTC. Defaults to 03:00 UTC daily (off-peak for most timezones).
+    CONTEXTUAL_SYNC_CRON_HOUR: str = "3"    # hour(s), crontab syntax e.g. "3" or "*/6"
+    CONTEXTUAL_SYNC_CRON_MINUTE: str = "0"  # minute(s), e.g. "0" or "30"
+
     # Jira webhook integration
     JIRA_WEBHOOK_TOKEN: str = ""           # Secret token set in Jira webhook config
     JIRA_HOST: str = ""                    # e.g. "yourcompany.atlassian.net"
