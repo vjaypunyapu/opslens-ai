@@ -446,31 +446,7 @@ export default function LandingPage() {
 
       {/* PRICING — hidden until finalized */}
 
-      {/* SOCIAL PROOF */}
-      <section style={{ background: 'var(--navy-mid)' }}>
-        <div className="container">
-          <div className="section-label">What Teams Say</div>
-          <h2 className="section-title">Engineers love it. <span style={{ color: 'var(--teal)' }}>On-call hates downtime.</span></h2>
-          <div className="quote-grid">
-            {[
-              ['"We used to spend the first 20 minutes of every incident just figuring out which team should own it. OpsLens eliminated that entirely."', 'AK', 'Alex K.', 'VP Engineering, Series A SaaS'],
-              ['"The AI root cause briefs are shockingly good. It pulled the relevant PR and pointed to the exact commit. Saved us hours in our last P1."', 'MR', 'Maria R.', 'Staff Engineer, Fintech Startup'],
-              ['"We evaluated PagerDuty and a few others. OpsLens was the only one that actually reduced noise instead of just routing it differently."', 'DP', 'Daniel P.', 'CTO, Developer Tools Co.'],
-            ].map(([quote, initials, name, role]) => (
-              <div className="quote-card" key={name}>
-                <div className="quote-text">{quote}</div>
-                <div className="quote-author">
-                  <div className="quote-avatar">{initials}</div>
-                  <div>
-                    <div className="quote-name">{name}</div>
-                    <div className="quote-role">{role}</div>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
+      {/* SOCIAL PROOF — hidden until real testimonials are ready */}
 
       {/* CTA */}
       <section className="cta-section" id="cta">
@@ -479,10 +455,10 @@ export default function LandingPage() {
           <p className="cta-sub">See OpsLens AI live in 30 minutes. We&apos;ll walk through your stack, your alerts, and how briefs would look for your team.</p>
           <div className="hero-actions" style={{ justifyContent: 'center' }}>
             <a href="https://calendly.com/opslens-ai/demo" className="btn-primary" target="_blank" rel="noopener noreferrer">Book a Demo →</a>
-            <a href="mailto:hello@opslens.ai" className="btn-secondary">Email Us Instead</a>
+            <a href="mailto:admin@opslensai.com" className="btn-secondary">Email Us Instead</a>
           </div>
           <p style={{ marginTop: '1.5rem', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-            Questions? Reach us at <a href="mailto:hello@opslens.ai" style={{ color: 'var(--teal)' }}>hello@opslens.ai</a>
+            Questions? Reach us at <a href="mailto:admin@opslensai.com" style={{ color: 'var(--teal)' }}>admin@opslensai.com</a>
           </p>
         </div>
       </section>
@@ -491,7 +467,7 @@ export default function LandingPage() {
       <footer>
         <p>© 2025 OpsLens AI. Built for engineering teams who ship fast. &nbsp;·&nbsp;
           <a href="#">Privacy</a> &nbsp;·&nbsp; <a href="#">Terms</a> &nbsp;·&nbsp;
-          <a href="mailto:hello@opslens.ai">hello@opslens.ai</a>
+          <a href="mailto:admin@opslensai.com">admin@opslensai.com</a>
         </p>
       </footer>
     </>
