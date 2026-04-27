@@ -26,7 +26,7 @@ from typing import Annotated
 
 import sqlalchemy as sa
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from ..auth.dependencies import TenantContext, require_admin, require_viewer
 from ..db.session import get_db
@@ -235,6 +235,17 @@ async def delete_known_issue(
 # ROUTING RULES — schemas
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _normalise_patterns(patterns: list[str]) -> list[str]:
+    """Split any comma-concatenated tags and strip whitespace."""
+    out = []
+    for p in patterns:
+        for part in p.split(","):
+            part = part.strip()
+            if part:
+                out.append(part)
+    return out
+
+
 class CreateRoutingRuleRequest(BaseModel):
     team_name:         str = Field(..., min_length=1, max_length=100)
     team_id:           str | None = Field(None, description="Link to a Team row — owners can edit this rule")
@@ -254,6 +265,13 @@ class CreateRoutingRuleRequest(BaseModel):
         description="Docker container names to scope this rule. "
                     "e.g. ['payment-service', 'billing-worker']"
     )
+
+    @field_validator("service_patterns", "error_patterns", "source_containers", mode="before")
+    @classmethod
+    def split_comma_patterns(cls, v):
+        if isinstance(v, list):
+            return _normalise_patterns(v)
+        return v
     match_all:         bool = Field(
         default=False,
         description="If true, ALL non-empty pattern lists must match. "
@@ -288,6 +306,13 @@ class UpdateRoutingRuleRequest(BaseModel):
     stop_on_match:     bool | None = None
     cooldown_minutes:  int | None = Field(default=None, ge=5, le=1440)
     is_active:         bool | None = None
+
+    @field_validator("service_patterns", "error_patterns", "source_containers", mode="before")
+    @classmethod
+    def split_comma_patterns(cls, v):
+        if isinstance(v, list):
+            return _normalise_patterns(v)
+        return v
 
 
 class RoutingRuleOut(BaseModel):
@@ -1204,8 +1229,8 @@ def _rule_matches(rule: AlertRoutingRule, error_line: str, container: str | None
                     return True
         return False
 
-    service_hit   = _any_match(list(rule.service_patterns or []), error_line)
-    error_hit     = _any_match(list(rule.error_patterns or []), error_line)
+    service_hit   = _any_match(_normalise_patterns(list(rule.service_patterns or [])), error_line)
+    error_hit     = _any_match(_normalise_patterns(list(rule.error_patterns or [])), error_line)
     container_hit = (
         container in (rule.source_containers or [])
         if rule.source_containers

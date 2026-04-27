@@ -42,8 +42,8 @@ function TagInput({
   const [input, setInput] = useState("");
 
   function addTag() {
-    const t = input.trim();
-    if (t && !value.includes(t)) onChange([...value, t]);
+    const tags = input.split(",").map(t => t.trim()).filter(t => t && !value.includes(t));
+    if (tags.length) onChange([...value, ...tags]);
     setInput("");
   }
 
