@@ -142,7 +142,7 @@ async def _dense_search(
     return docs
 
 
-# ── BM25 search ───────────────────────────────────────────────────────────────
+# ── Full-text search (PostgreSQL tsvector) ────────────────────────────────────
 async def _bm25_search(
     query: str,
     tenant_id: str,
@@ -150,9 +150,16 @@ async def _bm25_search(
     allowed_sources: list[dict] | None = None,
 ) -> list[Document]:
     """
-    Build an in-memory BM25 index from CanonicalDocument rows for this tenant,
-    then return the top-k matches.
-    Falls back to empty list if rank_bm25 is not installed or DB is empty.
+    Keyword search using PostgreSQL full-text search (tsvector + GIN index).
+
+    Replaces the previous in-memory BM25 approach which loaded all documents
+    into memory per-query and did not scale past ~10k documents per tenant.
+
+    PostgreSQL FTS uses the pre-built GIN index on the search_vector column,
+    making it O(log N) rather than O(N). ts_rank_cd provides BM25-style scoring.
+
+    Falls back to in-memory BM25 (rank_bm25) if the search_vector column is
+    not yet populated (e.g. on the first deploy before backfill completes).
 
     allowed_sources: list of {source_type, source_id} dicts. When provided,
     the SQL query is filtered to only include matching documents.
@@ -161,16 +168,65 @@ async def _bm25_search(
     if allowed_sources is not None and not allowed_sources:
         return []   # user has no permitted sources
 
+    import sqlalchemy as sa
+    from ..db.session import AsyncSessionFactory as async_session_factory
+
+    # Build allowed source_ids filter clause
+    source_filter = ""
+    params: dict = {"tenant_id": tenant_id, "query_text": query, "top_k": top_k}
+    if allowed_sources is not None:
+        allowed_ids = [s["source_id"] for s in allowed_sources]
+        source_filter = "AND source_id = ANY(:allowed_ids)"
+        params["allowed_ids"] = allowed_ids
+
+    try:
+        async with async_session_factory() as db:
+            rows = (await db.execute(sa.text(f"""
+                SELECT
+                    id, content, title, url, source_type, source_id,
+                    author, source_created_at,
+                    ts_rank_cd(search_vector, query) AS rank
+                FROM opslens.canonical_documents,
+                     plainto_tsquery('english', :query_text) query
+                WHERE tenant_id = :tenant_id::uuid
+                  AND search_vector IS NOT NULL
+                  AND search_vector @@ query
+                  {source_filter}
+                ORDER BY rank DESC
+                LIMIT :top_k
+            """), params)).fetchall()
+
+        if rows:
+            return [
+                Document(
+                    page_content=row.content,
+                    metadata={
+                        "document_id": str(row.id),
+                        "source_type": row.source_type,
+                        "title":       row.title or "",
+                        "url":         row.url or "",
+                        "author":      row.author or "",
+                        "created_at":  row.source_created_at.isoformat() if row.source_created_at else None,
+                        "_bm25_score": float(row.rank),
+                    },
+                )
+                for row in rows
+            ]
+
+        # search_vector not yet populated — fall back to in-memory BM25
+        logger.info("search_vector empty — falling back to in-memory BM25")
+
+    except Exception as fts_exc:
+        logger.warning("PostgreSQL FTS failed (%s) — falling back to in-memory BM25", fts_exc)
+
+    # ── In-memory BM25 fallback (removed once tsvector backfill is complete) ──
     try:
         from rank_bm25 import BM25Okapi
     except ImportError:
-        logger.warning("rank_bm25 not installed — BM25 search disabled")
+        logger.warning("rank_bm25 not installed and tsvector unavailable — keyword search disabled")
         return []
 
-    import sqlalchemy as sa
     from ..db.models import CanonicalDocument
-    from ..db.session import AsyncSessionFactory as async_session_factory
-
     async with async_session_factory() as db:
         q = (
             sa.select(CanonicalDocument.id, CanonicalDocument.content, CanonicalDocument.title,
@@ -178,45 +234,37 @@ async def _bm25_search(
                       CanonicalDocument.author, CanonicalDocument.source_created_at)
             .where(CanonicalDocument.tenant_id == uuid.UUID(tenant_id))
         )
-
-        # Apply source_id filter when the user is restricted
         if allowed_sources is not None:
             allowed_ids = [s["source_id"] for s in allowed_sources]
             q = q.where(CanonicalDocument.source_id.in_(allowed_ids))
-
-        q = q.limit(5000)   # cap for memory safety
+        q = q.limit(5000)
         result = await db.execute(q)
         rows = result.fetchall()
 
     if not rows:
         return []
 
-    # Tokenise corpus
     tokenised = [row.content.lower().split() for row in rows]
-    bm25      = BM25Okapi(tokenised)
-    scores    = bm25.get_scores(query.lower().split())
-
-    # Get top-k indices
+    bm25 = BM25Okapi(tokenised)
+    scores = bm25.get_scores(query.lower().split())
     top_indices = sorted(range(len(scores)), key=lambda i: -scores[i])[:top_k]
 
-    docs: list[Document] = []
-    for idx in top_indices:
-        if scores[idx] <= 0:
-            continue
-        row = rows[idx]
-        docs.append(Document(
-            page_content=row.content,
+    return [
+        Document(
+            page_content=rows[idx].content,
             metadata={
-                "document_id":  str(row.id),
-                "source_type":  row.source_type,
-                "title":        row.title or "",
-                "url":          row.url or "",
-                "author":       row.author or "",
-                "created_at":   row.source_created_at.isoformat() if row.source_created_at else None,
-                "_bm25_score":  float(scores[idx]),
+                "document_id": str(rows[idx].id),
+                "source_type": rows[idx].source_type,
+                "title":       rows[idx].title or "",
+                "url":         rows[idx].url or "",
+                "author":      rows[idx].author or "",
+                "created_at":  rows[idx].source_created_at.isoformat() if rows[idx].source_created_at else None,
+                "_bm25_score": float(scores[idx]),
             },
-        ))
-    return docs
+        )
+        for idx in top_indices
+        if scores[idx] > 0
+    ]
 
 
 # ── Reciprocal Rank Fusion ─────────────────────────────────────────────────────

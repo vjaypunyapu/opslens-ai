@@ -353,6 +353,44 @@ async def lifespan(app: FastAPI):
             "CREATE INDEX IF NOT EXISTS idx_alert_history_acknowledged "
             "ON opslens.alert_history (tenant_id, acknowledged)"
         ))
+        # FTS: tsvector column + GIN index on canonical_documents (replaces in-memory BM25)
+        await conn.execute(sa.text(
+            "ALTER TABLE opslens.canonical_documents "
+            "ADD COLUMN IF NOT EXISTS search_vector tsvector"
+        ))
+        await conn.execute(sa.text(
+            "CREATE INDEX IF NOT EXISTS idx_canonical_documents_search_vector "
+            "ON opslens.canonical_documents USING GIN(search_vector)"
+        ))
+        # Trigger: auto-populate search_vector on INSERT or content/title UPDATE
+        await conn.execute(sa.text("""
+            CREATE OR REPLACE FUNCTION opslens.update_canonical_document_search_vector()
+            RETURNS TRIGGER AS $$
+            BEGIN
+                NEW.search_vector := to_tsvector('english',
+                    coalesce(NEW.title, '') || ' ' || coalesce(NEW.content, '')
+                );
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql
+        """))
+        await conn.execute(sa.text(
+            "DROP TRIGGER IF EXISTS trig_canonical_documents_fts "
+            "ON opslens.canonical_documents"
+        ))
+        await conn.execute(sa.text("""
+            CREATE TRIGGER trig_canonical_documents_fts
+            BEFORE INSERT OR UPDATE OF title, content
+            ON opslens.canonical_documents
+            FOR EACH ROW EXECUTE FUNCTION opslens.update_canonical_document_search_vector()
+        """))
+        # Backfill existing rows that predate this column
+        await conn.execute(sa.text("""
+            UPDATE opslens.canonical_documents
+            SET search_vector = to_tsvector('english',
+                coalesce(title, '') || ' ' || coalesce(content, ''))
+            WHERE search_vector IS NULL
+        """))
     logger.info("Always-run schema patches applied.")
 
     yield

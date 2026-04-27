@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "opslens"
+version = "0.1.0"
+description = "OpsLens AI Python SDK — push log events into the AI alert pipeline"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+keywords = ["opslens", "observability", "alerting", "incident-response", "monitoring"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "httpx>=0.24.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio", "respx"]
+
+[project.urls]
+Homepage = "https://opslensai.com"
+Documentation = "https://opslensai.com/docs"
+Repository = "https://github.com/opslens-ai/opslens-python"
+"Bug Tracker" = "https://github.com/opslens-ai/opslens-python/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["opslens*"]
