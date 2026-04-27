@@ -40,6 +40,19 @@ def upgrade() -> None:
         type_="unique",
     )
 
+    # 1b. Deduplicate rows before adding the unique constraint.
+    #     Keeps the most recently updated row for each (tenant_id, source_type, source_id)
+    #     and deletes all older duplicates — safe because the newest row has the
+    #     latest content and embedding_status.
+    op.execute("""
+        DELETE FROM opslens.canonical_documents
+        WHERE id NOT IN (
+            SELECT DISTINCT ON (tenant_id, source_type, source_id) id
+            FROM opslens.canonical_documents
+            ORDER BY tenant_id, source_type, source_id, updated_at DESC NULLS LAST
+        )
+    """)
+
     # 2. Add the correct identity key: one row per source document per tenant.
     #    This is what enables atomic ON CONFLICT upserts in ingestion.py.
     op.create_unique_constraint(
