@@ -16,41 +16,13 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # Q10: per-routing-rule alert cooldown
-    op.add_column(
-        "alert_routing_rules",
-        sa.Column(
-            "cooldown_minutes",
-            sa.Integer(),
-            nullable=False,
-            server_default="10",   # 10 min default — matches previous global setting
-        ),
-        schema="opslens",
-    )
-
-    # Q11: acknowledgement fields on AlertHistory
-    op.add_column(
-        "alert_history",
-        sa.Column("acknowledged", sa.Boolean(), nullable=False, server_default="false"),
-        schema="opslens",
-    )
-    op.add_column(
-        "alert_history",
-        sa.Column("acknowledged_at", sa.DateTime(timezone=True), nullable=True),
-        schema="opslens",
-    )
-    op.add_column(
-        "alert_history",
-        sa.Column("acknowledged_by", sa.String(255), nullable=True),
-        schema="opslens",
-    )
-    # Index for fast lookup in the escalation task
-    op.create_index(
-        "idx_alert_history_acknowledged",
-        "alert_history",
-        ["tenant_id", "acknowledged"],
-        schema="opslens",
-    )
+    # Use raw SQL with IF NOT EXISTS throughout — these columns may already exist
+    # if the always-run main.py patches ran before this migration.
+    op.execute("ALTER TABLE opslens.alert_routing_rules ADD COLUMN IF NOT EXISTS cooldown_minutes INTEGER NOT NULL DEFAULT 10")
+    op.execute("ALTER TABLE opslens.alert_history ADD COLUMN IF NOT EXISTS acknowledged BOOLEAN NOT NULL DEFAULT false")
+    op.execute("ALTER TABLE opslens.alert_history ADD COLUMN IF NOT EXISTS acknowledged_at TIMESTAMPTZ")
+    op.execute("ALTER TABLE opslens.alert_history ADD COLUMN IF NOT EXISTS acknowledged_by VARCHAR(255)")
+    op.execute("CREATE INDEX IF NOT EXISTS idx_alert_history_acknowledged ON opslens.alert_history (tenant_id, acknowledged)")
 
 
 def downgrade() -> None:
