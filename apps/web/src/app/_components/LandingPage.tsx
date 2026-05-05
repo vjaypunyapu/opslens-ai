@@ -317,7 +317,7 @@ export default function LandingPage() {
         </ul>
         <div className="nav-right">
           <a href="/sign-in" className="nav-login">Log In</a>
-          <a href="#cta" className="nav-cta">Book a Demo</a>
+          <a href="mailto:admin@opslensai.com?subject=Demo%20Request" className="nav-cta">Book a Demo</a>
         </div>
       </nav>
 
@@ -333,7 +333,7 @@ export default function LandingPage() {
           OpsLens AI turns noisy logs into instant, AI-diagnosed incident briefs — automatically routed to the right team via Slack, with full context from Jira, GitHub, and your runbooks.
         </p>
         <div className="hero-actions">
-          <a href="#cta" className="btn-primary">Book a Demo →</a>
+          <a href="mailto:admin@opslensai.com?subject=Demo%20Request" className="btn-primary">Book a Demo →</a>
           <a href="#how-it-works" className="btn-secondary">See How It Works</a>
         </div>
         <div className="hero-mockup">
@@ -454,7 +454,7 @@ export default function LandingPage() {
           <h2 className="cta-title">Ready to end alert fatigue?</h2>
           <p className="cta-sub">See OpsLens AI live in 30 minutes. We&apos;ll walk through your stack, your alerts, and how briefs would look for your team.</p>
           <div className="hero-actions" style={{ justifyContent: 'center' }}>
-            <a href="https://calendly.com/opslens-ai/demo" className="btn-primary" target="_blank" rel="noopener noreferrer">Book a Demo →</a>
+            <a href="mailto:admin@opslensai.com?subject=Demo%20Request" className="btn-primary">Book a Demo →</a>
             <a href="mailto:admin@opslensai.com" className="btn-secondary">Email Us Instead</a>
           </div>
           <p style={{ marginTop: '1.5rem', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
