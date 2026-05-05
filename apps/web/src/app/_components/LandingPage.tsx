@@ -1,5 +1,8 @@
 'use client';
 
+import { useState } from 'react';
+import BookDemoModal from './BookDemoModal';
+
 const CSS = `
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -300,9 +303,12 @@ footer a { color: var(--teal); text-decoration: none; }
 `;
 
 export default function LandingPage() {
+  const [demoOpen, setDemoOpen] = useState(false);
+
   return (
     <>
       <style dangerouslySetInnerHTML={{ __html: CSS }} />
+      <BookDemoModal open={demoOpen} onClose={() => setDemoOpen(false)} />
 
       {/* NAV */}
       <nav>
@@ -317,7 +323,7 @@ export default function LandingPage() {
         </ul>
         <div className="nav-right">
           <a href="/sign-in" className="nav-login">Log In</a>
-          <a href="mailto:admin@opslensai.com?subject=Demo%20Request" className="nav-cta">Book a Demo</a>
+          <button onClick={() => setDemoOpen(true)} className="nav-cta">Book a Demo</button>
         </div>
       </nav>
 
@@ -333,7 +339,7 @@ export default function LandingPage() {
           OpsLens AI turns noisy logs into instant, AI-diagnosed incident briefs — automatically routed to the right team via Slack, with full context from Jira, GitHub, and your runbooks.
         </p>
         <div className="hero-actions">
-          <a href="mailto:admin@opslensai.com?subject=Demo%20Request" className="btn-primary">Book a Demo →</a>
+          <button onClick={() => setDemoOpen(true)} className="btn-primary">Book a Demo →</button>
           <a href="#how-it-works" className="btn-secondary">See How It Works</a>
         </div>
         <div className="hero-mockup">
@@ -454,7 +460,7 @@ export default function LandingPage() {
           <h2 className="cta-title">Ready to end alert fatigue?</h2>
           <p className="cta-sub">See OpsLens AI live in 30 minutes. We&apos;ll walk through your stack, your alerts, and how briefs would look for your team.</p>
           <div className="hero-actions" style={{ justifyContent: 'center' }}>
-            <a href="mailto:admin@opslensai.com?subject=Demo%20Request" className="btn-primary">Book a Demo →</a>
+            <button onClick={() => setDemoOpen(true)} className="btn-primary">Book a Demo →</button>
             <a href="mailto:admin@opslensai.com" className="btn-secondary">Email Us Instead</a>
           </div>
           <p style={{ marginTop: '1.5rem', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
