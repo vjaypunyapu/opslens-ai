@@ -79,7 +79,7 @@ const [field, setField] = useState('');
 | `CLERK_SECRET_KEY` | Clerk backend key |
 | `NEXT_PUBLIC_API_URL` | FastAPI URL (public, for client fetches) |
 | `API_URL` | FastAPI URL (server-side) |
-| `SENDGRID_API_KEY` | SendGrid — used by `api/book-demo` route to email demo requests |
+| `RESEND_API_KEY` | Resend — used by `api/book-demo` route to email demo requests |
 | `DEMO_REQUEST_EMAIL` | Override destination email (default: `admin@opslensai.com`) |
 
 ## Book Demo Flow
@@ -88,7 +88,7 @@ const [field, setField] = useState('');
 2. `BookDemoModal` (`_components/BookDemoModal.tsx`) opens as overlay
 3. Fields: Full Name*, Work Email*, Company*, Role, Team Size, Message
 4. `POST /api/book-demo` → `app/api/book-demo/route.ts`
-5. If `SENDGRID_API_KEY` set → sends email via SendGrid to `DEMO_REQUEST_EMAIL`
+5. If `RESEND_API_KEY` set → sends email via Resend to `DEMO_REQUEST_EMAIL`
 6. If no key → logs to console (dev/staging fallback)
 7. Modal shows success state on 2xx, inline error on failure
 
