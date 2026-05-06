@@ -299,6 +299,17 @@ footer a { color: var(--teal); text-decoration: none; }
   .nav-links { display: none; }
   .steps::before { display: none; }
   .step { flex-direction: column; gap: 1rem; }
+
+  .hero-mockup { padding: 1rem; margin-top: 2.5rem; }
+  .mockup-title { display: none; }
+
+  .incident-card {
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  .incident-severity { align-self: flex-start; }
+  .incident-name { font-size: 0.85rem; }
+  .incident-route { margin-left: 0; }
 }
 `;
 
