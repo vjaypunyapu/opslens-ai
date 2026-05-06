@@ -3,10 +3,10 @@ const nextConfig = {
   async rewrites() {
     return [
       {
-        source: "/api/:path*",
+        source: "/api/v1/:path*",
         // API_URL is a server-side-only var (not NEXT_PUBLIC_) so it's always
         // available in next.config.mjs regardless of build-time inlining quirks.
-        destination: (process.env.API_URL || process.env.NEXT_PUBLIC_API_URL || "http://api:8000") + "/api/:path*",
+        destination: (process.env.API_URL || process.env.NEXT_PUBLIC_API_URL || "http://api:8000") + "/api/v1/:path*",
       },
     ];
   },

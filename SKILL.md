@@ -111,6 +111,6 @@ Located in `opslens_backend/apps/api/routers/`:
 ## Common Gotchas
 
 - `LandingPage.tsx` is a `'use client'` component with inline CSS; Tailwind classes don't apply here
-- The FastAPI backend is proxied at `/api/v1/*` via `next.config.ts` rewrites — don't confuse with Next.js API routes at `/api/*`
+- The FastAPI backend is proxied at `/api/v1/*` via `next.config.mjs` rewrites — Next.js API routes must live outside `/api/v1/` (e.g. `/api/book-demo`) to avoid being swallowed by the rewrite
 - Clerk `getToken()` must be awaited before every authenticated API call
 - `btn-primary` and `btn-secondary` are CSS classes defined in `LandingPage.tsx`'s inline `CSS` string — they work on both `<a>` and `<button>` elements

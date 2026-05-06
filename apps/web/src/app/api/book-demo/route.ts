@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 
 export async function POST(req: NextRequest) {
   const body = await req.json();
-  const { name, email, company, role, teamSize, message } = body;
+  const { name, email, company, role, teamSize, preferredDate, message } = body;
 
   if (!name || !email || !company) {
     return NextResponse.json({ error: 'Name, email, and company are required.' }, { status: 400 });
@@ -16,12 +16,13 @@ export async function POST(req: NextRequest) {
   const textBody = `
 New Demo Request — OpsLens AI
 
-Name:      ${name}
-Email:     ${email}
-Company:   ${company}
-Role:      ${role || 'Not provided'}
-Team Size: ${teamSize || 'Not provided'}
-Message:   ${message || 'Not provided'}
+Name:           ${name}
+Email:          ${email}
+Company:        ${company}
+Role:           ${role || 'Not provided'}
+Team Size:      ${teamSize || 'Not provided'}
+Preferred Date: ${preferredDate || 'Not provided'}
+Message:        ${message || 'Not provided'}
 
 Submitted at: ${new Date().toISOString()}
   `.trim();
