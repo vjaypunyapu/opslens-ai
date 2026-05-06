@@ -75,6 +75,10 @@ const MODAL_CSS = `
 .demo-select { appearance: none; cursor: pointer; }
 .demo-select option { background: #1E293B; }
 .demo-textarea { resize: vertical; min-height: 80px; }
+.demo-input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: invert(0.6) sepia(1) saturate(3) hue-rotate(130deg);
+  cursor: pointer;
+}
 
 .demo-field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
 
@@ -121,7 +125,10 @@ export default function BookDemoModal({ open, onClose }: Props) {
   const [company, setCompany] = useState('');
   const [role, setRole] = useState('');
   const [teamSize, setTeamSize] = useState('');
+  const [preferredDate, setPreferredDate] = useState('');
   const [message, setMessage] = useState('');
+
+  const today = new Date().toISOString().split('T')[0];
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState('');
@@ -156,7 +163,7 @@ export default function BookDemoModal({ open, onClose }: Props) {
       const res = await fetch('/api/book-demo', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, email, company, role, teamSize, message }),
+        body: JSON.stringify({ name, email, company, role, teamSize, preferredDate, message }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Something went wrong.');
@@ -267,6 +274,18 @@ export default function BookDemoModal({ open, onClose }: Props) {
                       <option value="201+">200+ engineers</option>
                     </select>
                   </div>
+                </div>
+
+                <div className="demo-field">
+                  <label className="demo-label" htmlFor="demo-date">Preferred Date</label>
+                  <input
+                    id="demo-date"
+                    className="demo-input"
+                    type="date"
+                    min={today}
+                    value={preferredDate}
+                    onChange={e => setPreferredDate(e.target.value)}
+                  />
                 </div>
 
                 <div className="demo-field">
