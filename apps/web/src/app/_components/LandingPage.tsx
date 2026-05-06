@@ -331,6 +331,7 @@ export default function LandingPage() {
           <li><a href="#how-it-works">How It Works</a></li>
           <li><a href="#features">Features</a></li>
           <li><a href="#integrations">Integrations</a></li>
+          <li><a href="/compare">Why OpsLens</a></li>
         </ul>
         <div className="nav-right">
           <a href="/sign-in" className="nav-login">Log In</a>
