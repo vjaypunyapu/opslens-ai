@@ -3,23 +3,27 @@ OpsLens AI — RAG Service
 ==========================
 Streaming Retrieval-Augmented Generation pipeline.
 
-Architecture (v2 — Planner-first):
+Architecture (v3 — Multi-Agent):
     User query
         │
         ▼
-    [Plan] Decompose into sub-queries (GPT-4o-mini)
+    [Supervisor Agent] Routes intent to specialist(s)
+        │
+        ├──► [Research Agent]  Hybrid RAG retrieval + LLM generation
+        ├──► [Insight Agent]   Pattern detection, trend analysis
+        ├──► [Alert Agent]     Active alerts, severity summaries
+        └──► [Incident Agent]  RRT briefs, deployment timelines
         │
         ▼
-    [Retrieve] Hybrid search: BM25 + Qdrant dense + Cohere rerank (per sub-query, parallel)
+    [Synthesizer] Merges multi-agent outputs
         │
         ▼
-    [Generate] GPT-4o / Claude / Ollama (live token streaming)
+    [Validator] Auditor + Gatekeeper + Strategist nodes
         │
         ▼
-    [Validate] Auditor + Gatekeeper + Strategist nodes
-        │
-        ▼
-    Source citations + disclaimer (if needed) + SSE token stream → client
+    Source citations + SSE token stream → client
+
+Falls back to the legacy planner path if the agent graph raises.
 """
 from __future__ import annotations
 
@@ -237,63 +241,74 @@ class RagService:
         error_msg         = ""
 
         try:
-            from .planner import plan_and_answer
+            from ..agents.graph import get_agent_graph
 
-            answer, state = await plan_and_answer(
-                question, tenant_id,
-                allowed_sources=allowed_sources,
+            agent_graph = get_agent_graph()
+
+            # Run through the multi-agent graph
+            async for event in agent_graph.stream(
+                question=question,
+                tenant_id=tenant_id,
+                company_name=company_name,
                 history=history,
-            )
-
-            if state.validation:
-                validation_passed = state.validation.passed
-                retry_count       = state.iteration - 1
-                logger.info(
-                    "RAG: trace=%s validation A:%.2f G:%.2f S:%.2f passed=%s retries=%d",
-                    trace_id[:8],
-                    state.validation.auditor.score,
-                    state.validation.gatekeeper.score,
-                    state.validation.strategist.score,
-                    state.validation.passed,
-                    retry_count,
-                )
-
-            # Stream answer word-by-word
-            words = answer.split(" ")
-            for i, word in enumerate(words):
-                yield {"type": "token", "data": word + (" " if i < len(words) - 1 else "")}
-
-            # Source citations
-            docs = state.retrieved_docs
-            sources = []
-            for doc in docs:
-                raw_title = doc.metadata.get("title", "") or ""
-                source_type = doc.metadata.get("source_type", "")
-                # Build a meaningful title fallback from snippet content
-                # when the document has no title (e.g. raw Railway log chunks)
-                if not raw_title.strip():
-                    snippet_preview = doc.page_content[:60].replace("\n", " ").strip()
-                    raw_title = f"{source_type.capitalize()} log: {snippet_preview}…" if snippet_preview else f"{source_type.capitalize()} entry"
-                sources.append({
-                    "title":       raw_title,
-                    "url":         doc.metadata.get("url", ""),
-                    "source_type": source_type,
-                    "snippet":     doc.page_content[:350],
-                })
-            yield {"type": "sources", "data": sources}
-
-            elapsed_ms = int((time.monotonic() - start) * 1000)
-            yield {
-                "type":       "done",
-                "latency_ms": elapsed_ms,
-                "trace_id":   trace_id,
-                "model_tier": state.model_tier,   # "mini" | "full" — useful for cost debugging
-            }
+                allowed_sources=allowed_sources,
+            ):
+                if event["type"] == "done":
+                    # Enrich done event with our trace_id
+                    elapsed_ms = int((time.monotonic() - start) * 1000)
+                    yield {
+                        "type":       "done",
+                        "latency_ms": elapsed_ms,
+                        "trace_id":   trace_id,
+                        "agents":     event.get("agents", []),
+                    }
+                else:
+                    yield event
 
         except Exception as exc:
-            error_msg = str(exc)
-            logger.exception("RAG pipeline error trace=%s tenant=%s", trace_id[:8], tenant_id)
-            yield {"type": "error", "message": error_msg}
+            # Fall back to the legacy single-agent planner path
+            logger.warning(
+                "Multi-agent graph failed (%s), falling back to planner — trace=%s",
+                exc, trace_id[:8],
+            )
+            try:
+                from .planner import plan_and_answer
+
+                answer, plan_state = await plan_and_answer(
+                    question, tenant_id,
+                    allowed_sources=allowed_sources,
+                    history=history,
+                )
+                words = answer.split(" ")
+                for i, word in enumerate(words):
+                    yield {"type": "token", "data": word + (" " if i < len(words) - 1 else "")}
+
+                docs = plan_state.retrieved_docs
+                sources = []
+                for doc in docs:
+                    raw_title   = doc.metadata.get("title", "") or ""
+                    source_type = doc.metadata.get("source_type", "")
+                    if not raw_title.strip():
+                        snippet_preview = doc.page_content[:60].replace("\n", " ").strip()
+                        raw_title = f"{source_type.capitalize()} log: {snippet_preview}…" if snippet_preview else f"{source_type.capitalize()} entry"
+                    sources.append({
+                        "title":       raw_title,
+                        "url":         doc.metadata.get("url", ""),
+                        "source_type": source_type,
+                        "snippet":     doc.page_content[:350],
+                    })
+                yield {"type": "sources", "data": sources}
+                yield {
+                    "type":       "done",
+                    "latency_ms": int((time.monotonic() - start) * 1000),
+                    "trace_id":   trace_id,
+                    "model_tier": plan_state.model_tier,
+                    "fallback":   True,
+                }
+            except Exception as fallback_exc:
+                error_msg = str(fallback_exc)
+                logger.exception("Fallback planner also failed trace=%s", trace_id[:8])
+                yield {"type": "error", "message": error_msg}
 
         finally:
             telemetry.finish_trace(

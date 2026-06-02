@@ -209,6 +209,7 @@ async def query_session(
             ):
                 if event["type"] == "token":
                     tokens.append(event["data"])
+                # Forward all event types (token, sources, done, error, agent, trace)
                 yield f"data: {json.dumps(event)}\n\n"
 
             # Persist assistant message

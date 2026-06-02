@@ -22,7 +22,7 @@ from .auth.middleware import JWTAuthMiddleware
 from .config import settings
 from .db.session import engine, Base
 from .routers import (
-    admin, alerts, analytics, billing, dashboard, dev_tools, enterprise, incidents, ingestion, insights,
+    admin, agents, alerts, analytics, billing, dashboard, dev_tools, enterprise, incidents, ingestion, insights,
     log_ops, manager_dashboard, platform, rag, retention, rrt_briefs,
     settings as settings_router, timeline, users,
 )
@@ -447,6 +447,11 @@ def create_app() -> FastAPI:
         rag.router,
         prefix="/api/v1/chat",
         tags=["Chat / RAG"],
+    )
+    app.include_router(
+        agents.router,
+        prefix="/api/v1/agents",
+        tags=["Multi-Agent"],
     )
     app.include_router(
         insights.router,
