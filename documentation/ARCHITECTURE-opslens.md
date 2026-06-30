@@ -120,6 +120,16 @@ One batched API call per document (not one per chunk) keeps the cost well under 
 
 The task returns statistics: `chunks_total`, `code_chunks`, `table_chunks`, `hyde_chunks` (number of chunks that received questions).
 
+#### Stage 4 — Dead-Letter Queue and Auto-Mitigation
+
+Ingestion can fail at two independent layers, each with its own failure handling:
+
+**Queue-level (`ingestion_queue` → `canonical_documents` normalisation).** Each raw record pulled from `opslens.ingestion_queue` is normalised, deduplicated, and upserted inside `_process_staging_batch`. If normalisation throws, the record is not lost — its `retry_count` is incremented and `next_retry_at` is set to `now() + 2^retry_count minutes` (capped at 8 hours). The next staging-batch run only selects rows where `next_retry_at IS NULL OR next_retry_at <= now()`, so failed records retry themselves on a backoff schedule with no manual intervention. Once `retry_count >= max_retries` (default 10), the record is moved to a permanent dead-letter state (`failed_at = now()`) and excluded from further automatic attempts.
+
+**Document-level (embedding).** `process_document` is a Celery task with `max_retries=3` and Celery's own retry backoff. If all Celery retries are exhausted, `_mark_document_failed()` sets `CanonicalDocument.embedding_status = 'failed'`, records `processing_error`, and increments `processing_attempts`. The scheduled `retry_pending_embeddings` task (Celery Beat) re-dispatches `pending` documents every cycle, and also re-dispatches `failed` documents once their own backoff window has elapsed (`updated_at + 2^min(processing_attempts, 8) minutes <= now()`), up to `MAX_EMBEDDING_RETRY_ATTEMPTS` (8). Beyond that cap, a document is left for manual review.
+
+**Manual override.** Three admin endpoints under `/api/v1/ingestion` exist for cases auto-mitigation can't resolve: `GET /dead-letter` (list permanently failed queue records), `POST /dead-letter/requeue` (reset a queue record's `failed_at`/`retry_count` for a fresh attempt), and `POST /dead-letter/requeue-embeddings` (reset `embedding_status` back to `pending` and re-dispatch). A `count_dead_letter` Beat task reports dead-letter counts on a schedule for alerting/monitoring.
+
 ---
 
 ### 2 — Fast Alert (every 5 minutes)
@@ -388,3 +398,5 @@ All API calls go through `apps/web/src/lib/api.ts` which attaches the Clerk sess
 **Parallel dispatch with delta-only trace:** The dispatcher runs all selected specialist agents concurrently via `asyncio.gather()`. To avoid N+1 duplication in `agent_trace`, each node returns only its own trace delta (e.g. `["research:done"]`); LangGraph's reducer merges deltas into the accumulated list. This means trace entries are always unique regardless of how many agents ran or in what order they completed.
 
 **Single synthesizer call for multi-agent answers:** When multiple agents run, a single LLM call receives all agent outputs and merges them into one coherent answer rather than naively concatenating responses. When only one agent runs, the synthesizer is a pass-through with no additional LLM cost.
+
+**Self-healing dead-letter queue over manual requeue:** Transient failures (rate limits, brief Qdrant/OpenAI outages, momentary DB contention) are far more common than permanent ones, so both ingestion layers retry automatically on an exponential backoff before anything is surfaced to an operator. Manual requeue endpoints still exist as a fallback for genuinely broken records (malformed payloads, schema mismatches), but they are the exception path, not the primary recovery mechanism.

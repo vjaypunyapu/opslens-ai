@@ -40,8 +40,9 @@
 | LLM / RAG | LangChain LCEL, GPT-4o, text-embedding-3-small |
 | Task Queue | Celery + Redis (Beat scheduler) |
 | ETL | Airbyte (Slack, Jira, GDrive, Zendesk, GitHub, HubSpot) |
-| Infra | Docker Compose (dev) · AWS ECS Fargate + RDS + ElastiCache (prod) |
-| CI/CD | GitHub Actions → ECR → ECS |
+| Multi-agent chat | LangGraph (supervisor/dispatcher/synthesizer) + LangChain (LLM + retrieval primitives) |
+| Infra | Docker Compose (dev) · Railway (api / web / worker / beat services, prod) |
+| CI/CD | GitHub Actions (lint, test, build) → Railway auto-deploy on push to `main` |
 
 ---
 
@@ -129,7 +130,7 @@ opslens-ai/
 ├── .github/
 │   └── workflows/
 │       ├── ci.yml          # Lint → Test → Docker build
-│       └── deploy.yml      # Build → Push ECR → Migrate → Deploy ECS
+│       └── deploy.yml      # Legacy AWS ECS workflow — unused, see note below
 ├── .env.example
 ├── .gitignore
 ├── alembic.ini
@@ -173,15 +174,13 @@ Full interactive docs: `http://localhost:8000/docs`
 
 ---
 
-## Deployment (AWS)
+## Deployment (Railway)
 
-```bash
-# Build and push to ECR, run migrations, deploy to ECS
-# Triggered automatically on push to main, or manually:
-gh workflow run deploy.yml -f environment=production
-```
+The system runs as four Railway services — `api`, `web`, `worker`, `beat` — from this single monorepo. `railway.toml` (plus `railway.worker.toml` / `railway.beat.toml`) dispatches each service to the right start command based on `$RAILWAY_SERVICE_NAME`. Postgres and Qdrant are also provisioned on Railway; Redis backs Celery as broker + result backend.
 
-Required GitHub Secrets: `AWS_ACCOUNT_ID`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `ECS_SUBNET_IDS`, `ECS_SECURITY_GROUP_ID`, `SLACK_WEBHOOK_URL`, `CODECOV_TOKEN`.
+See `ARCHITECTURE.md` → "Deployment Topology" for the full service diagram. The `api` service runs `alembic upgrade head` before starting Uvicorn, so schema migrations apply automatically on every deploy.
+
+> **Note:** `.github/workflows/deploy.yml` still targets AWS ECS/ECR from an earlier infra plan and is not used by the current Railway deployment. It should be either deleted or rewritten once Railway's GitHub auto-deploy / `railway up` is confirmed as the deploy path, to avoid confusing future contributors.
 
 ---
 
