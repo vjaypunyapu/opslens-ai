@@ -1107,6 +1107,7 @@ async def _process_staging_batch(tenant_id: str, source_type: str, limit: int) -
                   AND source_type = :src
                   AND processed_at IS NULL
                   AND failed_at IS NULL
+                  AND (next_retry_at IS NULL OR next_retry_at <= now())
                 ORDER BY created_at
                 LIMIT :lim
             """),
@@ -1241,12 +1242,18 @@ async def _process_staging_batch(tenant_id: str, source_type: str, limit: int) -
             except Exception as exc:
                 logger.exception("Failed to process queue record %s: %s", queue_id, exc)
                 errors += 1
+                # Auto-mitigate: schedule the next attempt with exponential
+                # backoff (2^retry_count minutes, capped at 8 hours) instead
+                # of requiring a manual requeue.
+                backoff_minutes = min(2 ** (retry_count + 1), 480)
                 await db.execute(
-                    sa.text(
-                        "UPDATE opslens.ingestion_queue "
-                        "SET error_msg=:msg, retry_count=retry_count+1 "
-                        "WHERE id=:qid"
-                    ),
+                    sa.text(f"""
+                        UPDATE opslens.ingestion_queue
+                        SET error_msg     = :msg,
+                            retry_count   = retry_count + 1,
+                            next_retry_at = now() + interval '{backoff_minutes} minutes'
+                        WHERE id = :qid
+                    """),
                     {"msg": str(exc)[:500], "qid": queue_id},
                 )
 
@@ -1272,28 +1279,49 @@ async def _process_staging_batch(tenant_id: str, source_type: str, limit: int) -
 
 # ── Embedding retry ───────────────────────────────────────────────────────────
 
+MAX_EMBEDDING_RETRY_ATTEMPTS = 8
+
 @shared_task(name="ingestion.retry_pending_embeddings")
 def retry_pending_embeddings() -> dict:
     """
-    Find CanonicalDocuments stuck in embedding_status='pending' and re-dispatch
-    process_document for each one. Runs on a schedule so transient OpenAI or
-    Qdrant failures are automatically recovered without manual intervention.
-    Capped at 100 docs per run to avoid overwhelming the queue.
+    Find CanonicalDocuments stuck in embedding_status='pending', plus
+    'failed' docs whose exponential backoff window has elapsed, and
+    re-dispatch process_document for each one. Runs on a schedule so
+    transient OpenAI/Qdrant failures are automatically mitigated without
+    manual intervention.
 
-    Permanently failed docs (embedding_status='failed') are never re-dispatched —
-    they require manual review or an explicit requeue API call.
+    'failed' docs are only auto-retried while processing_attempts is below
+    MAX_EMBEDDING_RETRY_ATTEMPTS — beyond that they're left for manual
+    review via the dead-letter requeue endpoints.
     """
-    async def _get_pending() -> list[tuple[str, str]]:
+    async def _get_candidates() -> list[tuple[str, str]]:
         import sqlalchemy as sa
         async with AsyncSession() as db:
-            rows = await db.execute(
+            pending_rows = await db.execute(
                 sa.select(CanonicalDocument.id, CanonicalDocument.tenant_id)
                 .where(CanonicalDocument.embedding_status == "pending")
                 .limit(100)
             )
-            return [(str(r.id), str(r.tenant_id)) for r in rows.all()]
+            candidates = [(str(r.id), str(r.tenant_id)) for r in pending_rows.all()]
 
-    pending = _run_async(_get_pending())
+            remaining = 100 - len(candidates)
+            if remaining > 0:
+                failed_rows = await db.execute(
+                    sa.text("""
+                        SELECT id, tenant_id
+                        FROM opslens.canonical_documents
+                        WHERE embedding_status = 'failed'
+                          AND processing_attempts < :max_attempts
+                          AND updated_at + (power(2, LEAST(processing_attempts, 8)) || ' minutes')::interval <= now()
+                        LIMIT :lim
+                    """),
+                    {"max_attempts": MAX_EMBEDDING_RETRY_ATTEMPTS, "lim": remaining},
+                )
+                candidates.extend((str(r.id), str(r.tenant_id)) for r in failed_rows.fetchall())
+
+            return candidates
+
+    pending = _run_async(_get_candidates())
     for doc_id, tenant_id in pending:
         process_document.delay(doc_id, tenant_id)
     logger.info("retry_pending_embeddings: dispatched %d docs", len(pending))

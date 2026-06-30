@@ -432,6 +432,7 @@ class IngestionQueue(Base):
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error_msg: Mapped[str | None] = mapped_column(Text)
     retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    max_retries: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    max_retries: Mapped[int] = mapped_column(Integer, nullable=False, default=10)
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

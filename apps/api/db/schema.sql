@@ -629,9 +629,10 @@ ALTER TABLE opslens.canonical_documents
 -- ingestion_queue is managed by SQLAlchemy; these are provided for existing DBs
 -- where the table was already created without the DLQ columns.
 DO $$ BEGIN
-    ALTER TABLE opslens.ingestion_queue ADD COLUMN IF NOT EXISTS retry_count  INTEGER NOT NULL DEFAULT 0;
-    ALTER TABLE opslens.ingestion_queue ADD COLUMN IF NOT EXISTS max_retries  INTEGER NOT NULL DEFAULT 5;
-    ALTER TABLE opslens.ingestion_queue ADD COLUMN IF NOT EXISTS failed_at    TIMESTAMPTZ;
+    ALTER TABLE opslens.ingestion_queue ADD COLUMN IF NOT EXISTS retry_count    INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE opslens.ingestion_queue ADD COLUMN IF NOT EXISTS max_retries    INTEGER NOT NULL DEFAULT 10;
+    ALTER TABLE opslens.ingestion_queue ADD COLUMN IF NOT EXISTS next_retry_at  TIMESTAMPTZ;
+    ALTER TABLE opslens.ingestion_queue ADD COLUMN IF NOT EXISTS failed_at      TIMESTAMPTZ;
 EXCEPTION WHEN undefined_table THEN NULL; END $$;
 
 -- Index for efficient DLQ queries: "show me everything that permanently failed"
