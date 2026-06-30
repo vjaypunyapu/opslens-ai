@@ -12,7 +12,7 @@ export default defineConfig({
     trace: "on-first-retry",
   },
   projects: [
-    { name: "chromium", use: { ...devices["Desktop Chrome"], executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH ?? undefined } },
+    { name: "chromium", use: { ...devices["Desktop Chrome"], launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH } } },
   ],
   webServer: process.env.CI
     ? undefined
