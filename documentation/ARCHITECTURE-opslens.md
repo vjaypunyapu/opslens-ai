@@ -184,41 +184,80 @@ The brief is stored with a stable ID. Follow-up status updates (investigating �
 
 ---
 
-### 5 — Conversational RAG (Chat interface)
+### 5 — Multi-Agent Chat System (LangGraph)
 
-The `/chat` page exposes a streaming conversational interface backed by a multi-step reasoning graph:
+The `/chat` page exposes a streaming conversational interface backed by a **LangGraph `StateGraph`** with a three-tier supervisor architecture. LangChain provides the LLM and retrieval primitives used inside each agent node; LangGraph controls the graph topology, state passing, and agent routing.
+
+#### Graph topology
 
 ```
 User query
     │
     ▼
-_plan_node()          gpt-4o-mini: decompose into 1–4 sub-queries, classify "simple"/"complex"
+[supervisor]   gpt-4o-mini classifies the intent and selects which specialist
+    │          agents are needed (1–4 agents). Routing examples:
+    │            "What's blocking the payment sprint?"  → research
+    │            "Any active critical alerts?"          → alert
+    │            "Show churn risk trends"               → insight
+    │            "What happened in last night's outage?"→ incident + research
+    │            "Summarise our ops health"             → research + insight + alert
     │
     ▼
-_retrieve_node()      parallel hybrid_retrieve() per sub-query
-    │                  ├── _dense_search()    Qdrant vector search (text-embedding-3-small)
-    │                  ├── _bm25_search()     BM25 over CanonicalDocument.content from Postgres
-    │                  ├── _rrf_merge()       Reciprocal Rank Fusion (k=60) to merge rankings
-    │                  └── _cohere_rerank()   optional Cohere rerank (skipped if no API key)
+[dispatcher]   runs all selected agents in parallel via asyncio.gather().
+    │          Each agent appends its output to agent_outputs and its own
+    │          trace entry to agent_trace (delta only — no duplication).
     │
     ▼
-_generate_node()      model routing: simple/single-source → gpt-4o-mini; complex/multi → gpt-4o
+[synthesizer]  if only one agent ran → passes its answer through directly.
+    │          if multiple agents ran → single LLM call merges all outputs
+    │          into one coherent answer, then runs three validators in parallel:
+    │            ├── Auditor     grounding: every claim traced to a source passage
+    │            ├── Gatekeeper  completeness: finds unanswered sub-questions
+    │            └── Strategist  coherence: catches circular reasoning / contradictions
     │
     ▼
-_validate_node()      three validators run in parallel via asyncio.gather():
-    │                  ├── run_auditor()      grounding: traces every claim to a source passage
-    │                  ├── run_gatekeeper()   completeness: finds unanswered parts + missing_queries
-    │                  └── run_strategist()   coherence: circular reasoning, contradictions
-    │
-    ├── all pass → stream answer to user
-    └── any fail → retry _retrieve_node() with gatekeeper's missing_queries (max 2 iterations)
+  answer streamed to user (SSE)
 ```
 
-**Hybrid retrieval** combines dense (Qdrant) and sparse (BM25) signals: dense search finds semantically related passages even when keywords differ; BM25 catches exact matches on identifiers like error codes, ticket IDs, and function names that embeddings sometimes miss. Reciprocal Rank Fusion normalises the two score distributions before merging.
+#### Specialist agents
 
-**Validation nodes** catch two major failure modes before the user sees the output: the Auditor catches hallucinations (claims not grounded in any retrieved passage), and the Gatekeeper catches incompleteness (questions whose sub-parts weren't answered). If either fails, the planner generates additional retrieval queries targeting the gap and tries again — up to two retry loops.
+| Agent | Trigger phrases | Data sources |
+|-------|----------------|--------------|
+| **Research** | general Q&A, "what is", "how does", "why did" | Hybrid RAG (Qdrant dense + BM25 sparse + RRF merge + optional Cohere rerank) over `CanonicalDocument` |
+| **Insight** | "trends", "patterns", "spikes", "churn", "bottleneck" | `insights` table + on-demand detector run (`run_insight_detector_now`) |
+| **Alert** | "alerts", "critical", "firing", "severity" | `alerts` table via `get_active_alerts` / `get_alert_summary` |
+| **Incident** | "outage", "incident", "timeline", "what happened", "RRT" | `rrt_briefs` table + deployment timeline via `get_incident_timeline` |
 
-**Model routing** keeps costs proportional to query complexity. Single-source factual queries go to `gpt-4o-mini`. Queries requiring synthesis across multiple sources or multi-step reasoning use `gpt-4o`. The plan node's "simple"/"complex" classification drives this decision.
+#### State and tracing
+
+The graph passes a typed `AgentState` dict through every node. Key fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `messages` | `list[BaseMessage]` | Full conversation history (HumanMessage / AIMessage) |
+| `next_agents` | `list[str]` | Set by supervisor — which agents the dispatcher will run |
+| `agent_outputs` | `dict[str, str]` | Keyed by agent name, each agent's answer |
+| `agent_trace` | `list[str]` | Ordered log of which agents completed, e.g. `["research:done", "alert:done"]` |
+| `retrieved_docs` | `list[dict]` | Source passages returned by the Research agent for citation |
+| `final_answer` | `str` | Populated by synthesizer, streamed to the client |
+
+Each agent node returns only its own **delta** to `agent_trace` (e.g. `["research:done"]`). LangGraph's `add_messages` reducer merges deltas, preventing the N+1 duplication that would occur if each node returned the full accumulated trace.
+
+#### Technology split
+
+- **LangGraph** — `StateGraph`, node wiring, `START`/`END`, state reducer (`add_messages`)
+- **LangChain** — `langchain_core.messages` (HumanMessage/AIMessage), `langchain-qdrant` retriever, LLM wrappers (`langchain-openai`, `langchain-anthropic`, `langchain-ollama`)
+
+#### Hybrid retrieval (inside Research agent)
+
+The Research agent wraps the existing `plan_and_answer` planner, which uses:
+
+- **Dense search** — Qdrant vector search (`text-embedding-3-small`, 1536-dim) against the tenant's collection
+- **BM25 sparse search** — keyword match over `CanonicalDocument.content` from Postgres; catches exact matches on error codes, ticket IDs, function names
+- **RRF merge** — Reciprocal Rank Fusion (k=60) normalises and combines both rankings
+- **Optional Cohere rerank** — if `COHERE_API_KEY` is set, a cross-encoder reranks the merged results
+
+**Model routing** inside Research keeps costs proportional to query complexity: simple / single-source queries use `gpt-4o-mini`; complex / multi-source queries use `gpt-4o`. The planner's "simple"/"complex" classification drives this.
 
 ---
 
@@ -343,3 +382,9 @@ All API calls go through `apps/web/src/lib/api.ts` which attaches the Clerk sess
 **NullPool for Celery:** Connection pooling is incompatible with Celery's fork-based worker model and asyncpg's loop-bound connections. NullPool trades connection reuse for correctness — each task gets a fresh connection scoped to its own event loop.
 
 **Validation before streaming:** The three-node validation graph (Auditor, Gatekeeper, Strategist) runs before any token reaches the user. If validation fails, the planner retries with targeted sub-queries derived from the Gatekeeper's `missing_queries` output. At most two retry loops run. After two failures, the partial answer is delivered with a ⚠️ disclaimer, ensuring the user always gets a response even in edge cases.
+
+**LangGraph for orchestration, LangChain for primitives:** The multi-agent system uses LangGraph's `StateGraph` to define the supervisor→dispatcher→synthesizer topology and manage state passing between nodes. LangChain provides the LLM wrappers and retrieval components used inside each agent. This separation means the graph structure (routing, parallelism, state) is fully declarative in LangGraph, while the actual LLM calls and retrieval strategies remain swappable LangChain primitives.
+
+**Parallel dispatch with delta-only trace:** The dispatcher runs all selected specialist agents concurrently via `asyncio.gather()`. To avoid N+1 duplication in `agent_trace`, each node returns only its own trace delta (e.g. `["research:done"]`); LangGraph's reducer merges deltas into the accumulated list. This means trace entries are always unique regardless of how many agents ran or in what order they completed.
+
+**Single synthesizer call for multi-agent answers:** When multiple agents run, a single LLM call receives all agent outputs and merges them into one coherent answer rather than naively concatenating responses. When only one agent runs, the synthesizer is a pass-through with no additional LLM cost.
