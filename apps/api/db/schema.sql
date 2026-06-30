@@ -617,6 +617,29 @@ ORDER BY cs.tenant_id, usage_date;
 -- ROW LEVEL SECURITY (enable in production)
 -- ============================================================================
 -- Enable RLS on all tenant-scoped tables.
+-- ── Dead-letter queue columns (idempotent migrations) ────────────────────────
+-- Run these once against any existing database to add DLQ tracking columns.
+-- New deployments get these columns via CREATE TABLE above (ingestion_queue is
+-- created by SQLAlchemy create_all, not this file).
+
+ALTER TABLE opslens.canonical_documents
+    ADD COLUMN IF NOT EXISTS processing_error    TEXT,
+    ADD COLUMN IF NOT EXISTS processing_attempts INTEGER NOT NULL DEFAULT 0;
+
+-- ingestion_queue is managed by SQLAlchemy; these are provided for existing DBs
+-- where the table was already created without the DLQ columns.
+DO $$ BEGIN
+    ALTER TABLE opslens.ingestion_queue ADD COLUMN IF NOT EXISTS retry_count    INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE opslens.ingestion_queue ADD COLUMN IF NOT EXISTS max_retries    INTEGER NOT NULL DEFAULT 10;
+    ALTER TABLE opslens.ingestion_queue ADD COLUMN IF NOT EXISTS next_retry_at  TIMESTAMPTZ;
+    ALTER TABLE opslens.ingestion_queue ADD COLUMN IF NOT EXISTS failed_at      TIMESTAMPTZ;
+EXCEPTION WHEN undefined_table THEN NULL; END $$;
+
+-- Index for efficient DLQ queries: "show me everything that permanently failed"
+CREATE INDEX IF NOT EXISTS idx_ingestion_queue_failed
+    ON opslens.ingestion_queue(tenant_id, failed_at DESC)
+    WHERE failed_at IS NOT NULL;
+
 -- Application sets the current tenant via: SET LOCAL opslens.current_tenant = '<uuid>';
 
 /*

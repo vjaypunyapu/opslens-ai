@@ -5,12 +5,17 @@ Manages Airbyte-backed data source connections and exposes
 manual sync triggers + status endpoints.
 
 Endpoints:
-    GET    /api/v1/integrations            — List configured integrations
-    POST   /api/v1/integrations            — Connect a new source
-    DELETE /api/v1/integrations/{id}       — Disconnect a source
-    POST   /api/v1/integrations/{id}/sync  — Trigger manual re-sync
-    GET    /api/v1/integrations/{id}/status — Sync status + stats
-    POST   /api/v1/webhooks/airbyte        — Receive Airbyte sync-complete webhooks
+    GET    /api/v1/integrations                      — List configured integrations
+    POST   /api/v1/integrations                      — Connect a new source
+    DELETE /api/v1/integrations/{id}                 — Disconnect a source
+    POST   /api/v1/integrations/{id}/sync            — Trigger manual re-sync
+    GET    /api/v1/integrations/{id}/status          — Sync status + stats
+    POST   /api/v1/webhooks/airbyte                  — Receive Airbyte sync-complete webhooks
+
+Dead-letter queue endpoints:
+    GET    /api/v1/integrations/dead-letter          — List failed queue records
+    POST   /api/v1/integrations/dead-letter/requeue  — Requeue failed queue records
+    POST   /api/v1/integrations/dead-letter/requeue-embeddings — Requeue failed embedding docs
 """
 from __future__ import annotations
 
@@ -404,6 +409,196 @@ def _build_sync_catalog(source_type: str) -> dict:
             for s in streams
         ]
     }
+
+
+# ── Dead-letter queue endpoints ────────────────────────────────────────────────
+
+class DeadLetterItem(BaseModel):
+    id: str
+    source_type: str
+    retry_count: int
+    max_retries: int
+    error_msg: str | None
+    failed_at: str
+    created_at: str
+
+
+class RequeueRequest(BaseModel):
+    ids: list[str] = Field(
+        default_factory=list,
+        description="Specific queue record IDs to requeue. Empty = requeue all for this tenant.",
+    )
+    source_type: str | None = Field(
+        None,
+        description="Filter by source type when requeueing all (ignored when ids provided).",
+    )
+
+
+class RequeueEmbeddingsRequest(BaseModel):
+    ids: list[str] = Field(
+        default_factory=list,
+        description="Specific canonical_document IDs to requeue. Empty = requeue all failed for this tenant.",
+    )
+    source_type: str | None = Field(
+        None,
+        description="Filter by source_type when requeueing all failed embeddings.",
+    )
+
+
+@router.get("/dead-letter", response_model=list[DeadLetterItem])
+async def list_dead_letter(
+    ctx: Annotated[TenantContext, Depends(require_admin)],
+    db=Depends(get_db),
+    source_type: str | None = None,
+    limit: int = 100,
+):
+    """
+    List ingestion queue records that permanently failed (failed_at IS NOT NULL).
+    These are records that hit their retry cap during normalisation.
+    Use POST /dead-letter/requeue to reset and retry them.
+    """
+    filters = "AND source_type = :src" if source_type else ""
+    rows = (await db.execute(
+        sa.text(f"""
+            SELECT id, source_type, retry_count, max_retries,
+                   error_msg, failed_at, created_at
+            FROM opslens.ingestion_queue
+            WHERE tenant_id = :tid
+              AND failed_at IS NOT NULL
+              {filters}
+            ORDER BY failed_at DESC
+            LIMIT :lim
+        """),
+        {"tid": str(ctx.tenant_uuid), "src": source_type, "lim": limit},
+    )).fetchall()
+
+    return [
+        DeadLetterItem(
+            id=str(r.id),
+            source_type=r.source_type,
+            retry_count=r.retry_count,
+            max_retries=r.max_retries,
+            error_msg=r.error_msg,
+            failed_at=r.failed_at.isoformat(),
+            created_at=r.created_at.isoformat(),
+        )
+        for r in rows
+    ]
+
+
+@router.post("/dead-letter/requeue", status_code=status.HTTP_202_ACCEPTED)
+async def requeue_dead_letter(
+    body: RequeueRequest,
+    ctx: Annotated[TenantContext, Depends(require_admin)],
+    db=Depends(get_db),
+):
+    """
+    Reset dead-lettered ingestion queue records so they will be picked up again
+    on the next Beat cycle.
+
+    - Clears failed_at, error_msg, and resets retry_count to 0.
+    - Leaves processed_at = NULL so the record re-enters the normal queue.
+    - Pass specific IDs to requeue individual records, or omit ids to requeue
+      all failed records for this tenant (optionally filtered by source_type).
+    """
+    if body.ids:
+        result = await db.execute(
+            sa.text("""
+                UPDATE opslens.ingestion_queue
+                SET failed_at   = NULL,
+                    error_msg   = NULL,
+                    retry_count = 0
+                WHERE tenant_id = :tid
+                  AND id = ANY(:ids::uuid[])
+                  AND failed_at IS NOT NULL
+                RETURNING id
+            """),
+            {"tid": str(ctx.tenant_uuid), "ids": body.ids},
+        )
+    else:
+        src_filter = "AND source_type = :src" if body.source_type else ""
+        result = await db.execute(
+            sa.text(f"""
+                UPDATE opslens.ingestion_queue
+                SET failed_at   = NULL,
+                    error_msg   = NULL,
+                    retry_count = 0
+                WHERE tenant_id = :tid
+                  AND failed_at IS NOT NULL
+                  {src_filter}
+                RETURNING id
+            """),
+            {"tid": str(ctx.tenant_uuid), "src": body.source_type},
+        )
+
+    requeued = [str(r.id) for r in result.fetchall()]
+    await db.commit()
+    logger.info(
+        "Dead-letter requeue: %d records reset by %s (tenant=%s)",
+        len(requeued), ctx.user_id, ctx.tenant_uuid,
+    )
+    return {"requeued": len(requeued), "ids": requeued}
+
+
+@router.post("/dead-letter/requeue-embeddings", status_code=status.HTTP_202_ACCEPTED)
+async def requeue_failed_embeddings(
+    body: RequeueEmbeddingsRequest,
+    ctx: Annotated[TenantContext, Depends(require_admin)],
+    db=Depends(get_db),
+):
+    """
+    Reset canonical_documents with embedding_status='failed' back to 'pending'
+    and re-dispatch process_document Celery tasks for each one.
+
+    Use this when a transient OpenAI or Qdrant outage caused permanent failures
+    that you now want to retry.
+
+    - Pass specific document IDs, or omit to requeue all failed docs for this tenant.
+    - Optionally filter by source_type.
+    """
+    from apps.worker.tasks.ingestion import process_document
+
+    if body.ids:
+        result = await db.execute(
+            sa.text("""
+                UPDATE opslens.canonical_documents
+                SET embedding_status  = 'pending',
+                    processing_error  = NULL,
+                    updated_at        = now()
+                WHERE tenant_id = :tid
+                  AND id = ANY(:ids::uuid[])
+                  AND embedding_status = 'failed'
+                RETURNING id, tenant_id
+            """),
+            {"tid": str(ctx.tenant_uuid), "ids": body.ids},
+        )
+    else:
+        src_filter = "AND source_type = :src" if body.source_type else ""
+        result = await db.execute(
+            sa.text(f"""
+                UPDATE opslens.canonical_documents
+                SET embedding_status  = 'pending',
+                    processing_error  = NULL,
+                    updated_at        = now()
+                WHERE tenant_id = :tid
+                  AND embedding_status = 'failed'
+                  {src_filter}
+                RETURNING id, tenant_id
+            """),
+            {"tid": str(ctx.tenant_uuid), "src": body.source_type},
+        )
+
+    rows = result.fetchall()
+    await db.commit()
+
+    for row in rows:
+        process_document.delay(str(row.id), str(row.tenant_id))
+
+    logger.info(
+        "Requeued %d failed embeddings for tenant=%s by %s",
+        len(rows), ctx.tenant_uuid, ctx.user_id,
+    )
+    return {"requeued": len(rows), "ids": [str(r.id) for r in rows]}
 
 
 async def _get_integration_or_404(db, integration_id: str, tenant_id: str) -> Integration:
