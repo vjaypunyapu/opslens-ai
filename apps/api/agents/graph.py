@@ -36,7 +36,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.graph import END, START, StateGraph
@@ -50,7 +51,6 @@ from .tools import (
     get_incident_timeline,
     get_recent_insights,
     get_recent_rrt_briefs,
-    retrieve_documents,
     run_insight_detector_now,
 )
 
