@@ -122,6 +122,9 @@ jobs:
       - name: Type check
         run: npm run type-check
 
+      - name: Unit tests
+        run: npm test -- --ci
+
       - name: Build
         run: npm run build
 
