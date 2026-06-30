@@ -1,6 +1,7 @@
 """Shared pytest fixtures for OpsLens AI test suite."""
 from __future__ import annotations
 
+import os
 import uuid
 from datetime import datetime, timezone
 from typing import AsyncGenerator
@@ -21,8 +22,16 @@ TEST_TENANT_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 TEST_USER_ID   = uuid.UUID("00000000-0000-0000-0000-000000000002")
 TEST_SESSION_ID = uuid.UUID("00000000-0000-0000-0000-000000000003")
 
-# ─── In-Memory SQLite (for unit tests — no Postgres needed) ──────────────────
-TEST_DB_URL = "sqlite+aiosqlite:///:memory:"
+# ─── Test database ────────────────────────────────────────────────────────────
+# Several models use Postgres-only column types (JSONB), so the test DB must
+# be real Postgres -- a SQLite in-memory engine can't compile those columns.
+# Point this at a throwaway DB (CI provisions one via the `postgres` service
+# container in .github/workflows/ci.yml and loads apps/api/db/schema.sql).
+TEST_DB_URL = (
+    os.environ.get("TEST_DATABASE_URL")
+    or os.environ.get("DATABASE_URL")
+    or "postgresql+asyncpg://opslens:opslens@localhost:5432/opslens_test"
+)
 
 _engine = create_async_engine(TEST_DB_URL, echo=False)
 _TestingSessionLocal = async_sessionmaker(_engine, expire_on_commit=False)
@@ -30,12 +39,21 @@ _TestingSessionLocal = async_sessionmaker(_engine, expire_on_commit=False)
 
 @pytest_asyncio.fixture(scope="session", autouse=True)
 async def create_test_tables():
-    """Create all ORM tables in the in-memory DB once per test session."""
+    """Create all ORM tables in the test DB once per test session.
+
+    Teardown drops the whole `opslens` schema with CASCADE rather than
+    Base.metadata.drop_all(): schema.sql also creates views (e.g.
+    v_token_usage) that SQLAlchemy's metadata doesn't know about, and
+    drop_all() fails with DependentObjectsStillExistError without CASCADE.
+    """
+    import sqlalchemy as sa
+
     async with _engine.begin() as conn:
+        await conn.execute(sa.text("CREATE SCHEMA IF NOT EXISTS opslens"))
         await conn.run_sync(Base.metadata.create_all)
     yield
     async with _engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
+        await conn.execute(sa.text("DROP SCHEMA IF EXISTS opslens CASCADE"))
 
 
 @pytest_asyncio.fixture

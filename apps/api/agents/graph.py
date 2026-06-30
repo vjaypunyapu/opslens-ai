@@ -280,9 +280,7 @@ async def research_node(state: AgentState) -> dict:
 
     outputs = dict(state.get("agent_outputs") or {})
     outputs["research"] = output
-    trace = list(state.get("agent_trace") or [])
-    trace.append("research:done")
-    return {"agent_outputs": outputs, "agent_trace": trace, "retrieved_docs": output.get("retrieved_docs", [])}
+    return {"agent_outputs": outputs, "agent_trace": ["research:done"], "retrieved_docs": output.get("retrieved_docs", [])}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -344,9 +342,7 @@ async def insight_node(state: AgentState) -> dict:
     }
     outputs = dict(state.get("agent_outputs") or {})
     outputs["insight"] = output
-    trace = list(state.get("agent_trace") or [])
-    trace.append("insight:done")
-    return {"agent_outputs": outputs, "agent_trace": trace}
+    return {"agent_outputs": outputs, "agent_trace": ["insight:done"]}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -385,9 +381,7 @@ async def alert_node(state: AgentState) -> dict:
     }
     outputs = dict(state.get("agent_outputs") or {})
     outputs["alert"] = output
-    trace = list(state.get("agent_trace") or [])
-    trace.append("alert:done")
-    return {"agent_outputs": outputs, "agent_trace": trace}
+    return {"agent_outputs": outputs, "agent_trace": ["alert:done"]}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -426,9 +420,7 @@ async def incident_node(state: AgentState) -> dict:
     }
     outputs = dict(state.get("agent_outputs") or {})
     outputs["incident"] = output
-    trace = list(state.get("agent_trace") or [])
-    trace.append("incident:done")
-    return {"agent_outputs": outputs, "agent_trace": trace}
+    return {"agent_outputs": outputs, "agent_trace": ["incident:done"]}
 
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -96,6 +96,35 @@ jobs:
           files: ./coverage.xml
           fail_ci_if_error: false
 
+  # ─── Frontend Build & Lint ──────────────────────────────────────────────────
+  web:
+    name: Frontend Build & Lint
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type check
+        run: npm run type-check
+
+      - name: Build
+        run: npm run build
+
   # ─── Docker Build Check ─────────────────────────────────────────────────────
   docker-build:
     name: Docker Build

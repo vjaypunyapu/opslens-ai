@@ -240,7 +240,7 @@ class TestEngBottleneckDetector:
         ]
         summary = detector.build_summary(docs)
         assert "ENGINEERING BOTTLENECK" in summary
-        assert "Stalled tickets: 2" in summary
+        assert "Tickets found: 2" in summary
         assert "alice" in summary
         assert "bob" in summary
 
