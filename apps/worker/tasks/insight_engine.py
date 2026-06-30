@@ -28,18 +28,19 @@ import re
 import statistics
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 
 import sqlalchemy as sa
 from celery import shared_task
 from celery.utils.log import get_task_logger
 from langchain_core.prompts import ChatPromptTemplate
+
 from ...api.config import settings
-from ..db import AsyncSession
-from ...api.models.document import CanonicalDocument
+from ...api.db.models import CanonicalDocument
 from ...api.models.insight import Insight
 from ..async_utils import run_async as _run_async
+from ..db import AsyncSession
 
 logger = get_task_logger(__name__)
 
@@ -174,7 +175,7 @@ class BaseDetector(ABC):
 
     @staticmethod
     def _cutoff(days: int) -> datetime:
-        return datetime.now(tz=timezone.utc) - timedelta(days=days)
+        return datetime.now(tz=UTC) - timedelta(days=days)
 
     @staticmethod
     def _doc_line(doc: CanonicalDocument, max_chars: int = 250) -> str:
@@ -478,7 +479,7 @@ class EngBottleneckDetector(BaseDetector):
     async def collect_data(self, tenant_id: str) -> list[CanonicalDocument]:
         async with AsyncSession() as db:
             # Tickets In Progress but not updated recently
-            stale_cutoff = datetime.now(tz=timezone.utc) - timedelta(days=self.STALE_DAYS)
+            stale_cutoff = datetime.now(tz=UTC) - timedelta(days=self.STALE_DAYS)
             result = await db.execute(
                 sa.select(CanonicalDocument)
                 .where(
@@ -500,7 +501,7 @@ class EngBottleneckDetector(BaseDetector):
         return 2
 
     def build_summary(self, docs: list[CanonicalDocument]) -> str:
-        now = datetime.now(tz=timezone.utc)
+        now = datetime.now(tz=UTC)
         lines = []
         for d in docs:
             days_stale = (
@@ -636,7 +637,7 @@ async def save_insight(tenant_id: str, detected: DetectedInsight) -> str | None:
     """
     async with AsyncSession() as db:
         # Dedup check: same tenant + same title in last 24h
-        cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=24)
+        cutoff = datetime.now(tz=UTC) - timedelta(hours=24)
         existing = await db.execute(
             sa.select(Insight)
             .where(
@@ -660,7 +661,7 @@ async def save_insight(tenant_id: str, detected: DetectedInsight) -> str | None:
             status="active",
             source_types=detected.source_types,
             raw_data={**detected.raw_data, "confidence": detected.confidence},
-            generated_at=datetime.now(tz=timezone.utc),
+            generated_at=datetime.now(tz=UTC),
         )
         db.add(insight)
         await db.commit()
@@ -726,7 +727,7 @@ def run_insights_for_tenant(self, tenant_id: str, only_type: str | None = None) 
         return _run_async(_run_all())
 
     except Exception as exc:
-        raise self.retry(exc=exc)
+        raise self.retry(exc=exc)  # noqa: B904
 
 
 @shared_task(name="insights.run_all_tenants")

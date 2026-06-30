@@ -1,9 +1,10 @@
 """Shared pytest fixtures for OpsLens AI test suite."""
 from __future__ import annotations
 
+import os
 import uuid
-from datetime import datetime, timezone
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -11,18 +12,26 @@ import pytest_asyncio
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from apps.api.auth.dependencies import TenantContext
 from apps.api.db.models import Base
 from apps.api.db.session import get_db
 from apps.api.main import app
-from apps.api.auth.dependencies import TenantContext
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 TEST_TENANT_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 TEST_USER_ID   = uuid.UUID("00000000-0000-0000-0000-000000000002")
 TEST_SESSION_ID = uuid.UUID("00000000-0000-0000-0000-000000000003")
 
-# ─── In-Memory SQLite (for unit tests — no Postgres needed) ──────────────────
-TEST_DB_URL = "sqlite+aiosqlite:///:memory:"
+# ─── Test database ────────────────────────────────────────────────────────────
+# Several models use Postgres-only column types (JSONB), so the test DB must
+# be real Postgres -- a SQLite in-memory engine can't compile those columns.
+# Point this at a throwaway DB (CI provisions one via the `postgres` service
+# container in .github/workflows/ci.yml and loads apps/api/db/schema.sql).
+TEST_DB_URL = (
+    os.environ.get("TEST_DATABASE_URL")
+    or os.environ.get("DATABASE_URL")
+    or "postgresql+asyncpg://opslens:opslens@localhost:5432/opslens_test"
+)
 
 _engine = create_async_engine(TEST_DB_URL, echo=False)
 _TestingSessionLocal = async_sessionmaker(_engine, expire_on_commit=False)
@@ -30,21 +39,29 @@ _TestingSessionLocal = async_sessionmaker(_engine, expire_on_commit=False)
 
 @pytest_asyncio.fixture(scope="session", autouse=True)
 async def create_test_tables():
-    """Create all ORM tables in the in-memory DB once per test session."""
+    """Create all ORM tables in the test DB once per test session.
+
+    Teardown drops the whole `opslens` schema with CASCADE rather than
+    Base.metadata.drop_all(): schema.sql also creates views (e.g.
+    v_token_usage) that SQLAlchemy's metadata doesn't know about, and
+    drop_all() fails with DependentObjectsStillExistError without CASCADE.
+    """
+    import sqlalchemy as sa
+
     async with _engine.begin() as conn:
+        await conn.execute(sa.text("CREATE SCHEMA IF NOT EXISTS opslens"))
         await conn.run_sync(Base.metadata.create_all)
     yield
     async with _engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
+        await conn.execute(sa.text("DROP SCHEMA IF EXISTS opslens CASCADE"))
 
 
 @pytest_asyncio.fixture
 async def db_session() -> AsyncGenerator[AsyncSession, None]:
     """Provide a transactional DB session that rolls back after each test."""
-    async with _engine.begin() as conn:
-        async with _TestingSessionLocal(bind=conn) as session:
-            yield session
-            await session.rollback()
+    async with _engine.begin() as conn, _TestingSessionLocal(bind=conn) as session:
+        yield session
+        await session.rollback()
 
 
 # ─── FastAPI Test Client ───────────────────────────────────────────────────────
@@ -74,7 +91,7 @@ async def api_client(db_session: AsyncSession, tenant_ctx: TenantContext) -> Asy
     def override_require_admin():
         return tenant_ctx
 
-    from apps.api.auth.dependencies import require_viewer, require_member, require_admin
+    from apps.api.auth.dependencies import require_admin, require_member, require_viewer
 
     app.dependency_overrides[get_db]            = override_get_db
     app.dependency_overrides[require_viewer]    = override_require_viewer
@@ -154,6 +171,6 @@ def make_canonical_doc(**kwargs) -> MagicMock:
     doc.url          = kwargs.get("url", "https://example.com/doc/1")
     doc.doc_metadata = kwargs.get("doc_metadata", {})
     doc.source_created_at = kwargs.get(
-        "source_created_at", datetime.now(timezone.utc)
+        "source_created_at", datetime.now(UTC)
     )
     return doc

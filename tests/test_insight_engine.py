@@ -7,7 +7,7 @@ Uses pytest-asyncio + factory_boy fixtures.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -22,10 +22,9 @@ from apps.worker.tasks.insight_engine import (
     save_insight,
 )
 
-
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
-NOW = datetime.now(tz=timezone.utc)
+NOW = datetime.now(tz=UTC)
 
 
 def make_doc(**kwargs):
@@ -240,7 +239,7 @@ class TestEngBottleneckDetector:
         ]
         summary = detector.build_summary(docs)
         assert "ENGINEERING BOTTLENECK" in summary
-        assert "Stalled tickets: 2" in summary
+        assert "Tickets found: 2" in summary
         assert "alice" in summary
         assert "bob" in summary
 
