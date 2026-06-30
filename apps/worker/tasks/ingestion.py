@@ -871,7 +871,12 @@ async def embed_and_upsert_batch(
 
 
 # ── Celery task ───────────────────────────────────────────────────────────────
-@shared_task(bind=True, max_retries=3, default_retry_delay=60, name="ingestion.process_document")
+@shared_task(
+    bind=True,
+    max_retries=3,
+    default_retry_delay=60,
+    name="ingestion.process_document",
+)
 def process_document(self, doc_id: str, tenant_id: str) -> dict:
     """
     Process a single CanonicalDocument: chunk → embed → upsert.
@@ -881,7 +886,32 @@ def process_document(self, doc_id: str, tenant_id: str) -> dict:
         return _run_async(_process_async(doc_id, tenant_id))
     except Exception as exc:
         logger.exception("process_document failed for %s: %s", doc_id, exc)
-        raise self.retry(exc=exc)
+        try:
+            raise self.retry(exc=exc)
+        except self.MaxRetriesExceededError:
+            # Retries exhausted — mark the document as permanently failed so
+            # retry_pending_embeddings won't keep re-dispatching it.
+            _run_async(_mark_document_failed(doc_id, str(exc)))
+            raise
+
+
+async def _mark_document_failed(doc_id: str, error: str) -> None:
+    """Persist failed state and error message on a CanonicalDocument."""
+    import sqlalchemy as sa
+    async with AsyncSession() as db:
+        await db.execute(
+            sa.text("""
+                UPDATE opslens.canonical_documents
+                SET embedding_status    = 'failed',
+                    processing_error    = :err,
+                    processing_attempts = processing_attempts + 1,
+                    updated_at          = now()
+                WHERE id = :doc_id
+            """),
+            {"doc_id": doc_id, "err": error[:2000]},
+        )
+        await db.commit()
+    logger.error("process_document permanently failed for doc_id=%s: %s", doc_id, error)
 
 
 async def _process_async(doc_id: str, tenant_id: str) -> dict:
@@ -962,11 +992,12 @@ def process_documents_batch(self, doc_ids: list[str], tenant_id: str) -> dict:
 async def _process_documents_batch_async(doc_ids: list[str], tenant_id: str) -> dict:
     docs_and_chunks: list[tuple[CanonicalDocument, list[StructuralChunk]]] = []
     skipped = 0
+    parse_errors = 0
 
     async with AsyncSession() as db:
         for doc_id in doc_ids:
             doc: CanonicalDocument | None = await db.get(CanonicalDocument, doc_id)
-            if not doc or doc.embedding_status == "done":
+            if not doc or doc.embedding_status in ("done", "failed"):
                 skipped += 1
                 continue
 
@@ -977,40 +1008,63 @@ async def _process_documents_batch_async(doc_ids: list[str], tenant_id: str) -> 
                 skipped += 1
                 continue
 
-            structural_chunks = structural_parse(content)
-
             try:
-                structural_chunks = await generate_hyde_questions(structural_chunks, _openai)
-            except Exception as hyde_exc:
-                logger.warning("HyDE failed for doc %s (proceeding without): %s", doc_id, hyde_exc)
-
-            docs_and_chunks.append((doc, structural_chunks))
+                structural_chunks = structural_parse(content)
+                try:
+                    structural_chunks = await generate_hyde_questions(structural_chunks, _openai)
+                except Exception as hyde_exc:
+                    logger.warning("HyDE failed for doc %s (proceeding without): %s", doc_id, hyde_exc)
+                docs_and_chunks.append((doc, structural_chunks))
+            except Exception as parse_exc:
+                # Structural parse failure — mark this doc failed immediately so
+                # it doesn't block the rest of the batch or get retried forever.
+                logger.exception("Structural parse failed for doc %s: %s", doc_id, parse_exc)
+                doc.embedding_status = "failed"
+                doc.processing_error = str(parse_exc)[:2000]
+                doc.processing_attempts = (doc.processing_attempts or 0) + 1
+                parse_errors += 1
 
         await db.commit()
 
     if not docs_and_chunks:
-        return {"status": "ok", "processed": 0, "skipped": skipped, "total_chunks": 0}
+        return {
+            "status": "ok",
+            "processed": 0,
+            "skipped": skipped,
+            "parse_errors": parse_errors,
+            "total_chunks": 0,
+        }
 
-    # All chunks from all docs embedded in one set of API calls
+    # All chunks from all docs embedded in one set of API calls.
+    # embed_and_upsert_batch raises on total failure; per-doc point failures
+    # are logged inside but don't abort the whole batch.
     results = await embed_and_upsert_batch(docs_and_chunks, tenant_id)
 
     async with AsyncSession() as db:
         for doc, chunks in docs_and_chunks:
             doc_obj: CanonicalDocument | None = await db.get(CanonicalDocument, str(doc.id))
             if doc_obj:
-                doc_obj.embedding_status = "done"
-                doc_obj.chunk_count = len(chunks)
+                if str(doc.id) in results:
+                    doc_obj.embedding_status = "done"
+                    doc_obj.chunk_count = len(chunks)
+                    doc_obj.processing_attempts = (doc_obj.processing_attempts or 0) + 1
+                else:
+                    # embed_and_upsert_batch produced no points for this doc
+                    doc_obj.embedding_status = "failed"
+                    doc_obj.processing_error = "No points upserted during batch embedding"
+                    doc_obj.processing_attempts = (doc_obj.processing_attempts or 0) + 1
         await db.commit()
 
     total_chunks = sum(results.values())
     logger.info(
-        "process_documents_batch complete: %d docs, %d chunks upserted, %d skipped",
-        len(docs_and_chunks), total_chunks, skipped,
+        "process_documents_batch complete: %d docs, %d chunks upserted, %d skipped, %d parse_errors",
+        len(docs_and_chunks), total_chunks, skipped, parse_errors,
     )
     return {
         "status": "ok",
         "processed": len(docs_and_chunks),
         "skipped": skipped,
+        "parse_errors": parse_errors,
         "total_chunks": total_chunks,
     }
 
@@ -1047,11 +1101,12 @@ async def _process_staging_batch(tenant_id: str, source_type: str, limit: int) -
         # Pull unprocessed records for this tenant + source from the queue table
         rows_result = await db.execute(
             sa.text("""
-                SELECT id, raw_data
+                SELECT id, raw_data, retry_count, max_retries
                 FROM opslens.ingestion_queue
                 WHERE tenant_id = :tid
                   AND source_type = :src
                   AND processed_at IS NULL
+                  AND failed_at IS NULL
                 ORDER BY created_at
                 LIMIT :lim
             """),
@@ -1062,6 +1117,28 @@ async def _process_staging_batch(tenant_id: str, source_type: str, limit: int) -
         for row in rows:
             queue_id = row.id
             raw: dict = row.raw_data  # JSONB → dict via asyncpg
+
+            # ── Dead-letter check ──────────────────────────────────────────
+            # If this record has already hit its retry cap, move it to the
+            # dead-letter state and skip it permanently.
+            retry_count = getattr(row, "retry_count", 0) or 0
+            max_retries = getattr(row, "max_retries", 5) or 5
+            if retry_count >= max_retries:
+                logger.error(
+                    "ingestion_queue record %s permanently failed after %d retries "
+                    "(source_type=%s) — moving to dead-letter state",
+                    queue_id, retry_count, source_type,
+                )
+                await db.execute(
+                    sa.text(
+                        "UPDATE opslens.ingestion_queue "
+                        "SET processed_at=now(), failed_at=now() "
+                        "WHERE id=:qid"
+                    ),
+                    {"qid": queue_id},
+                )
+                errors += 1
+                continue
 
             try:
                 # Route Jira comment records to the dedicated normalizer
@@ -1167,7 +1244,7 @@ async def _process_staging_batch(tenant_id: str, source_type: str, limit: int) -
                 await db.execute(
                     sa.text(
                         "UPDATE opslens.ingestion_queue "
-                        "SET error_msg=:msg "
+                        "SET error_msg=:msg, retry_count=retry_count+1 "
                         "WHERE id=:qid"
                     ),
                     {"msg": str(exc)[:500], "qid": queue_id},
@@ -1202,19 +1279,48 @@ def retry_pending_embeddings() -> dict:
     process_document for each one. Runs on a schedule so transient OpenAI or
     Qdrant failures are automatically recovered without manual intervention.
     Capped at 100 docs per run to avoid overwhelming the queue.
+
+    Permanently failed docs (embedding_status='failed') are never re-dispatched —
+    they require manual review or an explicit requeue API call.
     """
-    async def _get_pending() -> list[str]:
+    async def _get_pending() -> list[tuple[str, str]]:
         import sqlalchemy as sa
         async with AsyncSession() as db:
             rows = await db.execute(
-                sa.select(CanonicalDocument.id)
+                sa.select(CanonicalDocument.id, CanonicalDocument.tenant_id)
                 .where(CanonicalDocument.embedding_status == "pending")
                 .limit(100)
             )
-            return [str(r) for r in rows.scalars().all()]
+            return [(str(r.id), str(r.tenant_id)) for r in rows.all()]
 
-    doc_ids = _run_async(_get_pending())
-    for doc_id in doc_ids:
-        process_document.delay(doc_id)
-    logger.info("retry_pending_embeddings: dispatched %d docs", len(doc_ids))
-    return {"dispatched": len(doc_ids)}
+    pending = _run_async(_get_pending())
+    for doc_id, tenant_id in pending:
+        process_document.delay(doc_id, tenant_id)
+    logger.info("retry_pending_embeddings: dispatched %d docs", len(pending))
+    return {"dispatched": len(pending)}
+
+
+@shared_task(name="ingestion.count_dead_letter")
+def count_dead_letter() -> dict:
+    """
+    Report counts of permanently failed records for monitoring/alerting.
+    Designed to be called by Celery Beat on a schedule (e.g. every hour).
+    """
+    async def _counts() -> dict:
+        import sqlalchemy as sa
+        async with AsyncSession() as db:
+            queue_failed = (await db.execute(
+                sa.text("SELECT COUNT(*) FROM opslens.ingestion_queue WHERE failed_at IS NOT NULL")
+            )).scalar_one()
+            embed_failed = (await db.execute(
+                sa.text("SELECT COUNT(*) FROM opslens.canonical_documents WHERE embedding_status='failed'")
+            )).scalar_one()
+        return {"queue_dead_letter": queue_failed, "embedding_failed": embed_failed}
+
+    counts = _run_async(_counts())
+    if counts["queue_dead_letter"] or counts["embedding_failed"]:
+        logger.warning(
+            "Dead-letter counts — queue: %d, embedding: %d",
+            counts["queue_dead_letter"], counts["embedding_failed"],
+        )
+    return counts
