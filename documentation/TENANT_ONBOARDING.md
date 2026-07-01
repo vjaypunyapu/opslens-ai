@@ -149,12 +149,24 @@ URL if they want their own logo to show. The bare `/sign-in` page (no `org`
 param) always shows plain OpsLens AI branding — this is opt-in per link, not
 a global rebrand.
 
+Logos can also be uploaded directly when creating a workspace from the
+`/platform` page — see below.
+
 Implementation: `GET /api/v1/public/tenants/{slug}/branding` is an
 unauthenticated endpoint (`apps/api/routers/public.py`) that resolves a
-tenant's `settings.branding.logo_url` by slug; the sign-in page
+tenant's logo by slug; the sign-in page
 (`apps/web/src/app/sign-in/[[...sign-in]]/page.tsx`) calls it when `?org=`
 is present. The logo is rendered via a plain `<img>` tag (not inlined SVG),
 which is safe against script injection even though the URL is admin-supplied.
+
+Storage: uploaded logos go to S3-compatible object storage (configured via
+`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_S3_BUCKET_NAME` /
+`AWS_ENDPOINT_URL` — see `apps/api/utils/storage.py`). Only the object key
+is persisted on the tenant (`settings.branding.logo_key`); the branding
+endpoint generates a fresh presigned URL on every read, so the bucket
+never needs to be public. Manually-entered URLs from Settings → Workspace
+(`settings.branding.logo_url`) still work as a fallback if no upload
+exists.
 
 ## Step 6 — Client connects integrations
 

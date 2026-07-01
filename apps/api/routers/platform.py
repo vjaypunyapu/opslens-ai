@@ -368,14 +368,14 @@ async def upload_tenant_logo(
     Upload a company logo for a tenant, shown above the OpsLens AI branding
     on that tenant's dedicated sign-in link (/sign-in?org=<slug>).
 
-    There's no object storage (S3/etc.) wired up in this deployment, so the
-    logo is stored as a base64 data URI directly in tenant.settings — fine
-    for small logo images, capped at MAX_LOGO_BYTES.
+    Stored in object storage (see ..utils.storage) under
+    tenant-logos/{tenant_id}/{uuid}.{ext} — only the object key is persisted
+    on the tenant; a fresh presigned URL is generated on read (see
+    routers/public.py) so the bucket never needs to be public.
     """
-    import base64
-
     from ..config import settings as app_settings
     from ..db.models import Tenant
+    from ..utils.storage import presigned_url, upload_object
 
     if file.content_type not in ALLOWED_LOGO_TYPES:
         raise HTTPException(
@@ -396,20 +396,25 @@ async def upload_tenant_logo(
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
 
-    data_url = f"data:{file.content_type};base64,{base64.b64encode(data).decode('ascii')}"
-    tenant.settings = {
-        **tenant.settings,
-        "branding": {**(tenant.settings.get("branding") or {}), "logo_url": data_url},
-    }
+    ext = {
+        "image/svg+xml": "svg", "image/png": "png",
+        "image/jpeg": "jpg", "image/webp": "webp",
+    }[file.content_type]
+    key = f"tenant-logos/{tenant_id}/{uuid.uuid4().hex}.{ext}"
+    upload_object(key, data, file.content_type)
+
+    # Replace branding wholesale — a fresh upload supersedes any prior
+    # upload (logo_key) or manually-entered URL (logo_url) from Settings.
+    tenant.settings = {**tenant.settings, "branding": {"logo_key": key}}
     await db.commit()
 
     logger.info(
-        "Platform admin %s uploaded logo for tenant %s (%d bytes, %s)",
-        caller["email"], tenant_id, len(data), file.content_type,
+        "Platform admin %s uploaded logo for tenant %s (%d bytes, %s, key=%s)",
+        caller["email"], tenant_id, len(data), file.content_type, key,
     )
 
     return LogoUploadOut(
-        logo_url=data_url,
+        logo_url=presigned_url(key),
         sign_in_url=f"{app_settings.APP_URL}/sign-in?org={tenant.slug}",
     )
 

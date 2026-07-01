@@ -40,5 +40,13 @@ async def get_tenant_branding(slug: str, db=Depends(get_db)):
     if not tenant:
         raise HTTPException(status_code=404, detail="Workspace not found")
 
-    logo_url = (tenant.settings or {}).get("branding", {}).get("logo_url")
+    branding = (tenant.settings or {}).get("branding", {})
+    logo_key = branding.get("logo_key")
+    if logo_key:
+        from ..utils.storage import presigned_url
+        logo_url = presigned_url(logo_key)
+    else:
+        # Fallback: a manually-entered external URL set via Settings -> Workspace
+        logo_url = branding.get("logo_url")
+
     return TenantBrandingOut(name=tenant.name, logo_url=logo_url)

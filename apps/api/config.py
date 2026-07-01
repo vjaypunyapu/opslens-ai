@@ -226,11 +226,20 @@ class Settings(BaseSettings):
     # Default: 7 days — processed rows have no ongoing value.
     STAGING_QUEUE_RETENTION_DAYS: int = 7
 
-    # ── S3 Archive (optional — used by RetentionPolicy when archive_to_s3=true) ──
+    # ── S3 / S3-compatible object storage (optional) ────────────────────────────
+    # AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_DEFAULT_REGION are shared
+    # by RetentionPolicy archival (archive_to_s3=true) and general asset storage
+    # below. AWS_ENDPOINT_URL overrides the default AWS endpoint for
+    # S3-compatible providers (e.g. Railway Bucket / Tigris) — leave unset for
+    # real AWS S3.
     AWS_ACCESS_KEY_ID: str | None = None
     AWS_SECRET_ACCESS_KEY: str | None = None
     AWS_DEFAULT_REGION: str = "us-east-1"
+    AWS_ENDPOINT_URL: str | None = None
     RETENTION_ARCHIVE_BUCKET: str | None = None
+    # General-purpose bucket for app assets (tenant logos, etc.) — separate from
+    # the retention archive bucket since they have different lifecycle needs.
+    AWS_S3_BUCKET_NAME: str | None = None
 
     # ── LangSmith (optional) ──────────────────────────────────────────────────
     LANGCHAIN_TRACING_V2: bool = False
