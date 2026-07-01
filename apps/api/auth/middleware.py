@@ -53,6 +53,9 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
         # SCIM endpoints use their own token — skip JWT middleware entirely
         if path.startswith("/api/v1/scim/"):
             return await call_next(request)
+        # Public branding lookup — reachable pre-login from the sign-in page
+        if path.startswith("/api/v1/public/"):
+            return await call_next(request)
 
         auth_header = request.headers.get("Authorization", "")
         if not auth_header.startswith("Bearer "):

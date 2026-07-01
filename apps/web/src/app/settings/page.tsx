@@ -46,6 +46,7 @@ export default function SettingsPage() {
   const [profile, setProfile] = useState<MemberData | null>(null);
 
   const [tenantName, setTenantName]   = useState("");
+  const [logoUrl, setLogoUrl]         = useState("");
   const [profileName, setProfileName] = useState("");
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole]   = useState<"member" | "viewer">("member");
@@ -76,6 +77,7 @@ export default function SettingsPage() {
         apiFetch<PendingInvite[]>("/admin/invites", token).catch(() => []),
       ]);
       setTenant(t); setTenantName(t.name);
+      setLogoUrl((t.settings?.branding as { logo_url?: string } | undefined)?.logo_url ?? "");
       setMembers(m);
       setPendingInvites(inv);
       if (p) { setProfile(p); setProfileName(p.name ?? ""); }
@@ -89,16 +91,24 @@ export default function SettingsPage() {
   useEffect(() => { load(); }, [load]);
 
   const saveTenant = async () => {
+    const trimmedLogo = logoUrl.trim();
+    if (trimmedLogo && !/^https:\/\//i.test(trimmedLogo)) {
+      showToast("Logo URL must start with https://", false);
+      return;
+    }
     setSaving(true);
     try {
       const token = await getToken();
       if (!token) return;
       const updated = await apiFetch<TenantData>("/settings/tenant", token, {
         method: "PATCH",
-        body: JSON.stringify({ name: tenantName }),
+        body: JSON.stringify({
+          name: tenantName,
+          settings: { branding: { logo_url: trimmedLogo || null } },
+        }),
       });
       setTenant(updated);
-      showToast("Workspace name updated.");
+      showToast("Workspace settings updated.");
     } catch (e: unknown) { showToast((e as Error).message, false); }
     finally { setSaving(false); }
   };
@@ -270,6 +280,23 @@ export default function SettingsPage() {
           </Field>
           <Field label="Slug">
             <code style={{ fontSize: 12, color: "#64748b", fontFamily: "monospace" }}>{tenant.slug}</code>
+          </Field>
+          <Field label="Logo URL">
+            <input
+              value={logoUrl}
+              onChange={e => setLogoUrl(e.target.value)}
+              placeholder="https://yourcompany.com/logo.svg"
+              style={inputStyle}
+            />
+            {logoUrl.trim() && (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={logoUrl.trim()} alt="Logo preview" style={{ maxHeight: 32, marginTop: 8 }} />
+            )}
+          </Field>
+          <Field label="Sign-in link">
+            <code style={{ fontSize: 12, color: "#64748b", fontFamily: "monospace", wordBreak: "break-all" }}>
+              {typeof window !== "undefined" ? window.location.origin : ""}/sign-in?org={tenant.slug}
+            </code>
           </Field>
           <div style={{ marginTop: 20 }}>
             <SaveButton onClick={saveTenant} saving={saving} label="Save Changes" />

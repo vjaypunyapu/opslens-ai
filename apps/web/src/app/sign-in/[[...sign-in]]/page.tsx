@@ -1,6 +1,27 @@
+"use client";
+
+import { Suspense, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { SignIn } from "@clerk/nextjs";
 
-export default function SignInPage() {
+interface TenantBranding {
+  name: string;
+  logo_url: string | null;
+}
+
+function SignInInner() {
+  const searchParams = useSearchParams();
+  const org = searchParams.get("org");
+  const [branding, setBranding] = useState<TenantBranding | null>(null);
+
+  useEffect(() => {
+    if (!org) return;
+    fetch(`/api/v1/public/tenants/${encodeURIComponent(org)}/branding`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => setBranding(data))
+      .catch(() => setBranding(null));
+  }, [org]);
+
   return (
     <div style={{
       minHeight: "100vh",
@@ -25,6 +46,23 @@ export default function SignInPage() {
         background: "radial-gradient(circle, rgba(20,184,166,0.12) 0%, transparent 65%)",
         pointerEvents: "none",
       }} />
+
+      {/* Client logo — shown above the OpsLens AI logo when signing in via a
+          tenant-specific link (?org=<slug>) resolved through the public
+          branding endpoint. Rendered as a plain <img> (not next/image or
+          dangerouslySetInnerHTML) so an admin-supplied external SVG can
+          never execute script in this context. */}
+      {branding?.logo_url && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={branding.logo_url}
+          alt={`${branding.name} logo`}
+          style={{
+            maxHeight: "48px", maxWidth: "220px", marginBottom: "1.25rem",
+            position: "relative", zIndex: 1,
+          }}
+        />
+      )}
 
       {/* Logo */}
       <a href="/" style={{
@@ -124,5 +162,13 @@ export default function SignInPage() {
         <a href="/" style={{ color: "#14B8A6", textDecoration: "none" }}>Back to home</a>
       </p>
     </div>
+  );
+}
+
+export default function SignInPage() {
+  return (
+    <Suspense>
+      <SignInInner />
+    </Suspense>
   );
 }
