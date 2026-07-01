@@ -134,7 +134,29 @@ To backfill collections for every tenant that's missing one:
 python scripts/init_qdrant_collections.py --all-tenants
 ```
 
-## Step 5 — Client connects integrations
+## Step 5 — (Optional) Set the client's login logo
+
+Tenant admins can set a custom logo shown above the OpsLens AI branding on a
+dedicated sign-in link for their workspace:
+
+1. In the app, go to **Settings → Workspace**.
+2. Set **Logo URL** to a direct `https://` link to the client's logo (SVG/PNG).
+3. Save. The workspace's dedicated sign-in link is shown right below it:
+   `https://www.opslensai.com/sign-in?org=<slug>`.
+
+Share that `?org=<slug>` link with the client instead of the bare `/sign-in`
+URL if they want their own logo to show. The bare `/sign-in` page (no `org`
+param) always shows plain OpsLens AI branding — this is opt-in per link, not
+a global rebrand.
+
+Implementation: `GET /api/v1/public/tenants/{slug}/branding` is an
+unauthenticated endpoint (`apps/api/routers/public.py`) that resolves a
+tenant's `settings.branding.logo_url` by slug; the sign-in page
+(`apps/web/src/app/sign-in/[[...sign-in]]/page.tsx`) calls it when `?org=`
+is present. The logo is rendered via a plain `<img>` tag (not inlined SVG),
+which is safe against script injection even though the URL is admin-supplied.
+
+## Step 6 — Client connects integrations
 
 Once logged in, the client uses the in-app onboarding wizard
 (`apps/web/src/app/onboarding/page.tsx`) to connect Jira/GitHub/Slack,
