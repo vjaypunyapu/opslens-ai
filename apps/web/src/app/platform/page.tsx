@@ -15,7 +15,8 @@ import { useAuth } from "@clerk/nextjs";
 import {
   Building2, Users, Plug, Lightbulb, AlertTriangle,
   Plus, Mail, RefreshCw, ChevronRight, CheckCircle2,
-  Clock, Copy, Check, X, Loader2, ExternalLink, Activity,
+  Clock, Copy, Check, X, Loader2, ExternalLink, Activity, Upload,
+  Image as ImageIcon,
 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { toast } from "sonner";
@@ -307,6 +308,9 @@ function InviteModal({
 
 // ─── New Workspace Modal ──────────────────────────────────────────────────────
 
+const MAX_LOGO_BYTES = 1_000_000;
+const ALLOWED_LOGO_TYPES = ["image/svg+xml", "image/png", "image/jpeg", "image/webp"];
+
 function NewWorkspaceModal({
   token,
   onClose,
@@ -318,7 +322,27 @@ function NewWorkspaceModal({
 }) {
   const [name, setName] = useState("");
   const [plan, setPlan] = useState("starter");
+  const [logoFile, setLogoFile] = useState<File | null>(null);
+  const [logoPreview, setLogoPreview] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const [result, setResult] = useState<{
+    tenant: TenantSummary;
+    signInUrl: string;
+  } | null>(null);
+
+  const handleLogoChange = (f: File | null) => {
+    if (!f) { setLogoFile(null); setLogoPreview(null); return; }
+    if (!ALLOWED_LOGO_TYPES.includes(f.type)) {
+      toast.error("Logo must be SVG, PNG, JPEG, or WebP"); return;
+    }
+    if (f.size > MAX_LOGO_BYTES) {
+      toast.error(`Logo must be under ${MAX_LOGO_BYTES / 1000}KB`); return;
+    }
+    setLogoFile(f);
+    setLogoPreview(URL.createObjectURL(f));
+  };
 
   const handleCreate = async () => {
     if (!name.trim()) { toast.error("Company name is required"); return; }
@@ -335,24 +359,51 @@ function NewWorkspaceModal({
         return;
       }
       const data = await res.json();
+      let signInUrl: string = data.sign_in_url;
+
+      if (logoFile) {
+        const form = new FormData();
+        form.append("file", logoFile);
+        const logoRes = await fetch(`/api/v1/platform/tenants/${data.tenant_id}/branding/logo`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+          body: form,
+        });
+        if (logoRes.ok) {
+          signInUrl = (await logoRes.json()).sign_in_url;
+        } else {
+          toast.error("Workspace created, but logo upload failed — you can add it later in Settings");
+        }
+      }
+
       toast.success(`Workspace "${name}" created!`);
-      onCreated({
-        id: data.tenant_id,
-        name: data.name,
-        slug: data.slug,
-        plan: data.plan,
-        created_at: data.created_at,
-        user_count: 0,
-        integration_count: 0,
-        insight_count: 0,
-        incident_count: 0,
-        last_activity_at: null,
+      setResult({
+        tenant: {
+          id: data.tenant_id,
+          name: data.name,
+          slug: data.slug,
+          plan: data.plan,
+          created_at: data.created_at,
+          user_count: 0,
+          integration_count: 0,
+          insight_count: 0,
+          incident_count: 0,
+          last_activity_at: null,
+        },
+        signInUrl,
       });
     } catch {
       toast.error("Network error — please try again");
     } finally {
       setCreating(false);
     }
+  };
+
+  const handleCopyLink = () => {
+    if (!result) return;
+    navigator.clipboard.writeText(result.signInUrl);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   };
 
   return (
@@ -369,10 +420,12 @@ function NewWorkspaceModal({
         <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "1.25rem" }}>
           <div>
             <h2 style={{ color: "#f1f5f9", fontSize: "1rem", fontWeight: 700, margin: 0 }}>
-              New client workspace
+              {result ? "Workspace created" : "New client workspace"}
             </h2>
             <p style={{ color: "#64748b", fontSize: "0.75rem", margin: "0.25rem 0 0" }}>
-              Create the workspace, then invite the client admin
+              {result
+                ? "Share their dedicated sign-in link, then invite the admin"
+                : "Create the workspace, then invite the client admin"}
             </p>
           </div>
           <button onClick={onClose} style={{ background: "none", border: "none", color: "#64748b", cursor: "pointer" }}>
@@ -380,72 +433,173 @@ function NewWorkspaceModal({
           </button>
         </div>
 
-        <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-          <div>
-            <label style={{ color: "#94a3b8", fontSize: "0.8125rem", display: "block", marginBottom: "0.375rem" }}>
-              Client company name *
-            </label>
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Acme Corp"
-              autoFocus
-              style={{
-                width: "100%", boxSizing: "border-box",
-                background: "#0f172a", border: "1px solid rgba(255,255,255,0.1)",
-                borderRadius: "0.5rem", padding: "0.625rem 0.75rem",
-                color: "#f1f5f9", fontSize: "0.875rem", outline: "none",
-              }}
-            />
-          </div>
+        {result ? (
+          /* ── Success state ── */
+          <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+            <div style={{
+              display: "flex", alignItems: "center", gap: "0.625rem",
+              padding: "0.75rem 1rem", borderRadius: "0.625rem",
+              background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.25)",
+            }}>
+              <CheckCircle2 size={16} color="#22c55e" />
+              <p style={{ color: "#f1f5f9", fontSize: "0.875rem", margin: 0 }}>
+                {result.tenant.name} is ready{logoPreview ? " with its logo" : ""}.
+              </p>
+            </div>
 
-          <div>
-            <label style={{ color: "#94a3b8", fontSize: "0.8125rem", display: "block", marginBottom: "0.375rem" }}>
-              Plan
-            </label>
-            <select
-              value={plan}
-              onChange={(e) => setPlan(e.target.value)}
-              style={{
-                width: "100%", background: "#0f172a",
-                border: "1px solid rgba(255,255,255,0.1)", borderRadius: "0.5rem",
-                padding: "0.625rem 0.75rem", color: "#f1f5f9", fontSize: "0.875rem", outline: "none",
-              }}
-            >
-              <option value="starter">Starter</option>
-              <option value="growth">Growth</option>
-              <option value="enterprise">Enterprise</option>
-            </select>
-          </div>
+            {logoPreview && (
+              <div style={{
+                display: "flex", alignItems: "center", justifyContent: "center",
+                background: "#0f172a", borderRadius: "0.5rem",
+                border: "1px solid rgba(255,255,255,0.08)", padding: "1rem",
+              }}>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={logoPreview} alt={`${result.tenant.name} logo`} style={{ maxHeight: 56, maxWidth: "100%" }} />
+              </div>
+            )}
 
-          <div style={{ display: "flex", gap: "0.75rem", marginTop: "0.25rem" }}>
+            <div>
+              <p style={{ color: "#94a3b8", fontSize: "0.75rem", marginBottom: "0.375rem" }}>
+                Dedicated sign-in link (shows their logo above OpsLens AI branding)
+              </p>
+              <div style={{
+                display: "flex", alignItems: "center", gap: "0.5rem",
+                background: "#0f172a", borderRadius: "0.5rem",
+                border: "1px solid rgba(255,255,255,0.08)", padding: "0.625rem 0.75rem",
+              }}>
+                <code style={{ flex: 1, color: "#14b8a6", fontSize: "0.75rem",
+                  wordBreak: "break-all", fontFamily: "monospace" }}>
+                  {result.signInUrl}
+                </code>
+                <button
+                  onClick={handleCopyLink}
+                  style={{ background: "none", border: "none", cursor: "pointer",
+                    color: copied ? "#22c55e" : "#64748b", flexShrink: 0 }}
+                >
+                  {copied ? <Check size={14} /> : <Copy size={14} />}
+                </button>
+              </div>
+            </div>
+
             <button
-              onClick={onClose}
+              onClick={() => onCreated(result.tenant)}
               style={{
-                flex: 1, padding: "0.625rem", borderRadius: "0.5rem",
-                background: "none", border: "1px solid rgba(255,255,255,0.1)",
-                color: "#94a3b8", fontSize: "0.875rem", cursor: "pointer",
-              }}
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handleCreate}
-              disabled={creating}
-              style={{
-                flex: 2, display: "flex", alignItems: "center", justifyContent: "center", gap: "0.5rem",
                 padding: "0.625rem", borderRadius: "0.5rem",
-                background: creating ? "#0f766e" : "#14b8a6",
-                border: "none", color: "#fff", fontWeight: 600,
-                fontSize: "0.875rem", cursor: creating ? "not-allowed" : "pointer",
+                background: "#14b8a6", border: "none",
+                color: "#fff", fontWeight: 600, fontSize: "0.875rem", cursor: "pointer",
               }}
             >
-              {creating && <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} />}
-              {creating ? "Creating…" : <><Plus size={14} /> Create workspace</>}
+              Continue to invite admin
             </button>
           </div>
-        </div>
+        ) : (
+          /* ── Form state ── */
+          <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+            <div>
+              <label style={{ color: "#94a3b8", fontSize: "0.8125rem", display: "block", marginBottom: "0.375rem" }}>
+                Client company name *
+              </label>
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Acme Corp"
+                autoFocus
+                style={{
+                  width: "100%", boxSizing: "border-box",
+                  background: "#0f172a", border: "1px solid rgba(255,255,255,0.1)",
+                  borderRadius: "0.5rem", padding: "0.625rem 0.75rem",
+                  color: "#f1f5f9", fontSize: "0.875rem", outline: "none",
+                }}
+              />
+            </div>
+
+            <div>
+              <label style={{ color: "#94a3b8", fontSize: "0.8125rem", display: "block", marginBottom: "0.375rem" }}>
+                Plan
+              </label>
+              <select
+                value={plan}
+                onChange={(e) => setPlan(e.target.value)}
+                style={{
+                  width: "100%", background: "#0f172a",
+                  border: "1px solid rgba(255,255,255,0.1)", borderRadius: "0.5rem",
+                  padding: "0.625rem 0.75rem", color: "#f1f5f9", fontSize: "0.875rem", outline: "none",
+                }}
+              >
+                <option value="starter">Starter</option>
+                <option value="growth">Growth</option>
+                <option value="enterprise">Enterprise</option>
+              </select>
+            </div>
+
+            <div>
+              <label style={{ color: "#94a3b8", fontSize: "0.8125rem", display: "block", marginBottom: "0.375rem" }}>
+                Company logo (optional)
+              </label>
+              <label style={{
+                display: "flex", alignItems: "center", gap: "0.625rem", cursor: "pointer",
+                background: "#0f172a", border: "1px dashed rgba(255,255,255,0.15)",
+                borderRadius: "0.5rem", padding: "0.75rem",
+              }}>
+                <input
+                  type="file"
+                  accept="image/svg+xml,image/png,image/jpeg,image/webp"
+                  onChange={(e) => handleLogoChange(e.target.files?.[0] ?? null)}
+                  style={{ display: "none" }}
+                />
+                {logoPreview ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={logoPreview} alt="Logo preview" style={{ height: 28, maxWidth: 100, objectFit: "contain" }} />
+                ) : (
+                  <Upload size={16} color="#64748b" />
+                )}
+                <span style={{ color: "#94a3b8", fontSize: "0.8125rem" }}>
+                  {logoFile ? logoFile.name : "SVG, PNG, JPEG, or WebP · up to 1MB"}
+                </span>
+                {logoFile && (
+                  <button
+                    type="button"
+                    onClick={(e) => { e.preventDefault(); handleLogoChange(null); }}
+                    style={{ marginLeft: "auto", background: "none", border: "none", color: "#64748b", cursor: "pointer" }}
+                  >
+                    <X size={14} />
+                  </button>
+                )}
+              </label>
+              <p style={{ color: "#475569", fontSize: "0.7rem", margin: "0.375rem 0 0", display: "flex", alignItems: "center", gap: "0.25rem" }}>
+                <ImageIcon size={11} /> Shows above OpsLens AI branding on this client&apos;s dedicated sign-in link
+              </p>
+            </div>
+
+            <div style={{ display: "flex", gap: "0.75rem", marginTop: "0.25rem" }}>
+              <button
+                onClick={onClose}
+                style={{
+                  flex: 1, padding: "0.625rem", borderRadius: "0.5rem",
+                  background: "none", border: "1px solid rgba(255,255,255,0.1)",
+                  color: "#94a3b8", fontSize: "0.875rem", cursor: "pointer",
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleCreate}
+                disabled={creating}
+                style={{
+                  flex: 2, display: "flex", alignItems: "center", justifyContent: "center", gap: "0.5rem",
+                  padding: "0.625rem", borderRadius: "0.5rem",
+                  background: creating ? "#0f766e" : "#14b8a6",
+                  border: "none", color: "#fff", fontWeight: 600,
+                  fontSize: "0.875rem", cursor: creating ? "not-allowed" : "pointer",
+                }}
+              >
+                {creating && <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} />}
+                {creating ? "Creating…" : <><Plus size={14} /> Create workspace</>}
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

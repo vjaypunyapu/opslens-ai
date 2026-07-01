@@ -33,7 +33,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Annotated
 
 import sqlalchemy as sa
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel, Field
 
 from ..auth.dependencies import TenantContext, get_db
@@ -119,11 +119,21 @@ class ProvisionTenantRequest(BaseModel):
 
 
 class ProvisionTenantOut(BaseModel):
-    tenant_id:  str
-    name:       str
-    slug:       str
-    plan:       str
-    created_at: str
+    tenant_id:   str
+    name:        str
+    slug:        str
+    plan:        str
+    created_at:  str
+    sign_in_url: str
+
+
+class LogoUploadOut(BaseModel):
+    logo_url:    str
+    sign_in_url: str
+
+
+MAX_LOGO_BYTES = 1_000_000  # 1MB — logos are small; keeps the JSONB column and API payloads sane
+ALLOWED_LOGO_TYPES = {"image/svg+xml", "image/png", "image/jpeg", "image/webp"}
 
 
 class PlatformInviteRequest(BaseModel):
@@ -305,6 +315,7 @@ async def provision_tenant(
     the client's admin email to send them their first-login invite link.
     """
     import re
+    from ..config import settings as app_settings
     from ..db.models import Tenant
 
     slug = body.slug
@@ -340,6 +351,66 @@ async def provision_tenant(
         slug=tenant.slug,
         plan=tenant.plan,
         created_at=tenant.created_at.isoformat(),
+        sign_in_url=f"{app_settings.APP_URL}/sign-in?org={tenant.slug}",
+    )
+
+
+# ── Upload tenant logo ────────────────────────────────────────────────────────
+
+@router.post("/tenants/{tenant_id}/branding/logo", response_model=LogoUploadOut, status_code=status.HTTP_200_OK)
+async def upload_tenant_logo(
+    tenant_id: str,
+    caller: PlatformAdmin,
+    db=Depends(get_db),
+    file: UploadFile = File(...),
+):
+    """
+    Upload a company logo for a tenant, shown above the OpsLens AI branding
+    on that tenant's dedicated sign-in link (/sign-in?org=<slug>).
+
+    There's no object storage (S3/etc.) wired up in this deployment, so the
+    logo is stored as a base64 data URI directly in tenant.settings — fine
+    for small logo images, capped at MAX_LOGO_BYTES.
+    """
+    import base64
+
+    from ..config import settings as app_settings
+    from ..db.models import Tenant
+
+    if file.content_type not in ALLOWED_LOGO_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported logo type '{file.content_type}'. Use SVG, PNG, JPEG, or WebP.",
+        )
+
+    data = await file.read()
+    if len(data) > MAX_LOGO_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Logo must be under {MAX_LOGO_BYTES // 1000}KB.",
+        )
+
+    tid = uuid.UUID(tenant_id)
+    result = await db.execute(sa.select(Tenant).where(Tenant.id == tid))
+    tenant = result.scalar_one_or_none()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    data_url = f"data:{file.content_type};base64,{base64.b64encode(data).decode('ascii')}"
+    tenant.settings = {
+        **tenant.settings,
+        "branding": {**(tenant.settings.get("branding") or {}), "logo_url": data_url},
+    }
+    await db.commit()
+
+    logger.info(
+        "Platform admin %s uploaded logo for tenant %s (%d bytes, %s)",
+        caller["email"], tenant_id, len(data), file.content_type,
+    )
+
+    return LogoUploadOut(
+        logo_url=data_url,
+        sign_in_url=f"{app_settings.APP_URL}/sign-in?org={tenant.slug}",
     )
 
 
