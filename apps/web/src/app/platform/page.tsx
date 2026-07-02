@@ -84,11 +84,11 @@ function StatPill({ icon: Icon, value, label, color = "#64748b" }: {
 
 function InviteModal({
   tenant,
-  token,
+  getToken,
   onClose,
 }: {
   tenant: TenantSummary;
-  token: string;
+  getToken: () => Promise<string | null>;
   onClose: () => void;
 }) {
   const [email, setEmail] = useState("");
@@ -102,6 +102,8 @@ function InviteModal({
     if (!email.trim()) { toast.error("Email is required"); return; }
     setSending(true);
     try {
+      const token = await getToken();
+      if (!token) { toast.error("Session expired — please refresh and try again"); return; }
       const res = await fetch(`/api/v1/platform/tenants/${tenant.id}/invite`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
@@ -312,11 +314,11 @@ const MAX_LOGO_BYTES = 1_000_000;
 const ALLOWED_LOGO_TYPES = ["image/svg+xml", "image/png", "image/jpeg", "image/webp"];
 
 function NewWorkspaceModal({
-  token,
+  getToken,
   onClose,
   onCreated,
 }: {
-  token: string;
+  getToken: () => Promise<string | null>;
   onClose: () => void;
   onCreated: (tenant: TenantSummary) => void;
 }) {
@@ -348,6 +350,8 @@ function NewWorkspaceModal({
     if (!name.trim()) { toast.error("Company name is required"); return; }
     setCreating(true);
     try {
+      const token = await getToken();
+      if (!token) { toast.error("Session expired — please refresh and try again"); return; }
       const res = await fetch("/api/v1/platform/tenants", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
@@ -362,11 +366,12 @@ function NewWorkspaceModal({
       let signInUrl: string = data.sign_in_url;
 
       if (logoFile) {
+        const uploadToken = await getToken();
         const form = new FormData();
         form.append("file", logoFile);
         const logoRes = await fetch(`/api/v1/platform/tenants/${data.tenant_id}/branding/logo`, {
           method: "POST",
-          headers: { Authorization: `Bearer ${token}` },
+          headers: { Authorization: `Bearer ${uploadToken}` },
           body: form,
         });
         if (logoRes.ok) {
@@ -612,7 +617,6 @@ export default function ClientsPage() {
   const [tenants, setTenants] = useState<TenantSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [accessDenied, setAccessDenied] = useState(false);
-  const [token, setToken] = useState<string>("");
 
   const [inviteTenant, setInviteTenant] = useState<TenantSummary | null>(null);
   const [showNewWorkspace, setShowNewWorkspace] = useState(false);
@@ -623,7 +627,6 @@ export default function ClientsPage() {
     try {
       const t = await getToken();
       if (!t) return;
-      setToken(t);
       const res = await fetch("/api/v1/platform/tenants", {
         headers: { Authorization: `Bearer ${t}` },
       });
@@ -679,13 +682,13 @@ export default function ClientsPage() {
       {inviteTenant && (
         <InviteModal
           tenant={inviteTenant}
-          token={token}
+          getToken={getToken}
           onClose={() => setInviteTenant(null)}
         />
       )}
       {showNewWorkspace && (
         <NewWorkspaceModal
-          token={token}
+          getToken={getToken}
           onClose={() => setShowNewWorkspace(false)}
           onCreated={(t) => {
             setTenants((prev) => [t, ...prev]);
