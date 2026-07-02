@@ -19,9 +19,11 @@ It does NOT replace SQL — it just makes the pattern explicit and searchable vi
 """
 from __future__ import annotations
 
+import ssl
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any, Type, TypeVar
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession as _AsyncSession
@@ -48,9 +50,52 @@ def _async_db_url(url: str) -> str:
     return url
 
 
+def _extract_sslmode(url: str) -> tuple[str, str | None]:
+    """
+    Strip a libpq-style `sslmode` query param off the URL and return it separately.
+
+    asyncpg has no `sslmode` kwarg (only a plain `ssl` param), so a DATABASE_URL
+    with `?sslmode=require` — which Postgres providers append by convention —
+    gets passed straight through by SQLAlchemy's asyncpg dialect as an unknown
+    keyword argument, raising `TypeError: connect() got an unexpected keyword
+    argument 'sslmode'` before a connection is even attempted.
+    """
+    parts = urlsplit(url)
+    pairs = parse_qsl(parts.query, keep_blank_values=True)
+    sslmode = None
+    remaining = []
+    for key, value in pairs:
+        if key.lower() == "sslmode":
+            sslmode = value.lower()
+        else:
+            remaining.append((key, value))
+    cleaned = urlunsplit(parts._replace(query=urlencode(remaining)))
+    return cleaned, sslmode
+
+
+def _ssl_connect_args(sslmode: str | None) -> dict[str, Any]:
+    """Translate a libpq sslmode into asyncpg's `ssl` connect arg."""
+    if sslmode in (None, "disable"):
+        return {}
+    ctx = ssl.create_default_context()
+    if sslmode in ("require", "prefer", "allow"):
+        # Encrypt, but don't demand a verifiable cert chain — Railway's managed
+        # Postgres (and most managed providers) present certs that aren't in
+        # the system trust store, so verify-full would reject every connection.
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    elif sslmode == "verify-ca":
+        ctx.check_hostname = False
+    # verify-full: leave check_hostname/verify_mode at their secure defaults.
+    return {"ssl": ctx}
+
+
+_DB_URL, _DB_SSLMODE = _extract_sslmode(_async_db_url(settings.DATABASE_URL))
+
 # ── Engine ────────────────────────────────────────────────────────────────────
 engine: AsyncEngine = create_async_engine(
-    _async_db_url(settings.DATABASE_URL),
+    _DB_URL,
+    connect_args=_ssl_connect_args(_DB_SSLMODE),
     pool_size=settings.DB_POOL_SIZE,
     max_overflow=settings.DB_MAX_OVERFLOW,
     pool_timeout=settings.DB_POOL_TIMEOUT,
