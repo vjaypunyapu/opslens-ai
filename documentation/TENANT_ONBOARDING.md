@@ -114,6 +114,15 @@ If `email_sent` is `false`, share `invite_url` with the client directly
 After this, the client is logged in with the `admin` role in their new
 workspace and can invite teammates from within the app.
 
+**Tenant resolution note**: this app doesn't use Clerk Organizations and
+has no JWT template injecting a per-tenant claim, so on every request
+after redemption the backend resolves "which tenant is this user in" by
+looking up their `external_id` in our own `users` table
+(`_resolve_existing_tenant` in `apps/api/auth/dependencies.py`) rather
+than trusting anything in the Clerk JWT itself. If a Clerk account ends
+up with memberships in more than one tenant (e.g. reusing the same email
+across test workspaces), the most recently created membership wins.
+
 ## Step 4 — Provision the vector store collection
 
 The API does **not** create the tenant's Qdrant collection automatically.

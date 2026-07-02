@@ -256,12 +256,46 @@ async def _provision_user(db, tenant_uuid_str: str, external_id: str, email: str
     return role
 
 
+async def _resolve_existing_tenant(db, external_id: str) -> str | None:
+    """
+    Look up which tenant this Clerk user already belongs to, per our own
+    `users` table — independent of whatever tenant_id/org_id/azp the JWT
+    happens to carry.
+
+    This app doesn't use Clerk Organizations and has no JWT template that
+    injects a per-tenant claim, so `request.state.tenant_id` (derived in
+    JWTAuthMiddleware from tenant_id/org_id/azp/sub) is only a meaningful
+    signal for a genuinely first-time visitor. Once a user has an actual
+    membership row, that's the source of truth — otherwise two different
+    invited users of the same app instance can collide into the same
+    JWT-derived fallback tenant.
+
+    If a user has joined multiple tenants, the most recently created
+    membership wins (e.g. right after redeeming a new invite).
+    """
+    from ..db.models import User
+
+    if not external_id:
+        return None
+    result = await db.execute(
+        sa.select(User.tenant_id)
+        .where(User.external_id == external_id)
+        .order_by(User.created_at.desc())
+        .limit(1)
+    )
+    tenant_uuid_obj = result.scalar_one_or_none()
+    return str(tenant_uuid_obj) if tenant_uuid_obj else None
+
+
 async def _build_ctx(request: Request, db, min_role: str) -> TenantContext:
     raw_tenant_id = getattr(request.state, "tenant_id", "")
     user_id       = getattr(request.state, "user_id", "")
 
-    # 1. Ensure tenant row exists
-    tenant_uuid = await _provision_tenant(db, raw_tenant_id)
+    # 1. Prefer an existing membership over the JWT-derived tenant id — see
+    #    _resolve_existing_tenant. Only auto-provision a (new) tenant from the
+    #    JWT-derived id when this user has no membership anywhere yet.
+    existing_tenant_id = await _resolve_existing_tenant(db, user_id)
+    tenant_uuid = existing_tenant_id or await _provision_tenant(db, raw_tenant_id)
 
     # 2. Look up (or auto-create) the user in the DB to get their actual role.
     #    Clerk JWTs don't include a 'role' claim by default, so we can't rely on
