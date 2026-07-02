@@ -52,6 +52,7 @@ export interface ChatMessage {
   latency_ms: number | null;
   feedback: "thumbs_up" | "thumbs_down" | null;
   created_at: string;
+  agents?: string[];
 }
 
 // ─── Insights ─────────────────────────────────────────────────────────────────

@@ -2,7 +2,7 @@
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { ThumbsUp, ThumbsDown, ExternalLink, Clock, Sparkles } from "lucide-react";
+import { ThumbsUp, ThumbsDown, ExternalLink, Clock, Sparkles, Bot } from "lucide-react";
 import { SOURCE_TYPE_ICONS, SOURCE_TYPE_LABELS } from "@/lib/utils";
 import { ChatMessage, SourceType } from "@/types";
 
@@ -80,6 +80,16 @@ export function MessageBubble({ message, onFeedback }: Props) {
               <span style={{ display: "flex", alignItems: "center", gap: "0.25rem", fontSize: "0.75rem", color: "#475569" }}>
                 <Clock size={11} />
                 {(message.latency_ms / 1000).toFixed(1)}s
+              </span>
+            )}
+
+            {message.agents && message.agents.length > 0 && (
+              <span
+                title={`Handled by: ${message.agents.join(", ")}`}
+                style={{ display: "flex", alignItems: "center", gap: "0.25rem", fontSize: "0.75rem", color: "#475569" }}
+              >
+                <Bot size={11} />
+                {message.agents.map((a) => a.charAt(0).toUpperCase() + a.slice(1)).join(" + ")}
               </span>
             )}
 

@@ -7,6 +7,7 @@ interface StreamEvent {
   type: "token" | "sources" | "done" | "error";
   data?: string | MessageSource[];
   latency_ms?: number;
+  agents?: string[];
   message?: string;
 }
 
@@ -127,7 +128,7 @@ export function useChat(sessionId: string) {
               setMessages((prev) =>
                 prev.map((m) =>
                   m.id === placeholderId
-                    ? { ...m, latency_ms: event.latency_ms ?? null }
+                    ? { ...m, latency_ms: event.latency_ms ?? null, agents: event.agents ?? [] }
                     : m,
                 ),
               );
