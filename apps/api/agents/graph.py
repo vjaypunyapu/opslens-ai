@@ -223,8 +223,38 @@ async def _llm_text(system: str, user: str, model: str | None = None, run_name: 
 # ══════════════════════════════════════════════════════════════════════════════
 
 _SUPERVISOR_SYSTEM = """\
-You are the OpsLens AI Supervisor. Your job is to route the user's question
-to the most appropriate specialized agent(s).
+You are the OpsLens AI Supervisor. OpsLens is an AI platform for software engineering
+operations. You help teams understand their incidents, alerts, deployments, code, tickets,
+logs, Slack conversations, and operational health.
+
+YOUR FIRST DUTY is to decide whether the question is within scope.
+
+IN-SCOPE topics (you MUST answer these):
+  - Software incidents, outages, post-mortems, RCA
+  - Alerts, error spikes, monitoring, on-call
+  - GitHub: PRs, commits, deployments, code reviews
+  - Jira: tickets, sprints, blockers, epics, backlogs
+  - Slack: team messages, decisions, action items
+  - Logs: Elasticsearch, Datadog, CloudWatch, Splunk, GCP, Azure
+  - Product analytics, churn risk, customer support metrics (Zendesk, HubSpot)
+  - Engineering bottlenecks, team velocity, delivery risk
+  - Operational health, capacity, infrastructure
+  - Anything about the team's own data ingested into OpsLens
+
+OUT-OF-SCOPE topics (return scope=out_of_scope for these):
+  - Entertainment recommendations (movies, shows, music, books, games)
+  - Food, recipes, restaurants, travel
+  - Personal finance, crypto prices, stock picks
+  - Medical/health advice
+  - Sports scores, news, politics, weather
+  - General trivia, history, science questions unrelated to the team's work
+  - Creative writing, jokes, poems
+  - Anything unrelated to the team's engineering operations or ingested data
+
+If the question is OUT-OF-SCOPE, return:
+  {"scope": "out_of_scope", "agents": [], "reasoning": "<why it's off topic>", "complexity": "simple"}
+
+If the question is IN-SCOPE, route to the right agent(s):
 
 Available agents:
   "research"  — Retrieves and synthesises information from documents, code (GitHub),
@@ -243,7 +273,7 @@ Available agents:
                 Use for: "incident summary", "what happened", "outage brief",
                 "deployment timeline", "post-mortem", "what went wrong".
 
-Rules:
+Routing rules:
   - Pick exactly the agents needed. Do NOT include agents whose output won't help.
   - For broad ops-health questions ("how are we doing", "operations summary"),
     use all four: ["research", "insight", "alert", "incident"].
@@ -252,7 +282,7 @@ Rules:
   - Never include more than 4 agents.
 
 Output JSON only:
-  {"agents": ["agent1", ...], "reasoning": "<one sentence>", "complexity": "simple|complex"}
+  {"scope": "in_scope", "agents": ["agent1", ...], "reasoning": "<one sentence>", "complexity": "simple|complex"}
 """
 
 _VALID_AGENTS = {"research", "insight", "alert", "incident"}
@@ -285,6 +315,25 @@ async def supervisor_node(state: AgentState) -> dict:
         f"{history_ctx}User question: {state['question']}",
         run_name="supervisor",
     )
+
+    # ── LLM-level scope check (second gate after regex guardrail) ────────────
+    if result.get("scope") == "out_of_scope":
+        logger.info(
+            "supervisor: out-of-scope question rejected — %s", result.get("reasoning", "")
+        )
+        oos_msg = (
+            "I'm OpsLens AI — I can only help with questions about your engineering "
+            "operations, incidents, alerts, deployments, Jira tickets, Slack messages, "
+            "GitHub activity, logs, and related operational data. "
+            "Please ask something related to your team's work."
+        )
+        return {
+            "next_agents":  [],
+            "model_tier":   "mini",
+            "agent_trace":  ["supervisor→out_of_scope"],
+            "answer":       oos_msg,
+            "messages":     [AIMessage(content=oos_msg)],
+        }
 
     agents = [a for a in result.get("agents", []) if a in _VALID_AGENTS]
     if not agents:
@@ -521,7 +570,12 @@ _AGENT_NODES = {
 async def dispatcher_node(state: AgentState) -> dict:
     """Run all selected agents concurrently and merge their outputs into state."""
     agents = state.get("next_agents") or ["research"]
-    fns    = [_AGENT_NODES[a] for a in agents if a in _AGENT_NODES]
+
+    # If supervisor short-circuited (out_of_scope / blocked), pass through
+    if not agents and state.get("answer"):
+        return {}
+
+    fns = [_AGENT_NODES[a] for a in agents if a in _AGENT_NODES]
 
     if not fns:
         return {}
@@ -571,6 +625,10 @@ async def synthesizer_node(state: AgentState) -> dict:
     """Merge multi-agent outputs into a final validated answer."""
     outputs = state.get("agent_outputs") or {}
     question = state["question"]
+
+    # If supervisor already set a final answer (blocked / out_of_scope), pass through
+    if not outputs and state.get("answer"):
+        return {"answer": state["answer"], "sources": []}
 
     if not outputs:
         return {"answer": "No agent produced an output.", "sources": []}

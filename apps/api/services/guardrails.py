@@ -8,6 +8,8 @@ Input guards (applied before any LLM call):
   1. Length cap           — truncates questions exceeding INPUT_MAX_CHARS
   2. Prompt injection     — detects adversarial instruction patterns and blocks
   3. Jailbreak heuristics — catches role-switching / DAN-style attacks
+  4. Topic scope          — rejects questions clearly outside OpsLens's domain
+                            (entertainment, recipes, general knowledge, etc.)
 
 Output guards (applied to the final answer before streaming):
   1. PII redaction        — masks emails, phone numbers, credit card numbers,
@@ -15,6 +17,7 @@ Output guards (applied to the final answer before streaming):
   2. Content filtering    — blocks answers that contain no useful signal
 
 All functions are synchronous and fast (regex-only, no LLM calls).
+The LLM-level topic check is a second layer inside supervisor_node.
 """
 from __future__ import annotations
 
@@ -92,6 +95,64 @@ _PII_RULES: list[tuple[str, re.Pattern]] = [
     ("PRIVATE_IP",  re.compile(r"\b(10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})\b")),
 ]
 
+# ── Off-topic / out-of-scope patterns ────────────────────────────────────────
+# These match questions that are clearly outside OpsLens's domain.
+# Organised by category. Any single match blocks the question.
+#
+# OpsLens's domain: software operations, engineering, incidents, alerts,
+# Jira/GitHub/Slack data, logs, deployments, product analytics, customer support
+# metrics, infra/cloud, team productivity.
+
+_OUT_OF_SCOPE_PATTERNS: list[tuple[str, re.Pattern]] = [
+    # Entertainment & media
+    ("entertainment", re.compile(
+        r"\b(netflix|hulu|disney\+?|prime\s+video|hbo|spotify|youtube|twitch)\b.{0,60}"
+        r"(recommend|suggest|watch|listen|best|top|good)", re.I)),
+    ("movie_tv",      re.compile(
+        r"\b(movie|film|tv\s+show|series|episode|season|anime|documentary|trailer)"
+        r"\s+(to\s+)?(watch|recommend|suggest|see|stream|buy)\b", re.I)),
+    ("music",         re.compile(
+        r"\b(song|playlist|album|artist|band|music)\s+(to\s+)?(listen|recommend|suggest|play)\b", re.I)),
+
+    # Food & lifestyle
+    ("recipe",        re.compile(
+        r"\b(recipe|ingredient|cook|bake|dish|meal|food|restaurant|cuisin)\b", re.I)),
+    ("travel",        re.compile(
+        r"\b(travel|vacation|holiday|hotel|flight|tourist|destination|visa|passport)\b", re.I)),
+    ("fashion",       re.compile(
+        r"\b(fashion|outfit|cloth(es|ing)|dress|shoe|wear|style\s+advice)\b", re.I)),
+
+    # Health & wellness
+    ("medical",       re.compile(
+        r"\b(doctor|symptom|diagnos|medication|pill|drug|disease|health\s+advice"
+        r"|calor(ie|y)|diet|weight\s+loss|workout\s+plan)\b", re.I)),
+
+    # Finance & personal
+    ("personal_finance", re.compile(
+        r"\b(stock\s+pick|crypto\s+(buy|invest)|bitcoin\s+price|invest(ment)?\s+advice"
+        r"|real\s+estate|mortgage\s+rate|lottery)\b", re.I)),
+
+    # General trivia / homework
+    ("trivia",        re.compile(
+        r"\b(who\s+is\s+(the\s+)?president|capital\s+of\s+\w+|history\s+of\s+\w+\s+war"
+        r"|write\s+(me\s+)?(a\s+)?(poem|essay|story|joke|rap)|tell\s+me\s+a\s+(joke|story|fun\s+fact))\b", re.I)),
+
+    # Sports
+    ("sports",        re.compile(
+        r"\b(nfl|nba|mlb|nhl|soccer|football\s+score|match\s+result|who\s+won\s+the\s+"
+        r"(game|match|tournament))\b", re.I)),
+
+    # Dating / social
+    ("dating",        re.compile(
+        r"\b(date\s+(idea|advice)|relationship\s+advice|tinder|bumble|how\s+to\s+(impress|flirt))\b", re.I)),
+]
+
+_OUT_OF_SCOPE_MESSAGE = (
+    "I'm OpsLens AI — I can only help with questions about your engineering operations, "
+    "incidents, alerts, deployments, Jira tickets, Slack messages, GitHub activity, "
+    "logs, and related operational data. Please ask something related to your team's work."
+)
+
 # ── Content filter ────────────────────────────────────────────────────────────
 # Block outbound answers that are essentially empty or contain only boilerplate.
 
@@ -105,6 +166,26 @@ _EMPTY_ANSWER_PATTERNS: list[re.Pattern] = [
 # Public API
 # ═════════════════════════════════════════════════════════════════════════════
 
+def check_topic_scope(question: str) -> GuardrailResult:
+    """
+    Reject questions that are clearly outside OpsLens's operational domain.
+
+    This is a fast regex pre-filter. The supervisor LLM performs a second,
+    more nuanced scope check for ambiguous cases.
+    """
+    for category, pattern in _OUT_OF_SCOPE_PATTERNS:
+        if pattern.search(question):
+            logger.info(
+                "guardrails: out-of-scope question blocked (category=%s)", category
+            )
+            return GuardrailResult(
+                allowed=False,
+                sanitized=question,
+                blocked_reason=_OUT_OF_SCOPE_MESSAGE,
+            )
+    return GuardrailResult(allowed=True, sanitized=question)
+
+
 def check_input(question: str) -> GuardrailResult:
     """
     Validate and sanitise a raw user question before it reaches any LLM.
@@ -113,6 +194,7 @@ def check_input(question: str) -> GuardrailResult:
       1. Length cap — truncate to INPUT_MAX_CHARS
       2. Hard injection block — match against known adversarial patterns
       3. Soft jailbreak heuristics — block if ≥3 soft signals match
+      4. Topic scope — reject clearly off-topic questions
     """
     max_chars = settings.INPUT_MAX_CHARS
 
@@ -148,6 +230,11 @@ def check_input(question: str) -> GuardrailResult:
                 "Please ask a question about your operational data."
             ),
         )
+
+    # 4. Topic scope (fast regex pass — supervisor does a second LLM-level check)
+    scope = check_topic_scope(question)
+    if not scope.allowed:
+        return scope
 
     return GuardrailResult(allowed=True, sanitized=question)
 
