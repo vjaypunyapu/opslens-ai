@@ -55,6 +55,17 @@ def _openai_key() -> str:
     ).strip()
 
 
+def _langsmith_client():
+    """Return a LangSmith Client if tracing is enabled, else None."""
+    if not settings.LANGCHAIN_TRACING_V2 or not settings.LANGCHAIN_API_KEY:
+        return None
+    try:
+        from langsmith import Client
+        return Client(api_key=settings.LANGCHAIN_API_KEY)
+    except Exception:
+        return None
+
+
 async def _call_validator(
     step: str,
     system_prompt: str,
@@ -62,12 +73,33 @@ async def _call_validator(
 ) -> dict[str, Any]:
     """
     Shared helper: calls GPT-4o-mini with a system prompt and returns parsed JSON.
-    Records a telemetry span for the call.  Falls back gracefully on any error.
+    Records a telemetry span and (optionally) a LangSmith run for the call.
+    Falls back gracefully on any error.
     """
     import time
+    import uuid as _uuid
     t0 = time.monotonic()
     model = "gpt-4o-mini"
     in_tok = out_tok = 0
+    ls = _langsmith_client()
+    run_id = str(_uuid.uuid4()) if ls else None
+
+    # Open LangSmith run
+    if ls and run_id:
+        try:
+            ls.create_run(
+                id=run_id,
+                name=f"validator/{step}",
+                run_type="llm",
+                project_name=settings.LANGCHAIN_PROJECT,
+                inputs={"system": system_prompt, "user": user_content},
+            )
+        except Exception as exc:
+            logger.debug("langsmith create_run failed: %s", exc)
+            run_id = None
+
+    result: dict[str, Any] = {}
+    error: str | None = None
     try:
         from openai import AsyncOpenAI
         client = AsyncOpenAI(api_key=_openai_key())
@@ -82,15 +114,28 @@ async def _call_validator(
         )
         in_tok  = resp.usage.prompt_tokens     if resp.usage else 0
         out_tok = resp.usage.completion_tokens if resp.usage else 0
-        return json.loads(resp.choices[0].message.content or "{}")
+        result = json.loads(resp.choices[0].message.content or "{}")
+        return result
     except Exception as exc:
         logger.warning("validator LLM call failed (%s): %s", step, exc)
+        error = str(exc)
         return {}
     finally:
-        telemetry.record_llm_span(
-            step, model, in_tok, out_tok,
-            latency_ms=(time.monotonic() - t0) * 1000,
-        )
+        latency = (time.monotonic() - t0) * 1000
+        telemetry.record_llm_span(step, model, in_tok, out_tok, latency_ms=latency)
+
+        # Close LangSmith run
+        if ls and run_id:
+            try:
+                ls.update_run(
+                    run_id,
+                    outputs=result,
+                    error=error,
+                    end_time=None,  # auto
+                    extra={"tokens": {"input": in_tok, "output": out_tok}},
+                )
+            except Exception as exc:
+                logger.debug("langsmith update_run failed: %s", exc)
 
 
 # ── Result type ───────────────────────────────────────────────────────────────

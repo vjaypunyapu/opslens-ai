@@ -241,6 +241,10 @@ class Settings(BaseSettings):
     # the retention archive bucket since they have different lifecycle needs.
     AWS_S3_BUCKET_NAME: str | None = None
 
+    # ── Guardrails ────────────────────────────────────────────────────────────
+    # Maximum characters accepted in a user question before truncation.
+    INPUT_MAX_CHARS: int = 4000
+
     # ── LangSmith (optional) ──────────────────────────────────────────────────
     LANGCHAIN_TRACING_V2: bool = False
     LANGCHAIN_API_KEY: str | None = None

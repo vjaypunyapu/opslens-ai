@@ -43,6 +43,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.graph import END, START, StateGraph
 
 from ..config import settings
+from ..services.guardrails import check_input, check_output
 from ..utils.logging import get_logger
 from .state import AgentState
 from .tools import (
@@ -57,6 +58,17 @@ from .tools import (
 logger = get_logger(__name__)
 
 # ── LLM helpers ───────────────────────────────────────────────────────────────
+
+def _langsmith_client():
+    """Return a LangSmith Client if tracing is enabled, else None."""
+    if not settings.LANGCHAIN_TRACING_V2 or not settings.LANGCHAIN_API_KEY:
+        return None
+    try:
+        from langsmith import Client
+        return Client(api_key=settings.LANGCHAIN_API_KEY)
+    except Exception:
+        return None
+
 
 def _openai_key() -> str:
     return (
@@ -74,8 +86,25 @@ def _anthropic_key() -> str:
     ).strip()
 
 
-async def _llm_json(system: str, user: str, model: str = "gpt-4o-mini") -> dict:
+async def _llm_json(system: str, user: str, model: str = "gpt-4o-mini", run_name: str = "llm_json") -> dict:
     """Call the LLM and return parsed JSON. Falls back to {} on error."""
+    import time
+    import uuid as _uuid
+    ls = _langsmith_client()
+    run_id = str(_uuid.uuid4()) if ls else None
+    if ls and run_id:
+        try:
+            ls.create_run(
+                id=run_id, name=run_name, run_type="llm",
+                project_name=settings.LANGCHAIN_PROJECT,
+                inputs={"system": system, "user": user},
+            )
+        except Exception:
+            run_id = None
+
+    t0 = time.monotonic()
+    result: dict = {}
+    error: str | None = None
     try:
         if settings.LLM_PROVIDER == "claude":
             from anthropic import AsyncAnthropic
@@ -86,7 +115,7 @@ async def _llm_json(system: str, user: str, model: str = "gpt-4o-mini") -> dict:
                 system=system,
                 messages=[{"role": "user", "content": user}],
             )
-            return json.loads(resp.content[0].text)
+            result = json.loads(resp.content[0].text)
         else:
             from openai import AsyncOpenAI
             client = AsyncOpenAI(api_key=_openai_key())
@@ -99,14 +128,26 @@ async def _llm_json(system: str, user: str, model: str = "gpt-4o-mini") -> dict:
                     {"role": "user",   "content": user},
                 ],
             )
-            return json.loads(resp.choices[0].message.content or "{}")
+            result = json.loads(resp.choices[0].message.content or "{}")
+        return result
     except Exception as exc:
         logger.warning("_llm_json failed: %s", exc)
+        error = str(exc)
         return {}
+    finally:
+        if ls and run_id:
+            try:
+                ls.update_run(run_id, outputs=result, error=error,
+                              extra={"latency_ms": int((time.monotonic() - t0) * 1000)})
+            except Exception:
+                pass
 
 
-async def _llm_text(system: str, user: str, model: str | None = None) -> str:
+async def _llm_text(system: str, user: str, model: str | None = None, run_name: str = "llm_text") -> str:
     """Call the LLM and return plain text."""
+    import time
+    import uuid as _uuid
+
     if settings.LLM_PROVIDER == "claude":
         m = settings.ANTHROPIC_CHAT_MODEL
     elif settings.LLM_PROVIDER == "ollama":
@@ -114,6 +155,21 @@ async def _llm_text(system: str, user: str, model: str | None = None) -> str:
     else:
         m = model or settings.OPENAI_CHAT_MODEL
 
+    ls = _langsmith_client()
+    run_id = str(_uuid.uuid4()) if ls else None
+    if ls and run_id:
+        try:
+            ls.create_run(
+                id=run_id, name=run_name, run_type="llm",
+                project_name=settings.LANGCHAIN_PROJECT,
+                inputs={"system": system, "user": user, "model": m},
+            )
+        except Exception:
+            run_id = None
+
+    t0 = time.monotonic()
+    text = ""
+    error: str | None = None
     try:
         if settings.LLM_PROVIDER == "claude":
             from anthropic import AsyncAnthropic
@@ -123,7 +179,7 @@ async def _llm_text(system: str, user: str, model: str | None = None) -> str:
                 system=system,
                 messages=[{"role": "user", "content": user}],
             )
-            return resp.content[0].text
+            text = resp.content[0].text
         elif settings.LLM_PROVIDER == "ollama":
             import httpx
             resp = await httpx.AsyncClient(timeout=120).post(
@@ -134,7 +190,7 @@ async def _llm_text(system: str, user: str, model: str | None = None) -> str:
                 ], "stream": False},
             )
             resp.raise_for_status()
-            return resp.json()["message"]["content"]
+            text = resp.json()["message"]["content"]
         else:
             from openai import AsyncOpenAI
             client = AsyncOpenAI(api_key=_openai_key())
@@ -147,10 +203,19 @@ async def _llm_text(system: str, user: str, model: str | None = None) -> str:
                     {"role": "user",   "content": user},
                 ],
             )
-            return resp.choices[0].message.content or ""
+            text = resp.choices[0].message.content or ""
+        return text
     except Exception as exc:
         logger.error("_llm_text failed: %s", exc)
+        error = str(exc)
         return f"[Error generating response: {exc}]"
+    finally:
+        if ls and run_id:
+            try:
+                ls.update_run(run_id, outputs={"text": text}, error=error,
+                              extra={"latency_ms": int((time.monotonic() - t0) * 1000)})
+            except Exception:
+                pass
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -158,8 +223,38 @@ async def _llm_text(system: str, user: str, model: str | None = None) -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 
 _SUPERVISOR_SYSTEM = """\
-You are the OpsLens AI Supervisor. Your job is to route the user's question
-to the most appropriate specialized agent(s).
+You are the OpsLens AI Supervisor. OpsLens is an AI platform for software engineering
+operations. You help teams understand their incidents, alerts, deployments, code, tickets,
+logs, Slack conversations, and operational health.
+
+YOUR FIRST DUTY is to decide whether the question is within scope.
+
+IN-SCOPE topics (you MUST answer these):
+  - Software incidents, outages, post-mortems, RCA
+  - Alerts, error spikes, monitoring, on-call
+  - GitHub: PRs, commits, deployments, code reviews
+  - Jira: tickets, sprints, blockers, epics, backlogs
+  - Slack: team messages, decisions, action items
+  - Logs: Elasticsearch, Datadog, CloudWatch, Splunk, GCP, Azure
+  - Product analytics, churn risk, customer support metrics (Zendesk, HubSpot)
+  - Engineering bottlenecks, team velocity, delivery risk
+  - Operational health, capacity, infrastructure
+  - Anything about the team's own data ingested into OpsLens
+
+OUT-OF-SCOPE topics (return scope=out_of_scope for these):
+  - Entertainment recommendations (movies, shows, music, books, games)
+  - Food, recipes, restaurants, travel
+  - Personal finance, crypto prices, stock picks
+  - Medical/health advice
+  - Sports scores, news, politics, weather
+  - General trivia, history, science questions unrelated to the team's work
+  - Creative writing, jokes, poems
+  - Anything unrelated to the team's engineering operations or ingested data
+
+If the question is OUT-OF-SCOPE, return:
+  {"scope": "out_of_scope", "agents": [], "reasoning": "<why it's off topic>", "complexity": "simple"}
+
+If the question is IN-SCOPE, route to the right agent(s):
 
 Available agents:
   "research"  — Retrieves and synthesises information from documents, code (GitHub),
@@ -178,7 +273,7 @@ Available agents:
                 Use for: "incident summary", "what happened", "outage brief",
                 "deployment timeline", "post-mortem", "what went wrong".
 
-Rules:
+Routing rules:
   - Pick exactly the agents needed. Do NOT include agents whose output won't help.
   - For broad ops-health questions ("how are we doing", "operations summary"),
     use all four: ["research", "insight", "alert", "incident"].
@@ -187,7 +282,7 @@ Rules:
   - Never include more than 4 agents.
 
 Output JSON only:
-  {"agents": ["agent1", ...], "reasoning": "<one sentence>", "complexity": "simple|complex"}
+  {"scope": "in_scope", "agents": ["agent1", ...], "reasoning": "<one sentence>", "complexity": "simple|complex"}
 """
 
 _VALID_AGENTS = {"research", "insight", "alert", "incident"}
@@ -195,6 +290,20 @@ _VALID_AGENTS = {"research", "insight", "alert", "incident"}
 
 async def supervisor_node(state: AgentState) -> dict:
     """Classify the user's intent and select which agents to activate."""
+    # ── Input guardrails ──────────────────────────────────────────────────────
+    guard = check_input(state["question"])
+    if not guard.allowed:
+        logger.warning("supervisor: input blocked — %s", guard.blocked_reason)
+        return {
+            "next_agents":  [],
+            "model_tier":   "mini",
+            "agent_trace":  ["supervisor→blocked"],
+            "answer":       guard.blocked_reason,
+            "messages":     [AIMessage(content=guard.blocked_reason)],
+        }
+    # Replace with (possibly truncated) sanitized version
+    state = {**state, "question": guard.sanitized}
+
     history_ctx = ""
     if state.get("history"):
         last = state["history"][-2:]
@@ -204,7 +313,27 @@ async def supervisor_node(state: AgentState) -> dict:
     result = await _llm_json(
         _SUPERVISOR_SYSTEM,
         f"{history_ctx}User question: {state['question']}",
+        run_name="supervisor",
     )
+
+    # ── LLM-level scope check (second gate after regex guardrail) ────────────
+    if result.get("scope") == "out_of_scope":
+        logger.info(
+            "supervisor: out-of-scope question rejected — %s", result.get("reasoning", "")
+        )
+        oos_msg = (
+            "I'm OpsLens AI — I can only help with questions about your engineering "
+            "operations, incidents, alerts, deployments, Jira tickets, Slack messages, "
+            "GitHub activity, logs, and related operational data. "
+            "Please ask something related to your team's work."
+        )
+        return {
+            "next_agents":  [],
+            "model_tier":   "mini",
+            "agent_trace":  ["supervisor→out_of_scope"],
+            "answer":       oos_msg,
+            "messages":     [AIMessage(content=oos_msg)],
+        }
 
     agents = [a for a in result.get("agents", []) if a in _VALID_AGENTS]
     if not agents:
@@ -333,6 +462,7 @@ async def insight_node(state: AgentState) -> dict:
         answer = await _llm_text(
             _INSIGHT_AGENT_SYSTEM,
             f"Question: {state['question']}\n\nAvailable insights:\n{insight_text}",
+            run_name="insight_agent",
         )
 
     output: dict[str, Any] = {
@@ -372,6 +502,7 @@ async def alert_node(state: AgentState) -> dict:
         answer = await _llm_text(
             _ALERT_AGENT_SYSTEM,
             f"Question: {state['question']}\n\nAlert data:\n{alert_text}",
+            run_name="alert_agent",
         )
 
     output: dict[str, Any] = {
@@ -411,6 +542,7 @@ async def incident_node(state: AgentState) -> dict:
         answer = await _llm_text(
             _INCIDENT_AGENT_SYSTEM,
             f"Question: {state['question']}\n\nIncident data:\n{context}",
+            run_name="incident_agent",
         )
 
     output: dict[str, Any] = {
@@ -438,7 +570,12 @@ _AGENT_NODES = {
 async def dispatcher_node(state: AgentState) -> dict:
     """Run all selected agents concurrently and merge their outputs into state."""
     agents = state.get("next_agents") or ["research"]
-    fns    = [_AGENT_NODES[a] for a in agents if a in _AGENT_NODES]
+
+    # If supervisor short-circuited (out_of_scope / blocked), pass through
+    if not agents and state.get("answer"):
+        return {}
+
+    fns = [_AGENT_NODES[a] for a in agents if a in _AGENT_NODES]
 
     if not fns:
         return {}
@@ -489,6 +626,10 @@ async def synthesizer_node(state: AgentState) -> dict:
     outputs = state.get("agent_outputs") or {}
     question = state["question"]
 
+    # If supervisor already set a final answer (blocked / out_of_scope), pass through
+    if not outputs and state.get("answer"):
+        return {"answer": state["answer"], "sources": []}
+
     if not outputs:
         return {"answer": "No agent produced an output.", "sources": []}
 
@@ -509,6 +650,7 @@ async def synthesizer_node(state: AgentState) -> dict:
         answer = await _llm_text(
             _SYNTHESIZER_SYSTEM,
             f"Question: {question}\n\nAgent outputs:\n{combined}",
+            run_name="synthesizer",
         )
         sources = outputs.get("research", {}).get("sources", [])
 
@@ -523,6 +665,14 @@ async def synthesizer_node(state: AgentState) -> dict:
                 answer = f"{disclaimer}\n\n{answer}"
     except Exception as exc:
         logger.warning("synthesizer: validation skipped (%s)", exc)
+
+    # ── Output guardrails — PII redaction + content filter ────────────────────
+    out_guard = check_output(answer)
+    if not out_guard.allowed:
+        logger.warning("synthesizer: output blocked — %s", out_guard.blocked_reason)
+        answer = out_guard.blocked_reason
+    else:
+        answer = out_guard.sanitized  # PII-redacted version
 
     return {
         "answer":  answer,

@@ -505,13 +505,14 @@ async def astream_planned_response(
 async def astream_planned_response_live(
     question: str,
     tenant_id: str,
+    allowed_sources: list[dict] | None = None,
 ) -> AsyncIterator[str]:
     """
     True streaming version: plan + retrieve + validate happen first, then the
     LLM streams its answer live while we pass tokens straight to the caller.
     Validation runs on the *completed* buffer and appends a disclaimer if needed.
     """
-    state = PlannerState(question=question, tenant_id=tenant_id)
+    state = PlannerState(question=question, tenant_id=tenant_id, allowed_sources=allowed_sources)
 
     # Plan + retrieve (cannot stream these)
     state = await _plan_node(state)
