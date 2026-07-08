@@ -470,9 +470,13 @@ async def _aggregate_count(
     query: str,
     tenant_id: str,
     filters: dict[str, str],
+    allowed_sources: list[dict] | None = None,
 ) -> Document:
     """Run a SQL COUNT(*) with any detected filters and return a synthetic Document
     containing the number so the LLM can answer count questions accurately.
+
+    allowed_sources is respected so a source-restricted user only sees counts
+    for documents they are permitted to read (same guarantee as _bm25_search).
     """
     import sqlalchemy as sa
     from ..db.models import CanonicalDocument
@@ -482,6 +486,16 @@ async def _aggregate_count(
         q = sa.select(sa.func.count()).select_from(CanonicalDocument).where(
             CanonicalDocument.tenant_id == uuid.UUID(tenant_id)
         )
+        # Enforce RBAC source restriction — same logic as _bm25_search
+        if allowed_sources is not None:
+            permitted_ids = [s["source_id"] for s in allowed_sources]
+            if not permitted_ids:
+                # User has no permitted sources — count is always zero for them
+                return Document(
+                    page_content="Aggregate count result: 0 documents (no accessible sources).",
+                    metadata={"_intent": "aggregate", "count": 0, "filters": filters},
+                )
+            q = q.where(CanonicalDocument.source_id.in_(permitted_ids))
         if "state" in filters:
             q = q.where(
                 CanonicalDocument.doc_metadata["state"].astext == filters["state"]
@@ -567,7 +581,7 @@ async def hybrid_retrieve(
     count_doc: Document | None = None
     if intent.type == "aggregate":
         try:
-            count_doc = await _aggregate_count(query, tenant_id, intent.filters)
+            count_doc = await _aggregate_count(query, tenant_id, intent.filters, allowed_sources)
         except Exception as exc:
             logger.warning("hybrid_retrieve: aggregate_count failed: %s", exc)
 
