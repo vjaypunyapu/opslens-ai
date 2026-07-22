@@ -231,6 +231,15 @@ class RagService:
         import uuid as _uuid
         from . import telemetry
 
+        # Trim history to the most recent 20 messages (10 turns) before it
+        # enters the agent graph or planner. Each node further trims to its
+        # own window (supervisor=2, planner=6), but this cap prevents the
+        # full array from growing unboundedly in memory across long sessions.
+        _HISTORY_MAX = 20
+        if len(history) > _HISTORY_MAX:
+            history = history[-_HISTORY_MAX:]
+            logger.debug("RAG: history trimmed to last %d messages", _HISTORY_MAX)
+
         start    = time.monotonic()
         trace_id = str(_uuid.uuid4())
         telemetry.start_trace(trace_id, tenant_id, question)
