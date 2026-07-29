@@ -296,7 +296,9 @@ async def _batch_save_and_embed_logs(
     for any groups above the threshold — wiring ALL log sources into the same
     live incident/RRT-brief pipeline as fast_scan.
 
-    Returns the number of *new* records saved (duplicates are skipped silently).
+    Returns the number of records processed this cycle: brand-new records saved,
+    plus any previously-inserted-but-never-embedded records recovered and
+    (re-)embedded. Records whose embedding already completed are skipped silently.
     """
     if not records:
         return 0
@@ -316,19 +318,34 @@ async def _batch_save_and_embed_logs(
     all_hashes = [h for h, _ in hashed]
 
     # ── Step 2: one SELECT to find already-stored hashes ─────────────────────
+    # A hash only counts as "already synced" if its embedding actually finished
+    # (embedding_status == 'done'). A row that was inserted but never embedded
+    # — e.g. Qdrant/OpenAI failed mid-pipeline on a previous run — must NOT be
+    # treated as done, or it becomes permanently invisible: excluded from every
+    # future sync's "new records" set, yet never actually searchable.
     async with async_session_factory() as db:
         rows = await db.execute(
-            sa.select(CanonicalDocument.content_hash).where(
+            sa.select(
+                CanonicalDocument.content_hash,
+                CanonicalDocument.id,
+                CanonicalDocument.embedding_status,
+            ).where(
                 CanonicalDocument.tenant_id == tid,
                 CanonicalDocument.content_hash.in_(all_hashes),
             )
         )
-        existing_hashes: set[str] = {row[0] for row in rows.all()}
+        done_hashes: set[str] = set()
+        stuck_doc_ids: dict[str, uuid.UUID] = {}  # content_hash -> doc id, needs re-embedding
+        for content_hash, doc_id, embedding_status in rows.all():
+            if embedding_status == "done":
+                done_hashes.add(content_hash)
+            else:
+                stuck_doc_ids[content_hash] = doc_id
 
     # ── Step 3: build new doc objects for records not yet in the DB ───────────
     new_rows: list[tuple[str, RawRecord, CanonicalDocument]] = []
     for content_hash, rec in hashed:
-        if content_hash in existing_hashes:
+        if content_hash in done_hashes or content_hash in stuck_doc_ids:
             continue
         doc = CanonicalDocument(
             id=uuid.uuid4(),
@@ -348,17 +365,45 @@ async def _batch_save_and_embed_logs(
         )
         new_rows.append((content_hash, rec, doc))
 
-    if not new_rows:
+    # ── Step 3b: re-fetch previously-stuck docs so their embedding can be retried
+    # without re-inserting them (would violate the tenant/source_type/source_id
+    # unique constraint — the row already exists, it just never finished embedding).
+    retry_rows: list[tuple[str, RawRecord, CanonicalDocument]] = []
+    if stuck_doc_ids:
+        async with async_session_factory() as db:
+            result = await db.execute(
+                sa.select(CanonicalDocument).where(
+                    CanonicalDocument.id.in_(stuck_doc_ids.values())
+                )
+            )
+            stuck_docs_by_id = {d.id: d for d in result.scalars().all()}
+        rec_by_hash = {h: rec for h, rec in hashed}
+        for content_hash, doc_id in stuck_doc_ids.items():
+            doc = stuck_docs_by_id.get(doc_id)
+            rec = rec_by_hash.get(content_hash)
+            if doc is not None and rec is not None:
+                retry_rows.append((content_hash, rec, doc))
+
+    if not new_rows and not retry_rows:
         logger.info(
-            "batch_log_embed: all %d records already stored for tenant %s",
+            "batch_log_embed: all %d records already stored and embedded for tenant %s",
             len(records), tenant_id,
         )
         return 0
 
-    # ── Step 4: bulk insert all new docs in one transaction ───────────────────
-    async with async_session_factory() as db:
-        db.add_all([doc for _, _, doc in new_rows])
-        await db.commit()
+    if retry_rows:
+        logger.warning(
+            "batch_log_embed: retrying embedding for %d previously-stuck doc(s) for tenant %s",
+            len(retry_rows), tenant_id,
+        )
+
+    embed_rows = new_rows + retry_rows
+
+    # ── Step 4: bulk insert only the genuinely new docs in one transaction ────
+    if new_rows:
+        async with async_session_factory() as db:
+            db.add_all([doc for _, _, doc in new_rows])
+            await db.commit()
 
     # ── Step 5: simple token chunking — no HyDE/LLM calls ────────────────────
     # Log lines are typically 1 chunk each (< 512 tokens).  _chunk_text is a
@@ -367,7 +412,7 @@ async def _batch_save_and_embed_logs(
     all_meta: list[tuple[uuid.UUID, int, CanonicalDocument]] = []  # (doc_id, chunk_idx, doc)
     doc_chunk_counts: dict[uuid.UUID, int] = {}
 
-    for _, rec, doc in new_rows:
+    for _, rec, doc in embed_rows:
         chunks = _chunk_text(rec.content)
         if not chunks:
             chunks = [rec.content]  # always keep at least the raw content
@@ -424,12 +469,12 @@ async def _batch_save_and_embed_logs(
 
     logger.info(
         "batch_log_embed: upserted %d vectors (%d docs) to %s",
-        len(all_points), len(new_rows), collection,
+        len(all_points), len(embed_rows), collection,
     )
 
     # ── Step 8: bulk update embedding_status + chunk_count in one transaction ─
     async with async_session_factory() as db:
-        for _, _, doc in new_rows:
+        for _, _, doc in embed_rows:
             await db.execute(
                 sa.update(CanonicalDocument)
                 .where(CanonicalDocument.id == doc.id)
@@ -440,21 +485,21 @@ async def _batch_save_and_embed_logs(
             )
         await db.commit()
 
-    new_record_count = len(new_rows)
+    processed_count = len(embed_rows)
     logger.info(
-        "batch_log_embed: saved %d new records for tenant %s (%d duplicates skipped)",
-        new_record_count, tenant_id, len(records) - new_record_count,
+        "batch_log_embed: saved %d new + recovered %d stuck records for tenant %s (%d duplicates skipped)",
+        len(new_rows), len(retry_rows), tenant_id, len(records) - processed_count,
     )
 
     # ── Live incident detection on genuinely new records ─────────────────────
     # Only scan records that weren't already in the DB (deduplication already
     # ran above) — avoids re-firing incidents for records seen on previous polls.
-    if trigger_incidents and new_record_count > 0:
+    if trigger_incidents and new_rows:
         new_recs = [rec for _, rec, _ in new_rows]
         source_type = new_recs[0].source_type if new_recs else "unknown"
         _trigger_log_source_incidents(new_recs, tenant_id, source_type)
 
-    return new_record_count
+    return processed_count
 
 
 # ── GitHub fetcher ────────────────────────────────────────────────────────────
