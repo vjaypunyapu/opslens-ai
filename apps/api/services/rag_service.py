@@ -144,6 +144,58 @@ _PROMPT = ChatPromptTemplate.from_messages([
 ])
 
 
+# ── History trimming ─────────────────────────────────────────────────────────
+# Keep at most this many tokens of history fed to the LLM.
+# gpt-3.5 / gpt-4 context is 128k+; we reserve headroom for the system prompt,
+# retrieved context, and the answer.  8 000 tokens ≈ ~6 000 words of dialogue —
+# comfortably more than most sessions while staying well inside the budget.
+_HISTORY_TOKEN_LIMIT = 8_000
+_HISTORY_MAX_MSGS    = 40   # hard ceiling so we never count tokens on huge arrays
+
+def _trim_history(history: list[dict]) -> list[dict]:
+    """
+    Return a token-aware slice of *history* that fits within
+    _HISTORY_TOKEN_LIMIT, always keeping the most recent messages.
+
+    Falls back to the message-count cap if tiktoken is unavailable.
+    """
+    if not history:
+        return history
+
+    # Message-count hard cap first (cheap).
+    if len(history) > _HISTORY_MAX_MSGS:
+        history = history[-_HISTORY_MAX_MSGS:]
+
+    try:
+        import tiktoken
+        enc = tiktoken.get_encoding("cl100k_base")   # works for GPT-4, Claude, etc.
+
+        # Walk from the newest message backwards, accumulating tokens.
+        total   = 0
+        keep_from = len(history)   # exclusive lower bound (we'll slice history[keep_from:])
+        for i in range(len(history) - 1, -1, -1):
+            content = history[i].get("content", "")
+            total  += len(enc.encode(content)) + 4   # 4 overhead per message (role + delimiters)
+            if total > _HISTORY_TOKEN_LIMIT:
+                keep_from = i + 1   # drop message i and everything older
+                break
+            else:
+                keep_from = i
+
+        trimmed = history[keep_from:]
+        if len(trimmed) < len(history):
+            logger.debug(
+                "RAG: history trimmed %d→%d messages (~%d tokens)",
+                len(history), len(trimmed), total,
+            )
+        return trimmed
+
+    except Exception:
+        # tiktoken unavailable or failed — fall back to message-count cap.
+        logger.debug("RAG: tiktoken unavailable, using message-count cap (%d)", _HISTORY_MAX_MSGS)
+        return history
+
+
 class RagService:
     """
     Encapsulates the full RAG pipeline.
@@ -244,6 +296,10 @@ class RagService:
         trace_id = str(_uuid.uuid4())
         telemetry.start_trace(trace_id, tenant_id, question)
         logger.info("RAG: trace=%s tenant=%s question=%r", trace_id[:8], tenant_id, question[:80])
+
+        # Token-aware history trim — keeps the most recent messages that fit
+        # within _HISTORY_TOKEN_LIMIT so the LLM prompt stays manageable.
+        history = _trim_history(history)
 
         validation_passed = True
         retry_count       = 0
