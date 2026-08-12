@@ -1126,6 +1126,42 @@ async def _upsert_incident_from_brief(
         logger.warning("Failed to create Incident from RRT brief %s (non-fatal): %s", brief_id[:8], exc)
 
 
+# ── Existing brief lookup (for demo / pre-seeded briefs) ─────────────────────
+async def _find_existing_brief(tenant_id: str, error_signature: str) -> dict | None:
+    """Return a dict of an existing RRTBrief with matching error_signature, or None."""
+    from apps.worker.db import AsyncSession as WorkerSession
+    from apps.api.models.rrt_brief import RRTBrief
+    import sqlalchemy as sa
+
+    if not error_signature:
+        return None
+    try:
+        async with WorkerSession() as db:
+            row = await db.execute(
+                sa.select(RRTBrief).where(
+                    RRTBrief.tenant_id == tenant_id,
+                    RRTBrief.error_signature == error_signature,
+                ).order_by(RRTBrief.detected_at.desc()).limit(1)
+            )
+            brief = row.scalars().first()
+            if brief is None:
+                return None
+            return {
+                "id": str(brief.id),
+                "title": brief.title,
+                "what_happened": brief.what_happened,
+                "impact": brief.impact,
+                "suspected_cause": brief.suspected_cause,
+                "next_actions": brief.next_actions,
+                "related_items": brief.related_items,
+                "code_frames": brief.code_frames,
+                "jira_ticket_key": brief.jira_ticket_key,
+            }
+    except Exception as exc:
+        logger.warning("_find_existing_brief failed (non-fatal): %s", exc)
+        return None
+
+
 # ── DB persistence ────────────────────────────────────────────────────────────
 async def _save_rrt_brief(
     tenant_id: str,
@@ -1365,6 +1401,78 @@ def generate_rrt_brief(
             "Generating RRT brief %s for tenant=%s sig=%s owner=%s",
             brief_id[:8], tenant_id, error_signature, owner_team,
         )
+
+        # ── Pre-seeded brief check ─────────────────────────────────────────────
+        # If a brief with the same error_signature was already seeded (e.g. by the
+        # simulate_alert demo endpoint), use its rich data for the Slack notification
+        # and skip creating a duplicate placeholder brief.
+        existing_brief = _run_async(_find_existing_brief(tenant_id, error_signature))
+        if existing_brief is not None:
+            logger.info(
+                "RRT brief: found existing seeded brief %s for sig=%s — "
+                "using its rich data for Slack notification, skipping duplicate",
+                existing_brief["id"][:8], error_signature,
+            )
+            seeded_fields = {
+                "title": existing_brief.get("title", error_first_line[:60]),
+                "what_happened": existing_brief.get("what_happened", f"Exception detected: {error_first_line[:200]}"),
+                "impact": existing_brief.get("impact", "Impact under investigation."),
+                "suspected_cause": existing_brief.get("suspected_cause", "Root cause under investigation."),
+                "next_actions": existing_brief.get("next_actions") or [],
+                "jira_ticket_key": existing_brief.get("jira_ticket_key"),
+            }
+            seeded_related = existing_brief.get("related_items") or related_items
+            seeded_code_frames = existing_brief.get("code_frames") or []
+            detected_at = datetime.now(tz=timezone.utc)
+
+            # Send Slack with the rich seeded data
+            channels_sent: list[str] = []
+            for target in routing_targets:
+                webhook_url = target.get("slack_webhook")
+                if not webhook_url:
+                    continue
+                from apps.api.services.notifications import (
+                    build_rrt_brief_payload, send_webhook as _send_notification,
+                )
+                payload = build_rrt_brief_payload(
+                    brief_id=existing_brief["id"],
+                    fields=seeded_fields,
+                    related_items=seeded_related,
+                    owner_team=target.get("team_name", owner_team),
+                    detected_at=detected_at,
+                    error_count=error_count,
+                    window_minutes=window_minutes,
+                    timeline_events=[],
+                )
+                ok = _send_notification(webhook_url, payload)
+                if ok:
+                    channels_sent.append(f"slack:{target.get('team_name', 'default')}")
+                    logger.info(
+                        "RRT brief %s (seeded) sent to team='%s'",
+                        existing_brief["id"][:8], target.get("team_name"),
+                    )
+
+            if not channels_sent:
+                _run_async(
+                    _notify_via_slack_bot(
+                        tenant_id=tenant_id,
+                        brief_id=existing_brief["id"],
+                        fields=seeded_fields,
+                        related_items=seeded_related,
+                        detected_at=detected_at,
+                        error_count=error_count,
+                        window_minutes=window_minutes,
+                        timeline_events=[],
+                    )
+                )
+
+            return {
+                "brief_id": existing_brief["id"],
+                "title": seeded_fields.get("title"),
+                "channels_sent": channels_sent,
+                "reused_seeded": True,
+            }
+        # ── End pre-seeded brief check ─────────────────────────────────────────
 
         # 1a. Fetch timeline context: what changed in the 60 min before this incident
         timeline_events = _run_async(

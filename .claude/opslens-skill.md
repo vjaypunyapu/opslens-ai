@@ -49,6 +49,7 @@ opslens-ai/
 │   │   │   ├── rag_service.py  RagService (now delegates to agent graph)
 │   │   │   ├── hybrid_retriever.py  BM25 + Qdrant dense + Cohere rerank + RRF
 │   │   │   ├── validator.py  Auditor + Gatekeeper + Strategist (3 parallel LLM nodes)
+│   │   │   ├── guardrails.py Input/output safety layer (injection, PII, topic scope)
 │   │   │   ├── permissions.py  get_allowed_sources() for RBAC source filtering
 │   │   │   └── telemetry.py  In-memory trace store (latency, token counts)
 │   │   └── agents/           Multi-agent system (v3 — LangGraph)
@@ -255,6 +256,29 @@ User Query → [Supervisor] → [Dispatcher (parallel)] → [Synthesizer] → SS
 {"type": "error",   "message": "..."}            // triggers fallback
 ```
 
+### Guardrails (applied before and after every LLM call)
+
+`services/guardrails.py` — all regex-based, zero LLM cost:
+
+```
+check_input(question) — runs in supervisor_node BEFORE any LLM call
+  1. Length cap         → truncate to INPUT_MAX_CHARS (default 4000, env-configurable)
+  2. Prompt injection   → 8 hard-block patterns (ignore previous instructions, DAN, etc.)
+  3. Jailbreak soft     → block if ≥3 of 5 soft signals match
+  4. Topic scope        → block clearly off-topic questions (movies, recipes, sports, etc.)
+
+check_output(answer) + redact_output(answer) — runs in synthesizer_node AFTER LLM
+  - PII redaction       → email, phone, credit card, SSN, AWS keys, private IPs
+                          (skips fenced code blocks, logs when redaction occurs)
+  - Content filter      → blocks empty or pure-error answers
+```
+
+**Topic scope enforcement is two-layer:**
+1. Fast regex gate (`check_topic_scope`) — catches obvious off-topic before any LLM call
+2. Supervisor system prompt — explicit in-scope/out-of-scope definitions; returns `{"scope": "out_of_scope"}` which short-circuits the entire graph (no agent calls, no synthesizer)
+
+Out-of-scope message is consistent across both layers.
+
 ### Fallback chain
 
 `agent_graph.stream()` → fails → `planner.plan_and_answer()` → fails → error event
@@ -285,6 +309,26 @@ Plan (gpt-4o-mini, JSON output) → Retrieve (parallel hybrid) → Generate → 
 | Auditor | Grounding — every claim supported by context? | **Yes** (⚠️ disclaimer) |
 | Gatekeeper | Completeness — all parts of question answered? | No (advisory, triggers retry) |
 | Strategist | Logic — sound reasoning, no contradictions? | No (advisory only) |
+
+### LangSmith coverage
+
+Every direct `openai.AsyncOpenAI` and `anthropic.AsyncAnthropic` call is instrumented with explicit LangSmith runs (not just LangChain-wrapped calls). Covered nodes:
+
+- `supervisor` (`_llm_json` in `graph.py`)
+- `insight_agent`, `alert_agent`, `incident_agent`, `synthesizer` (`_llm_text` in `graph.py`)
+- `auditor`, `gatekeeper`, `strategist` (`_call_validator` in `validator.py`)
+
+Enable with `LANGCHAIN_TRACING_V2=true` + `LANGCHAIN_API_KEY`. All runs appear in LangSmith under `LANGCHAIN_PROJECT`.
+
+### RBAC isolation (verified airtight)
+
+| Layer | Enforcement |
+|-------|------------|
+| Chat session ownership | `WHERE id=:id AND tenant_id=:tenant_id` — 404 if mismatch |
+| Qdrant retrieval | Per-tenant collection (`opslens_{tenant_id}`) — physical separation |
+| BM25 SQL search | `WHERE tenant_id=:tenant_id::uuid` first predicate on every branch |
+| Aggregate counts | `_aggregate_count` now respects `allowed_sources` (fixed PR #26) |
+| `astream_planned_response_live` | Now accepts + threads `allowed_sources` (fixed PR #26) |
 
 ### LLM provider routing
 
@@ -422,6 +466,10 @@ LOG_FAST_ALERT_THRESHOLD=3        # min errors to fire alert
 LOG_FAST_ALERT_COOLDOWN_MINUTES=10
 INGEST_LOG_MIN_LEVEL=WARNING      # filters DEBUG/INFO from log sources
 PLATFORM_ADMIN_EMAILS             # comma-separated, grants /platform/* access
+INPUT_MAX_CHARS=4000              # max user question length before truncation
+LANGCHAIN_TRACING_V2=true         # enable LangSmith tracing
+LANGCHAIN_API_KEY=                # LangSmith API key
+LANGCHAIN_PROJECT=opslens         # LangSmith project name
 ```
 
 ---
@@ -590,7 +638,8 @@ pytest tests/test_insight_engine.py  # specific file
 ## Active Branch & PR
 
 - **Feature branch**: `claude/lucid-noether-Zp2PP`
-- **PR #21**: Multi-agent AI architecture
+- **PR #21**: Multi-agent AI architecture (merged to main)
+- **PR #26**: Guardrails, topic scope, LangSmith coverage, RBAC fixes (open)
 - **Main branch**: `main`
 
 ---
@@ -605,7 +654,10 @@ pytest tests/test_insight_engine.py  # specific file
 | Add a new insight detector | Subclass `BaseDetector` in `insight_engine.py`, add to `ALL_DETECTORS` |
 | Add a new agent | Add node to `agents/graph.py`, update supervisor prompt, add tools to `agents/tools.py` |
 | Change LLM provider at runtime | Set `LLM_PROVIDER` env var (openai/claude/ollama) |
-| Debug a RAG query | Check `services/telemetry.py` store, or enable LangSmith with `LANGCHAIN_TRACING_V2=true` |
+| Debug a RAG query | Check `services/telemetry.py` store, or enable LangSmith with `LANGCHAIN_TRACING_V2=true` + `LANGCHAIN_API_KEY` |
+| Add an off-topic category to block | Add regex to `_OUT_OF_SCOPE_PATTERNS` in `services/guardrails.py` |
+| Add a PII type to redact | Add `(label, re.compile(...))` to `_PII_RULES` in `services/guardrails.py` |
+| Add a prompt injection pattern | Add to `_INJECTION_PATTERNS` in `services/guardrails.py` |
 | Add a new integration/data source | Add normalizer in `ingestion.py`, add `source_type` to Qdrant payload, update planner system prompt |
 | Change alert routing | Update `AlertRoutingRule` rows (keywords/regex → team Slack/email/PagerDuty) |
 | Suppress a recurring alert | Create `KnownIssue` row (by hash, regex, or Jira ticket key) |

@@ -471,6 +471,175 @@ async def push_to_jira(
     return PushToJiraResponse(ticket_key=ticket_key, ticket_url=ticket_url, already_existed=False)
 
 
+# ── Demo seed — create a pre-built brief instantly (no Celery needed) ─────────
+
+class SeedDemoBriefRequest(BaseModel):
+    tenant_id_override: str | None = Field(
+        None,
+        description="Seed into a specific tenant. Defaults to the calling user's tenant.",
+    )
+
+
+@router.post(
+    "/seed-demo",
+    response_model=RRTBriefOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Seed a fully-populated demo RRT brief instantly (no Celery required)",
+)
+async def seed_demo_brief(
+    ctx: Annotated[TenantContext, Depends(require_admin)],
+    db=Depends(get_db),
+):
+    """
+    Inserts a fully-populated payment-service incident brief directly into the
+    database — no Celery workers, no Slack webhook required.
+
+    Use this before a demo so the Simulate Alert modal can poll and display
+    a complete brief (Jira ticket, root cause, related context, next actions)
+    within 1–2 seconds of clicking Run Simulation.
+
+    Safe to call multiple times — existing demo brief for this tenant is replaced.
+    """
+    import hashlib as _hl
+
+    tid = ctx.tenant_id
+    brief_id = "de1195f3-5fe2-4aed-baf8-32a5002a3527"
+
+    # Compute the same signature the simulate endpoint would produce
+    error_msg  = "PaymentError: Stripe API timeout after 30s — retries exhausted for card_id=card_abc123"
+    normalised = "PaymentError: Stripe API timeout after 30s — retries exhausted for card_id=<hex>"
+    signature  = _hl.md5(normalised[:120].encode()).hexdigest()
+
+    # Delete existing demo brief for this tenant if present
+    existing = await db.execute(
+        sa.select(RRTBrief).where(
+            RRTBrief.tenant_id == tid,
+            RRTBrief.id == brief_id,
+        )
+    )
+    existing_obj = existing.scalar_one_or_none()
+    if existing_obj:
+        await db.delete(existing_obj)
+
+    now = datetime.now(tz=timezone.utc)
+
+    brief = RRTBrief(
+        id=brief_id,
+        tenant_id=tid,
+        title="[DEMO] payment-service: PaymentError — Stripe API timeout after 30s, retries exhausted",
+        what_happened=(
+            "The payment-service began throwing PaymentError: Stripe API timeout after 30s "
+            "at 00:29 UTC on August 12, 2026. Retries were exhausted without a successful "
+            "response from Stripe. The affected card token was card_id=card_abc123. "
+            "OpsLens detected 47 occurrences within a 5-minute window and triggered this brief automatically."
+        ),
+        impact=(
+            "All payment processing requests routed through the affected Stripe integration are failing. "
+            "Customers attempting checkout are receiving payment failure errors. "
+            "Revenue impact: active — every failed transaction is a lost conversion. "
+            "Scope: card_id=card_abc123 pattern — full blast radius under investigation."
+        ),
+        started_at=now - timedelta(minutes=6),
+        detected_at=now - timedelta(minutes=1),
+        suspected_cause=(
+            "Most likely cause: Stripe API degradation. Stripe's API is returning responses beyond "
+            "the 30s timeout threshold. Secondary candidate: network latency spike between "
+            "payment-service and api.stripe.com — check VPC routing and NAT gateway health. "
+            "Tertiary: retry logic not using exponential backoff — 47 occurrences in 5 min "
+            "suggests tight retry intervals may be amplifying load on a degraded endpoint."
+        ),
+        next_actions=[
+            "Check Stripe status page: https://status.stripe.com — active API incident?",
+            "Pull payment-service logs — filter PaymentError + Stripe timeout, inspect full stack trace",
+            "Review recent deployments to payment-service in the last 2 hours (timeout config, Stripe SDK version)",
+            "Test with a fresh card token to rule out token-specific vs systemic failure",
+            "Check NAT gateway / outbound network metrics for connection exhaustion",
+            "Confirm retry logic uses exponential backoff with jitter",
+            "Escalate to Payments Team on-call if not resolved within 15 minutes",
+        ],
+        related_items=[
+            {
+                "source_type": "jira",
+                "title": "OPS-142: Payment timeouts during peak load — Stripe API degradation",
+                "url": "https://your-jira.atlassian.net/browse/OPS-142",
+                "snippet": (
+                    "Recurring Stripe API timeouts observed during peak traffic windows. "
+                    "Root cause identified as missing exponential backoff in payment-service retry logic. "
+                    "Fix: implement jitter + backoff, increase timeout to 60s with circuit breaker. "
+                    "Status: In Progress. Assigned: Payments Team."
+                ),
+                "score": 0.94,
+            },
+            {
+                "source_type": "github",
+                "title": "PR #312: Add retry logic for Stripe webhook delivery",
+                "url": "https://github.com/your-org/payment-service/pull/312",
+                "snippet": (
+                    "Merged 2 hours before incident. Changed Stripe client timeout from 60s to 30s "
+                    "to align with API gateway limits. May have introduced the regression — "
+                    "consider reverting timeout change as immediate mitigation."
+                ),
+                "score": 0.87,
+            },
+            {
+                "source_type": "slack",
+                "title": "#payments-alerts — Stripe elevated error rates",
+                "url": None,
+                "snippet": (
+                    "stripe_bot: ⚠️ Elevated API error rates detected on /v1/charges endpoint. "
+                    "P99 latency: 28s (normal: 800ms). Started approximately 00:24 UTC. "
+                    "Status page updated. Investigating."
+                ),
+                "score": 0.81,
+            },
+        ],
+        owner_team="Payments Team",
+        owner_contacts=["payments-oncall@yourcompany.com"],
+        status="open",
+        error_signature=signature,
+        error_sample=(
+            "[DEMO] ERROR payment-service: PaymentError: Stripe API timeout after 30s "
+            "— retries exhausted for card_id=card_abc123\n"
+            "    Traceback (most recent call last):\n"
+            "      File \"payment-service/main.py\", line 42, in handle_request\n"
+            "    PaymentError: Stripe API timeout after 30s — retries exhausted\n"
+            "    [Count in window: 47 occurrences]"
+        ),
+        code_frames=[
+            {
+                "file": "payment-service/stripe_client.py",
+                "line": 87,
+                "function": "charge_card",
+                "repo": "your-org/payment-service",
+                "snippet": (
+                    "    response = stripe.Charge.create(\n"
+                    "        amount=amount_cents,\n"
+                    "        currency='usd',\n"
+                    "        source=card_id,\n"
+                    "        timeout=30,  # ← reduced in PR #312, was 60\n"
+                    "    )"
+                ),
+                "language": "python",
+                "last_commit_sha": "a3f9d12",
+                "last_commit_msg": "Add retry logic for Stripe webhook delivery",
+                "last_commit_author": "dev-seed",
+                "last_commit_url": "https://github.com/your-org/payment-service/commit/a3f9d12",
+                "github_url": "https://github.com/your-org/payment-service/blob/main/stripe_client.py#L87",
+            },
+        ],
+        jira_ticket_key="OPS-143",
+        jira_ticket_url="https://your-jira.atlassian.net/browse/OPS-143",
+        channels_sent=["#payments-alerts", "#incidents"],
+    )
+
+    db.add(brief)
+    await db.commit()
+    await db.refresh(brief)
+
+    logger.info("Demo RRT brief seeded for tenant=%s brief_id=%s", tid, brief_id)
+    return _to_out(brief)
+
+
 # ── Delete brief ──────────────────────────────────────────────────────────────
 @router.delete("/{brief_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_rrt_brief(
