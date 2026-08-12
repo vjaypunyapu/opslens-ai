@@ -3,9 +3,9 @@ import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { useAuth } from "@clerk/nextjs";
 import {
-  AlertTriangle, Plus, RefreshCw, Search, ChevronRight,
+  AlertTriangle, RefreshCw, Search, ChevronRight,
   Clock, CheckCircle, Loader2, Zap, GitBranch, MessageSquare,
-  FileText, Activity, X, ExternalLink, Play, Database
+  FileText, Activity, X, ExternalLink
 } from "lucide-react";
 import { incidentsApi, logOpsApi, demoApi, rrtBriefsApi, ApiError, Incident, TimelineEvent, RRTBrief } from "@/lib/api";
 import { toast } from "sonner";
@@ -1198,13 +1198,7 @@ export default function IncidentsPage() {
   const [filterStatus, setFilterStatus] = useState("");
   const [filterSeverity, setFilterSeverity] = useState("");
   const [selected, setSelected] = useState<Incident | null>(null);
-  const [showNew, setShowNew] = useState(false);
   const [showSimulate, setShowSimulate] = useState(false);
-  const [showScenario, setShowScenario] = useState(false);
-  const [seeding, setSeeding] = useState(false);
-  const [seedMsg, setSeedMsg] = useState<string | null>(null);
-  const [seedStatus, setSeedStatus] = useState<null | { db_documents: { found: number; expected: number; done: number; pending: number; details: {source_id:string; source_type:string; embedding_status:string; chunk_count:number|null}[] }; qdrant: { url: string; reachable: boolean; collection: string; vector_count: number; error: string|null }; ready_for_demo: boolean; next_step: string }>(null);
-  const [checkingStatus, setCheckingStatus] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -1240,15 +1234,6 @@ export default function IncidentsPage() {
   }, [getToken, filterStatus, filterSeverity]);
 
   useEffect(() => { load(); }, [load]);
-
-  async function handleCreate(data: object) {
-    const token = await getToken();
-    if (!token) return;
-    const inc = await incidentsApi.create(token, data as Parameters<typeof incidentsApi.create>[1]);
-    setIncidents(prev => [inc, ...prev]);
-    setShowNew(false);
-    setSelected(inc);
-  }
 
   async function handleInvestigate() {
     if (!selected) return;
@@ -1322,35 +1307,6 @@ export default function IncidentsPage() {
     return await logOpsApi.simulate(token, data);
   }
 
-  async function handleSeedDemo() {
-    const token = await getToken();
-    if (!token) return;
-    setSeeding(true); setSeedMsg(null);
-    try {
-      const res = await demoApi.seedDemoData(token);
-      setSeedMsg(res.message);
-    } catch (e: unknown) {
-      setSeedMsg(e instanceof Error ? e.message : "Seeding failed");
-    } finally {
-      setSeeding(false);
-      setTimeout(() => setSeedMsg(null), 8000);
-    }
-  }
-
-  async function handleCheckSeedStatus() {
-    const token = await getToken();
-    if (!token) return;
-    setCheckingStatus(true);
-    try {
-      const s = await demoApi.seedStatus(token);
-      setSeedStatus(s);
-    } catch (e: unknown) {
-      setSeedMsg(e instanceof Error ? e.message : "Status check failed");
-    } finally {
-      setCheckingStatus(false);
-    }
-  }
-
   async function refreshSelected() {
     if (!selected) return;
     const token = await getToken();
@@ -1393,7 +1349,7 @@ export default function IncidentsPage() {
               Incidents
             </h1>
             <p style={{ margin: 0, color: "#475569", fontSize: "14px" }}>
-              Manually declare and investigate incidents. For errors detected automatically, see <Link href="/rrt-briefs" style={{ color: "#2dd4bf", textDecoration: "none" }}>Auto-detected</Link>.
+              Incidents detected automatically by OpsLens AI. For all auto-detected briefs, see <Link href="/rrt-briefs" style={{ color: "#2dd4bf", textDecoration: "none" }}>Auto-detected</Link>.
             </p>
           </div>
           <div style={{ display: "flex", gap: "10px" }}>
@@ -1404,15 +1360,6 @@ export default function IncidentsPage() {
                 display: "flex", alignItems: "center", gap: "6px" }}>
               <RefreshCw size={14} /> Refresh
             </button>
-            <button onClick={handleSeedDemo} disabled={seeding}
-              title="Seed Jira tickets, GitHub PRs, and Slack threads as demo context — they'll appear in RRT brief related items"
-              style={{ padding: "10px 16px", borderRadius: "8px",
-                background: "rgba(167,139,250,0.12)", border: "1px solid rgba(167,139,250,0.3)",
-                color: "#a78bfa", fontSize: "13px", fontWeight: 600,
-                cursor: seeding ? "not-allowed" : "pointer", opacity: seeding ? 0.6 : 1,
-                display: "flex", alignItems: "center", gap: "6px" }}>
-              <Database size={13} /> {seeding ? "Seeding…" : "Seed Demo Data"}
-            </button>
             <button onClick={() => setShowSimulate(true)}
               style={{ padding: "10px 18px", borderRadius: "8px",
                 background: "rgba(20,184,166,0.15)", border: "1px solid rgba(20,184,166,0.4)",
@@ -1420,92 +1367,8 @@ export default function IncidentsPage() {
                 display: "flex", alignItems: "center", gap: "8px" }}>
               <Zap size={14} /> Simulate Alert
             </button>
-            <button onClick={() => setShowScenario(true)}
-              title="Run a real code scenario that generates a live traceback, logs it to Railway, and triggers the full RRT brief pipeline"
-              style={{ padding: "10px 18px", borderRadius: "8px",
-                background: "rgba(239,68,68,0.13)", border: "1px solid rgba(239,68,68,0.35)",
-                color: "#f87171", fontSize: "13px", fontWeight: 600, cursor: "pointer",
-                display: "flex", alignItems: "center", gap: "8px" }}>
-              <Play size={14} /> Live Demo
-            </button>
-            <button onClick={() => setShowNew(true)}
-              style={{ padding: "10px 18px", borderRadius: "8px",
-                background: "#ef4444", border: "none", color: "#fff",
-                fontSize: "13px", fontWeight: 600, cursor: "pointer",
-                display: "flex", alignItems: "center", gap: "8px" }}>
-              <Plus size={14} /> Declare Incident
-            </button>
           </div>
         </div>
-
-        {/* Seed result + status panel */}
-        {(seedMsg || seedStatus) && (
-          <div style={{ marginBottom: "16px", padding: "14px 16px", borderRadius: "8px",
-            background: "rgba(167,139,250,0.07)", border: "1px solid rgba(167,139,250,0.2)",
-            fontSize: "13px" }}>
-            {seedMsg && (
-              <div style={{ color: "#c4b5fd", display: "flex", gap: "8px", alignItems: "flex-start", marginBottom: seedStatus ? "12px" : 0 }}>
-                <Database size={14} style={{ marginTop: "1px", flexShrink: 0 }} />
-                {seedMsg}
-              </div>
-            )}
-            {seedStatus && (
-              <div>
-                {/* Summary row */}
-                <div style={{ display: "flex", gap: "20px", marginBottom: "10px", flexWrap: "wrap" }}>
-                  <span style={{ color: seedStatus.db_documents.found === seedStatus.db_documents.expected ? "#4ade80" : "#f87171" }}>
-                    DB: {seedStatus.db_documents.found}/{seedStatus.db_documents.expected} docs
-                  </span>
-                  <span style={{ color: seedStatus.db_documents.done === seedStatus.db_documents.expected ? "#4ade80" : "#fbbf24" }}>
-                    Embedded: {seedStatus.db_documents.done}/{seedStatus.db_documents.expected}
-                    {seedStatus.db_documents.pending > 0 && <span style={{ color: "#fbbf24" }}> ({seedStatus.db_documents.pending} pending)</span>}
-                  </span>
-                  <span style={{ color: seedStatus.qdrant.reachable ? "#4ade80" : "#f87171" }}>
-                    Qdrant: {seedStatus.qdrant.reachable ? `✓ ${seedStatus.qdrant.vector_count} vectors` : `✗ unreachable`}
-                  </span>
-                  <span style={{ color: "#64748b", fontFamily: "monospace", fontSize: "11px" }}>
-                    {seedStatus.qdrant.collection}
-                  </span>
-                </div>
-                {/* Next step */}
-                <div style={{ color: seedStatus.ready_for_demo ? "#4ade80" : "#fbbf24", fontWeight: 600, marginBottom: "8px" }}>
-                  {seedStatus.ready_for_demo ? "✓ Ready for demo" : `→ ${seedStatus.next_step}`}
-                </div>
-                {/* Qdrant error */}
-                {seedStatus.qdrant.error && (
-                  <div style={{ color: "#f87171", fontFamily: "monospace", fontSize: "11px", marginBottom: "8px" }}>
-                    Qdrant error: {seedStatus.qdrant.error}
-                  </div>
-                )}
-                {/* Doc details */}
-                <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
-                  {seedStatus.db_documents.details.map(d => (
-                    <span key={d.source_id} style={{
-                      fontSize: "11px", padding: "2px 8px", borderRadius: "4px", fontFamily: "monospace",
-                      background: d.embedding_status === "done" ? "rgba(74,222,128,0.1)" : "rgba(251,191,36,0.1)",
-                      border: `1px solid ${d.embedding_status === "done" ? "rgba(74,222,128,0.3)" : "rgba(251,191,36,0.3)"}`,
-                      color: d.embedding_status === "done" ? "#4ade80" : "#fbbf24",
-                    }}>
-                      {d.source_type}:{d.source_id} · {d.embedding_status}{d.chunk_count != null ? ` (${d.chunk_count} chunks)` : ""}
-                    </span>
-                  ))}
-                </div>
-                <button onClick={() => setSeedStatus(null)} style={{ marginTop: "10px", background: "none",
-                  border: "none", color: "#475569", cursor: "pointer", fontSize: "12px" }}>Dismiss</button>
-              </div>
-            )}
-          </div>
-        )}
-        {/* Check status button (shown after seeding) */}
-        {!seedStatus && (
-          <div style={{ marginBottom: "8px" }}>
-            <button onClick={handleCheckSeedStatus} disabled={checkingStatus}
-              style={{ background: "none", border: "none", color: "#475569", fontSize: "12px",
-                cursor: checkingStatus ? "not-allowed" : "pointer", textDecoration: "underline", padding: 0 }}>
-              {checkingStatus ? "Checking…" : "Check demo data status"}
-            </button>
-          </div>
-        )}
 
         {/* Stats strip */}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
@@ -1575,11 +1438,11 @@ export default function IncidentsPage() {
                 : "Declare your first incident to get started."}
             </p>
             {!search && !filterStatus && !filterSeverity && (
-              <button onClick={() => setShowNew(true)}
-                style={{ padding: "12px 24px", borderRadius: "8px", background: "#ef4444",
-                  border: "none", color: "#fff", fontSize: "14px",
-                  fontWeight: 600, cursor: "pointer" }}>
-                Declare Incident
+              <button onClick={() => setShowSimulate(true)}
+                style={{ padding: "12px 24px", borderRadius: "8px",
+                  background: "rgba(20,184,166,0.15)", border: "1px solid rgba(20,184,166,0.4)",
+                  color: "#2dd4bf", fontSize: "14px", fontWeight: 600, cursor: "pointer" }}>
+                ⚡ Simulate Alert
               </button>
             )}
           </div>
@@ -1647,12 +1510,6 @@ export default function IncidentsPage() {
           onClose={() => setShowSimulate(false)}
           onSimulate={handleSimulate}
         />
-      )}
-      {showScenario && (
-        <DemoScenarioModal onClose={() => setShowScenario(false)} />
-      )}
-      {showNew && (
-        <NewIncidentModal onClose={() => setShowNew(false)} onCreate={handleCreate} />
       )}
       {selected && (
         <IncidentDetail
