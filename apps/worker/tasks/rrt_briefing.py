@@ -1127,16 +1127,53 @@ async def _upsert_incident_from_brief(
 
 
 # ── Existing brief lookup (for demo / pre-seeded briefs) ─────────────────────
+async def _find_existing_brief_by_id(tenant_id: str, brief_id: str) -> dict | None:
+    """Return a dict of an existing RRTBrief looked up by primary key, or None."""
+    from apps.worker.db import AsyncSession
+    from apps.api.models.rrt_brief import RRTBrief
+    import sqlalchemy as sa
+
+    if not brief_id:
+        return None
+    try:
+        async with AsyncSession() as db:
+            row = await db.execute(
+                sa.select(RRTBrief).where(
+                    RRTBrief.id == brief_id,
+                    RRTBrief.tenant_id == tenant_id,
+                )
+            )
+            brief = row.scalars().first()
+            if brief is None:
+                logger.warning("_find_existing_brief_by_id: brief %s not found for tenant %s", brief_id[:8], tenant_id)
+                return None
+            logger.info("_find_existing_brief_by_id: found seeded brief %s", brief_id[:8])
+            return {
+                "id": str(brief.id),
+                "title": brief.title,
+                "what_happened": brief.what_happened,
+                "impact": brief.impact,
+                "suspected_cause": brief.suspected_cause,
+                "next_actions": list(brief.next_actions or []),
+                "related_items": list(brief.related_items or []),
+                "code_frames": list(brief.code_frames or []),
+                "jira_ticket_key": brief.jira_ticket_key,
+            }
+    except Exception as exc:
+        logger.exception("_find_existing_brief_by_id failed: %s", exc)
+        return None
+
+
 async def _find_existing_brief(tenant_id: str, error_signature: str) -> dict | None:
     """Return a dict of an existing RRTBrief with matching error_signature, or None."""
-    from apps.worker.db import AsyncSession as WorkerSession
+    from apps.worker.db import AsyncSession
     from apps.api.models.rrt_brief import RRTBrief
     import sqlalchemy as sa
 
     if not error_signature:
         return None
     try:
-        async with WorkerSession() as db:
+        async with AsyncSession() as db:
             row = await db.execute(
                 sa.select(RRTBrief).where(
                     RRTBrief.tenant_id == tenant_id,
@@ -1152,13 +1189,13 @@ async def _find_existing_brief(tenant_id: str, error_signature: str) -> dict | N
                 "what_happened": brief.what_happened,
                 "impact": brief.impact,
                 "suspected_cause": brief.suspected_cause,
-                "next_actions": brief.next_actions,
-                "related_items": brief.related_items,
-                "code_frames": brief.code_frames,
+                "next_actions": list(brief.next_actions or []),
+                "related_items": list(brief.related_items or []),
+                "code_frames": list(brief.code_frames or []),
                 "jira_ticket_key": brief.jira_ticket_key,
             }
     except Exception as exc:
-        logger.warning("_find_existing_brief failed (non-fatal): %s", exc)
+        logger.exception("_find_existing_brief failed: %s", exc)
         return None
 
 
@@ -1403,10 +1440,12 @@ def generate_rrt_brief(
         )
 
         # ── Pre-seeded brief check ─────────────────────────────────────────────
-        # If a brief with the same error_signature was already seeded (e.g. by the
-        # simulate_alert demo endpoint), use its rich data for the Slack notification
-        # and skip creating a duplicate placeholder brief.
-        existing_brief = _run_async(_find_existing_brief(tenant_id, error_signature))
+        # If the simulate_alert endpoint seeded a demo brief, it tags the
+        # error_group_dict with the brief's ID so we can find it reliably by PK
+        # instead of doing a fragile signature-based lookup.
+        seeded_brief_id = error_group_dict.get("seeded_brief_id")
+        existing_brief = _run_async(_find_existing_brief_by_id(tenant_id, seeded_brief_id)) \
+            if seeded_brief_id else None
         if existing_brief is not None:
             logger.info(
                 "RRT brief: found existing seeded brief %s for sig=%s — "

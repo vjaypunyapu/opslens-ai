@@ -825,6 +825,9 @@ async def simulate_alert(
                 db.add(_brief)
                 await db.commit()
                 logger.info("Auto-seeded demo RRT brief for tenant=%s sig=%s", ctx.tenant_id, signature)
+                # Tag the error_group_dict so Celery can find this brief by ID
+                # instead of doing a fragile signature lookup
+                error_group_dict["seeded_brief_id"] = _brief_id
         except Exception as _seed_exc:
             # Never block the simulation if seeding fails
             logger.warning("Demo brief auto-seed failed (non-fatal): %s", _seed_exc)
