@@ -970,6 +970,44 @@ async def simulate_alert(
             else:
                 logger.warning("Demo Slack POST returned %s: %s", _resp.status_code, _resp.text[:200])
 
+            # ── Ingest related items into Qdrant so chat RAG works ─────────────
+            # POST each related_item as a CanonicalDocument so questions like
+            # "what are the Jira tickets?" return real answers from the vector store.
+            try:
+                from ..db.models import CanonicalDocument
+                import hashlib as _hl3
+                for _item in _brief_data.get("related_items", []):
+                    _content = (
+                        f"{_item.get('title', '')}\n\n"
+                        f"{_item.get('snippet', '')}\n\n"
+                        f"Related to incident: {_brief_data['title']}\n"
+                        f"Jira ticket: {_jira_key}"
+                    )
+                    _chash = _hl3.sha256(_content.encode()).hexdigest()
+                    _src_type = _item.get("source_type", "jira")
+                    _src_id   = _item.get("url") or f"demo-{_brief_id[:8]}-{_src_type}"
+                    _existing_doc = await db.execute(
+                        sa.select(CanonicalDocument.id).where(
+                            CanonicalDocument.tenant_id == ctx.tenant_uuid,
+                            CanonicalDocument.content_hash == _chash,
+                        ).limit(1)
+                    )
+                    if not _existing_doc.scalar_one_or_none():
+                        db.add(CanonicalDocument(
+                            tenant_id=ctx.tenant_uuid,
+                            source_type=_src_type,
+                            source_id=_src_id,
+                            title=_item.get("title", ""),
+                            content=_content,
+                            content_hash=_chash,
+                            doc_metadata={"demo": True, "brief_id": _brief_id, "url": _item.get("url")},
+                            embedding_status="pending",
+                        ))
+                await db.commit()
+                logger.info("Demo docs staged for embedding for scenario=%s", _brief_id[:8])
+            except Exception as _ingest_exc:
+                logger.warning("Demo doc ingest failed (non-fatal): %s", _ingest_exc)
+
         except Exception as _seed_exc:
             logger.exception("Demo brief seed/notify failed (non-fatal): %s", _seed_exc)
 
