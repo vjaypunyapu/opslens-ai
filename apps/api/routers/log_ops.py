@@ -716,6 +716,9 @@ async def simulate_alert(
             import hashlib as _hl2
 
             _brief_id = "de1195f3-5fe2-4aed-baf8-32a5002a3527"
+            # Always tag error_group_dict so generate_rrt_brief uses this brief's
+            # rich data regardless of whether we create it now or it already exists.
+            error_group_dict["seeded_brief_id"] = _brief_id
             _existing = await db.execute(
                 sa.select(_RRTBrief).where(
                     _RRTBrief.tenant_id == ctx.tenant_id,
