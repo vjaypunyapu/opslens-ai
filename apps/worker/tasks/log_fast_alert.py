@@ -836,7 +836,8 @@ def enrich_and_alert(
     3. Dispatch RRT brief generation (structured incident artifact)
     """
     try:
-        eg = ErrorGroup(**error_group_dict)
+        _eg_fields = {"signature", "first_line", "count", "sample_lines"}
+        eg = ErrorGroup(**{k: v for k, v in error_group_dict.items() if k in _eg_fields})
 
         # 1. RAG enrichment
         related = []

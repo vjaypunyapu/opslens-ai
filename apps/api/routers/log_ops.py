@@ -716,13 +716,19 @@ async def simulate_alert(
             import hashlib as _hl2
 
             _brief_id = "de1195f3-5fe2-4aed-baf8-32a5002a3527"
-            _existing = await db.execute(
+            # Always tag error_group_dict so generate_rrt_brief uses this brief's
+            # rich data regardless of whether we create it now or it already exists.
+            error_group_dict["seeded_brief_id"] = _brief_id
+            # Also tell generate_rrt_brief to skip its own Slack send (we do it here)
+            error_group_dict["skip_slack"] = True
+            _existing_row = await db.execute(
                 sa.select(_RRTBrief).where(
                     _RRTBrief.tenant_id == ctx.tenant_id,
                     _RRTBrief.id == _brief_id,
                 )
             )
-            if not _existing.scalar_one_or_none():
+            _existing = _existing_row.scalar_one_or_none()
+            if not _existing:
                 from datetime import datetime as _dt, timezone as _tz
                 _now = _dt.now(tz=_tz.utc)
                 _brief = _RRTBrief(
@@ -825,9 +831,45 @@ async def simulate_alert(
                 db.add(_brief)
                 await db.commit()
                 logger.info("Auto-seeded demo RRT brief for tenant=%s sig=%s", ctx.tenant_id, signature)
+                _existing = _brief  # use the just-created brief object
+
+            # ── Send Slack directly from API (bypass Celery for demo) ──────────
+            # Self-contained: hardcoded rich payload, single httpx POST.
+            # No ORM attribute access, no shared modules, cannot silently fail.
+            try:
+                import httpx as _httpx
+                _now_str = __import__("datetime").datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+                _demo_payload = {
+                    "text": "🔴 [OPEN] Incident Brief — [DEMO] payment-service: PaymentError — Stripe API timeout",
+                    "blocks": [
+                        {"type": "header", "text": {"type": "plain_text", "text": "🔴 [OPEN] Incident Brief — [DEMO] payment-service: PaymentError — Stripe API timeout after 30s"}},
+                        {"type": "context", "elements": [{"type": "mrkdwn", "text": f"Detected *{_now_str}*  •  Occurred *{body.error_count}x* in last 5 min  •  Owner: *Payments Team*  •  Brief ID: `de1195f3`"}]},
+                        {"type": "divider"},
+                        {"type": "section", "fields": [
+                            {"type": "mrkdwn", "text": "*📋 What Happened*\nThe payment-service began throwing PaymentError: Stripe API timeout after 30s at 00:29 UTC. Retries were exhausted without a successful response from Stripe. The affected card token was card_id=card_abc123. OpsLens detected multiple occurrences within a 5-minute window."},
+                            {"type": "mrkdwn", "text": f"*⚡ Impact*\nAll payment processing requests routed through the affected Stripe integration are failing. Customers attempting checkout are receiving payment failure errors. Revenue impact: active — every failed transaction is a lost conversion."},
+                        ]},
+                        {"type": "divider"},
+                        {"type": "section", "text": {"type": "mrkdwn", "text": "*🔍 Suspected Cause*\nMost likely: Stripe API degradation — P99 latency elevated beyond 30s timeout threshold. Secondary: PR #312 reduced Stripe client timeout from 60s → 30s two hours before incident — possible regression. Check Stripe status page and consider reverting timeout change as immediate mitigation."}},
+                        {"type": "divider"},
+                        {"type": "section", "text": {"type": "mrkdwn", "text": "*📎 Related Context*\n🎫 *<https://your-jira.atlassian.net/browse/OPS-142|OPS-142: Payment timeouts during peak load — Stripe API degradation>*\n  _Recurring Stripe API timeouts observed during peak traffic. Fix: jitter + backoff, increase timeout to 60s with circuit breaker._\n🐙 *<https://github.com/your-org/payment-service/pull/312|PR #312: Add retry logic for Stripe webhook delivery>*\n  _Merged 2 hours before incident. Changed Stripe client timeout from 60s to 30s. May have introduced the regression._\n💬 *#payments-alerts — Stripe elevated error rates*\n  _stripe_bot: ⚠️ Elevated API error rates on /v1/charges. P99 latency: 28s (normal: 800ms). Started 00:24 UTC._"}},
+                        {"type": "divider"},
+                        {"type": "section", "text": {"type": "mrkdwn", "text": "*✅ Next Actions*\n1. Check Stripe status page: https://status.stripe.com — active API incident?\n2. Pull payment-service logs — filter PaymentError + Stripe timeout, inspect full stack trace\n3. Review recent deployments to payment-service in the last 2 hours (PR #312 changed timeout 60s→30s)\n4. Test with a fresh card token to rule out token-specific vs systemic failure\n5. Check NAT gateway / outbound network metrics for connection exhaustion\n6. Confirm retry logic uses exponential backoff with jitter\n7. Escalate to Payments Team on-call if not resolved within 15 minutes"}},
+                        {"type": "divider"},
+                        {"type": "section", "text": {"type": "mrkdwn", "text": f"🎫 Jira ticket: *<https://your-jira.atlassian.net/browse/OPS-143|OPS-143>*  •  <https://opslens.ai/incidents/{_brief_id}|View full brief>"}},
+                    ],
+                }
+                _resp = _httpx.post(webhook, json=_demo_payload, timeout=10)
+                if _resp.status_code == 200:
+                    logger.info("Demo Slack brief sent directly from API for tenant=%s", ctx.tenant_id)
+                else:
+                    logger.warning("Demo Slack POST returned %s: %s", _resp.status_code, _resp.text[:200])
+            except Exception as _slack_exc:
+                logger.exception("Demo direct Slack send failed (non-fatal): %s", _slack_exc)
+
         except Exception as _seed_exc:
             # Never block the simulation if seeding fails
-            logger.warning("Demo brief auto-seed failed (non-fatal): %s", _seed_exc)
+            logger.exception("Demo brief auto-seed failed (non-fatal): %s", _seed_exc)
 
     # ── Dispatch async pipeline ───────────────────────────────────────────────
     enrich_task_id = None
