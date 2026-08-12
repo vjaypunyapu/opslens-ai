@@ -719,13 +719,16 @@ async def simulate_alert(
             # Always tag error_group_dict so generate_rrt_brief uses this brief's
             # rich data regardless of whether we create it now or it already exists.
             error_group_dict["seeded_brief_id"] = _brief_id
-            _existing = await db.execute(
+            # Also tell generate_rrt_brief to skip its own Slack send (we do it here)
+            error_group_dict["skip_slack"] = True
+            _existing_row = await db.execute(
                 sa.select(_RRTBrief).where(
                     _RRTBrief.tenant_id == ctx.tenant_id,
                     _RRTBrief.id == _brief_id,
                 )
             )
-            if not _existing.scalar_one_or_none():
+            _existing = _existing_row.scalar_one_or_none()
+            if not _existing:
                 from datetime import datetime as _dt, timezone as _tz
                 _now = _dt.now(tz=_tz.utc)
                 _brief = _RRTBrief(
@@ -828,12 +831,46 @@ async def simulate_alert(
                 db.add(_brief)
                 await db.commit()
                 logger.info("Auto-seeded demo RRT brief for tenant=%s sig=%s", ctx.tenant_id, signature)
-                # Tag the error_group_dict so Celery can find this brief by ID
-                # instead of doing a fragile signature lookup
-                error_group_dict["seeded_brief_id"] = _brief_id
+                _existing = _brief  # use the just-created brief object
+
+            # ── Send Slack directly from API (bypass Celery for demo) ──────────
+            # Regardless of whether the brief was just created or already existed,
+            # send the Slack notification synchronously here with the rich seeded
+            # data — no Celery serialization, no timing issues.
+            if _existing is not None:
+                try:
+                    from apps.api.services.notifications import (
+                        build_rrt_brief_payload, send_webhook as _send_slack,
+                    )
+                    from datetime import datetime as _dt2, timezone as _tz2
+                    _fields = {
+                        "title":           _existing.title,
+                        "what_happened":   _existing.what_happened,
+                        "impact":          _existing.impact,
+                        "suspected_cause": _existing.suspected_cause,
+                        "next_actions":    list(_existing.next_actions or []),
+                    }
+                    _payload = build_rrt_brief_payload(
+                        brief_id=str(_existing.id),
+                        fields=_fields,
+                        related_items=list(_existing.related_items or []),
+                        owner_team=_existing.owner_team,
+                        detected_at=_dt2.now(tz=_tz2.utc),
+                        error_count=body.error_count,
+                        window_minutes=5,
+                        timeline_events=[],
+                    )
+                    _ok = _send_slack(webhook, _payload)
+                    if _ok:
+                        logger.info("Demo Slack brief sent directly from API for tenant=%s", ctx.tenant_id)
+                    else:
+                        logger.warning("Demo Slack brief send failed for tenant=%s", ctx.tenant_id)
+                except Exception as _slack_exc:
+                    logger.exception("Demo direct Slack send failed (non-fatal): %s", _slack_exc)
+
         except Exception as _seed_exc:
             # Never block the simulation if seeding fails
-            logger.warning("Demo brief auto-seed failed (non-fatal): %s", _seed_exc)
+            logger.exception("Demo brief auto-seed failed (non-fatal): %s", _seed_exc)
 
     # ── Dispatch async pipeline ───────────────────────────────────────────────
     enrich_task_id = None

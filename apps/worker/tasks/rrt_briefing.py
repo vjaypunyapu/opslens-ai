@@ -1440,10 +1440,17 @@ def generate_rrt_brief(
         )
 
         # ── Pre-seeded brief check ─────────────────────────────────────────────
-        # If the simulate_alert endpoint seeded a demo brief, it tags the
-        # error_group_dict with the brief's ID so we can find it reliably by PK
-        # instead of doing a fragile signature-based lookup.
+        # If the simulate_alert endpoint already sent Slack and seeded the brief,
+        # skip the LLM call and Slack send entirely — just log and return.
         seeded_brief_id = error_group_dict.get("seeded_brief_id")
+        skip_slack      = error_group_dict.get("skip_slack", False)
+        if seeded_brief_id and skip_slack:
+            logger.info(
+                "generate_rrt_brief: demo brief %s already seeded + Slack sent by API — skipping",
+                seeded_brief_id[:8],
+            )
+            return {"brief_id": seeded_brief_id, "channels_sent": [], "skipped": True}
+
         existing_brief = _run_async(_find_existing_brief_by_id(tenant_id, seeded_brief_id)) \
             if seeded_brief_id else None
         if existing_brief is not None:
