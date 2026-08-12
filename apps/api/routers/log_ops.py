@@ -834,39 +834,38 @@ async def simulate_alert(
                 _existing = _brief  # use the just-created brief object
 
             # ── Send Slack directly from API (bypass Celery for demo) ──────────
-            # Regardless of whether the brief was just created or already existed,
-            # send the Slack notification synchronously here with the rich seeded
-            # data — no Celery serialization, no timing issues.
-            if _existing is not None:
-                try:
-                    from apps.api.services.notifications import (
-                        build_rrt_brief_payload, send_webhook as _send_slack,
-                    )
-                    from datetime import datetime as _dt2, timezone as _tz2
-                    _fields = {
-                        "title":           _existing.title,
-                        "what_happened":   _existing.what_happened,
-                        "impact":          _existing.impact,
-                        "suspected_cause": _existing.suspected_cause,
-                        "next_actions":    list(_existing.next_actions or []),
-                    }
-                    _payload = build_rrt_brief_payload(
-                        brief_id=str(_existing.id),
-                        fields=_fields,
-                        related_items=list(_existing.related_items or []),
-                        owner_team=_existing.owner_team,
-                        detected_at=_dt2.now(tz=_tz2.utc),
-                        error_count=body.error_count,
-                        window_minutes=5,
-                        timeline_events=[],
-                    )
-                    _ok = _send_slack(webhook, _payload)
-                    if _ok:
-                        logger.info("Demo Slack brief sent directly from API for tenant=%s", ctx.tenant_id)
-                    else:
-                        logger.warning("Demo Slack brief send failed for tenant=%s", ctx.tenant_id)
-                except Exception as _slack_exc:
-                    logger.exception("Demo direct Slack send failed (non-fatal): %s", _slack_exc)
+            # Self-contained: hardcoded rich payload, single httpx POST.
+            # No ORM attribute access, no shared modules, cannot silently fail.
+            try:
+                import httpx as _httpx
+                _now_str = __import__("datetime").datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+                _demo_payload = {
+                    "text": "🔴 [OPEN] Incident Brief — [DEMO] payment-service: PaymentError — Stripe API timeout",
+                    "blocks": [
+                        {"type": "header", "text": {"type": "plain_text", "text": "🔴 [OPEN] Incident Brief — [DEMO] payment-service: PaymentError — Stripe API timeout after 30s"}},
+                        {"type": "context", "elements": [{"type": "mrkdwn", "text": f"Detected *{_now_str}*  •  Occurred *{body.error_count}x* in last 5 min  •  Owner: *Payments Team*  •  Brief ID: `de1195f3`"}]},
+                        {"type": "divider"},
+                        {"type": "section", "fields": [
+                            {"type": "mrkdwn", "text": "*📋 What Happened*\nThe payment-service began throwing PaymentError: Stripe API timeout after 30s at 00:29 UTC. Retries were exhausted without a successful response from Stripe. The affected card token was card_id=card_abc123. OpsLens detected multiple occurrences within a 5-minute window."},
+                            {"type": "mrkdwn", "text": f"*⚡ Impact*\nAll payment processing requests routed through the affected Stripe integration are failing. Customers attempting checkout are receiving payment failure errors. Revenue impact: active — every failed transaction is a lost conversion."},
+                        ]},
+                        {"type": "divider"},
+                        {"type": "section", "text": {"type": "mrkdwn", "text": "*🔍 Suspected Cause*\nMost likely: Stripe API degradation — P99 latency elevated beyond 30s timeout threshold. Secondary: PR #312 reduced Stripe client timeout from 60s → 30s two hours before incident — possible regression. Check Stripe status page and consider reverting timeout change as immediate mitigation."}},
+                        {"type": "divider"},
+                        {"type": "section", "text": {"type": "mrkdwn", "text": "*📎 Related Context*\n🎫 *<https://your-jira.atlassian.net/browse/OPS-142|OPS-142: Payment timeouts during peak load — Stripe API degradation>*\n  _Recurring Stripe API timeouts observed during peak traffic. Fix: jitter + backoff, increase timeout to 60s with circuit breaker._\n🐙 *<https://github.com/your-org/payment-service/pull/312|PR #312: Add retry logic for Stripe webhook delivery>*\n  _Merged 2 hours before incident. Changed Stripe client timeout from 60s to 30s. May have introduced the regression._\n💬 *#payments-alerts — Stripe elevated error rates*\n  _stripe_bot: ⚠️ Elevated API error rates on /v1/charges. P99 latency: 28s (normal: 800ms). Started 00:24 UTC._"}},
+                        {"type": "divider"},
+                        {"type": "section", "text": {"type": "mrkdwn", "text": "*✅ Next Actions*\n1. Check Stripe status page: https://status.stripe.com — active API incident?\n2. Pull payment-service logs — filter PaymentError + Stripe timeout, inspect full stack trace\n3. Review recent deployments to payment-service in the last 2 hours (PR #312 changed timeout 60s→30s)\n4. Test with a fresh card token to rule out token-specific vs systemic failure\n5. Check NAT gateway / outbound network metrics for connection exhaustion\n6. Confirm retry logic uses exponential backoff with jitter\n7. Escalate to Payments Team on-call if not resolved within 15 minutes"}},
+                        {"type": "divider"},
+                        {"type": "section", "text": {"type": "mrkdwn", "text": f"🎫 Jira ticket: *<https://your-jira.atlassian.net/browse/OPS-143|OPS-143>*  •  <https://opslens.ai/incidents/{_brief_id}|View full brief>"}},
+                    ],
+                }
+                _resp = _httpx.post(webhook, json=_demo_payload, timeout=10)
+                if _resp.status_code == 200:
+                    logger.info("Demo Slack brief sent directly from API for tenant=%s", ctx.tenant_id)
+                else:
+                    logger.warning("Demo Slack POST returned %s: %s", _resp.status_code, _resp.text[:200])
+            except Exception as _slack_exc:
+                logger.exception("Demo direct Slack send failed (non-fatal): %s", _slack_exc)
 
         except Exception as _seed_exc:
             # Never block the simulation if seeding fails
