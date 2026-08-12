@@ -280,6 +280,99 @@ def seed_rbac_role(base: str, tenant: str) -> bool:
     return False
 
 
+def seed_demo_rrt_brief(base: str, tenant: str) -> bool:
+    print(f"\n{c('bold','── Demo RRT Brief (payment-service Stripe timeout)')}")
+    url = f"{base}/api/v1/rrt-briefs/seed-demo?tenant_id={tenant}"
+    status, resp = _request("POST", url, token="dev-token")
+    if status == 201:
+        ok(f"Demo RRT brief seeded: [{resp.get('jira_ticket_key','?')}] {resp.get('title','')[:70]}")
+        ok(f"  Brief ID : {resp.get('id','?')}")
+        ok(f"  Jira URL : {resp.get('jira_ticket_url','?')}")
+        return True
+    elif status == 200:
+        ok(f"Demo brief already existed, refreshed.")
+        return True
+    else:
+        warn(f"Seed demo brief returned {status}: {resp.get('detail', resp)}")
+        return False
+
+
+def seed_demo_qdrant_docs(base: str, tenant: str) -> bool:
+    """
+    Ingest a synthetic Jira doc about Stripe timeouts into Qdrant so that
+    when the real simulate pipeline runs enrichment, it finds rich context.
+    """
+    print(f"\n{c('bold','── Demo Qdrant Context (Jira + Slack docs for RAG enrichment)')}")
+    docs = [
+        {
+            "source_type": "jira",
+            "source_id":   "DEMO-OPS-142",
+            "title":       "OPS-142: Payment timeouts during peak load — Stripe API degradation",
+            "content": (
+                "Recurring Stripe API timeouts observed during peak traffic windows on payment-service. "
+                "PaymentError: Stripe API timeout after 30s — retries exhausted. "
+                "Root cause: missing exponential backoff in payment-service retry logic. "
+                "Stripe /v1/charges endpoint P99 latency elevated to 28s (normal 800ms). "
+                "Fix implemented: jitter + backoff with 60s timeout and circuit breaker. "
+                "Related PR #312 reduced timeout from 60s to 30s — possible regression source. "
+                "Assigned to Payments Team. Status: In Progress."
+            ),
+            "metadata": {
+                "url":        "https://your-jira.atlassian.net/browse/OPS-142",
+                "author":     "payments-team",
+                "created_at": "2026-08-10T14:00:00Z",
+            },
+        },
+        {
+            "source_type": "slack",
+            "source_id":   "DEMO-SLACK-stripe-alert-001",
+            "title":       "#payments-alerts — Stripe elevated error rates (2026-08-12)",
+            "content": (
+                "stripe_bot: ⚠️ Elevated API error rates detected on Stripe /v1/charges endpoint. "
+                "P99 latency: 28s (normal: 800ms). Started approximately 00:24 UTC on 2026-08-12. "
+                "payment-service PaymentError: Stripe API timeout after 30s retries exhausted. "
+                "Stripe status page updated. Engineering investigating. "
+                "Payments Team on-call notified."
+            ),
+            "metadata": {
+                "url":        None,
+                "author":     "stripe_bot",
+                "created_at": "2026-08-12T00:24:00Z",
+            },
+        },
+        {
+            "source_type": "github",
+            "source_id":   "DEMO-PR-312",
+            "title":       "PR #312: Add retry logic for Stripe webhook delivery — payment-service",
+            "content": (
+                "Merged PR #312 into payment-service main branch. "
+                "Changed Stripe client timeout from 60s to 30s to align with API gateway limits. "
+                "Added retry logic for webhook delivery. "
+                "File changed: payment-service/stripe_client.py line 87 function charge_card. "
+                "Timeout parameter reduced: timeout=60 changed to timeout=30. "
+                "This change may have introduced a regression causing PaymentError Stripe API timeout "
+                "when Stripe latency is elevated. Consider reverting as immediate mitigation."
+            ),
+            "metadata": {
+                "url":        "https://github.com/your-org/payment-service/pull/312",
+                "author":     "dev-seed",
+                "created_at": "2026-08-11T22:15:00Z",
+            },
+        },
+    ]
+
+    created = 0
+    for doc in docs:
+        result = post(base, "/api/v1/ingestion", doc, tenant)
+        if result:
+            ok(f"Qdrant doc: [{doc['source_type']}] {doc['title'][:60]}")
+            created += 1
+        else:
+            warn(f"Could not ingest doc: {doc['source_id']} (ingestion endpoint may need worker)")
+
+    return created > 0
+
+
 def check_api(base: str) -> bool:
     print(f"\n{c('bold','── API Health Check')}")
     try:
@@ -321,12 +414,14 @@ def main():
         print(f"  uvicorn apps.api.main:app --reload --port 8080\n")
         sys.exit(1)
 
-    # Step 1–5: seed data
-    rules   = seed_routing_rules(base, tenant, webhook)
-    issues  = seed_known_issues(base, tenant)
-    ret_ok  = seed_retention_policy(base, tenant)
-    events  = seed_timeline_events(base, tenant)
-    role_ok = seed_rbac_role(base, tenant)
+    # Step 1–7: seed data
+    rules      = seed_routing_rules(base, tenant, webhook)
+    issues     = seed_known_issues(base, tenant)
+    ret_ok     = seed_retention_policy(base, tenant)
+    events     = seed_timeline_events(base, tenant)
+    role_ok    = seed_rbac_role(base, tenant)
+    demo_brief = seed_demo_rrt_brief(base, tenant)
+    demo_qdrant = seed_demo_qdrant_docs(base, tenant)
 
     # Summary
     print(f"\n{c('bold', c('green', '── Seed Complete ─────────────────────'))}")
@@ -335,6 +430,8 @@ def main():
     print(f"  Retention policy : {'✓' if ret_ok else '✗'}")
     print(f"  Timeline events  : {events}")
     print(f"  RBAC role        : {'✓' if role_ok else '✗'}")
+    print(f"  Demo RRT brief   : {'✓' if demo_brief else '✗'}")
+    print(f"  Demo Qdrant docs : {'✓' if demo_qdrant else '✗ (start worker to ingest)'}")
 
     print(f"""
 {c('bold','── What to try next ──────────────────────')}

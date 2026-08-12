@@ -7,7 +7,7 @@ import {
   Clock, CheckCircle, Loader2, Zap, GitBranch, MessageSquare,
   FileText, Activity, X, ExternalLink, Play, Database
 } from "lucide-react";
-import { incidentsApi, logOpsApi, demoApi, ApiError, Incident, TimelineEvent } from "@/lib/api";
+import { incidentsApi, logOpsApi, demoApi, rrtBriefsApi, ApiError, Incident, TimelineEvent, RRTBrief } from "@/lib/api";
 import { toast } from "sonner";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -591,10 +591,154 @@ const DEMO_SCENARIOS = [
   },
 ];
 
+// ── Inline RRT Brief panel shown inside the SimulateAlertModal after polling ──
+function InlineBriefPanel({ brief }: { brief: RRTBrief }) {
+  const statusColor = brief.status === "open" ? "#f87171" : brief.status === "investigating" ? "#fb923c" : "#4ade80";
+  const sourceIcon = (t: string) => t === "jira" ? "🎫" : t === "github" ? "🐙" : t === "slack" ? "💬" : "📄";
+
+  return (
+    <div style={{ marginTop: "20px", borderTop: "1px solid rgba(255,255,255,0.08)", paddingTop: "20px" }}>
+      {/* Brief header */}
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "12px", marginBottom: "14px" }}>
+        <div style={{ flex: 1 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
+            <span style={{ fontSize: "10px", fontWeight: 700, color: statusColor, textTransform: "uppercase",
+              background: `${statusColor}18`, border: `1px solid ${statusColor}40`,
+              borderRadius: "4px", padding: "2px 7px" }}>{brief.status}</span>
+            {brief.jira_ticket_key && (
+              <span style={{ fontSize: "10px", fontWeight: 700, color: "#818cf8",
+                background: "rgba(129,140,248,0.12)", border: "1px solid rgba(129,140,248,0.3)",
+                borderRadius: "4px", padding: "2px 7px" }}>🎫 {brief.jira_ticket_key}</span>
+            )}
+          </div>
+          <div style={{ fontSize: "13px", fontWeight: 600, color: "#f1f5f9", lineHeight: 1.4 }}>{brief.title}</div>
+          <div style={{ fontSize: "11px", color: "#64748b", marginTop: "3px" }}>
+            Brief ID: {brief.id.slice(0, 8)} · Detected {new Date(brief.detected_at).toLocaleTimeString()} · Owner: {brief.owner_team || "Unassigned"}
+          </div>
+        </div>
+      </div>
+
+      {/* What happened */}
+      <Section label="📋 What Happened" color="#94a3b8">
+        <p style={{ margin: 0, fontSize: "12.5px", color: "#cbd5e1", lineHeight: 1.6 }}>{brief.what_happened}</p>
+      </Section>
+
+      {/* Impact */}
+      {brief.impact && (
+        <Section label="⚡ Impact" color="#f87171">
+          <p style={{ margin: 0, fontSize: "12.5px", color: "#fca5a5", lineHeight: 1.6 }}>{brief.impact}</p>
+        </Section>
+      )}
+
+      {/* Root cause */}
+      {brief.suspected_cause && (
+        <Section label="🔍 Root Cause Analysis" color="#fb923c">
+          <p style={{ margin: 0, fontSize: "12.5px", color: "#fed7aa", lineHeight: 1.6 }}>{brief.suspected_cause}</p>
+        </Section>
+      )}
+
+      {/* Jira ticket */}
+      {brief.jira_ticket_key && (
+        <Section label="🎫 Jira Ticket" color="#818cf8">
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
+            background: "rgba(129,140,248,0.08)", border: "1px solid rgba(129,140,248,0.2)",
+            borderRadius: "6px", padding: "10px 14px" }}>
+            <div>
+              <div style={{ fontSize: "12px", fontWeight: 700, color: "#a5b4fc" }}>{brief.jira_ticket_key}</div>
+              <div style={{ fontSize: "11px", color: "#64748b", marginTop: "2px" }}>Auto-created by OpsLens AI · Status: Open</div>
+            </div>
+            {brief.jira_ticket_url && (
+              <a href={brief.jira_ticket_url} target="_blank" rel="noreferrer"
+                style={{ fontSize: "11px", color: "#818cf8", textDecoration: "none",
+                  display: "flex", alignItems: "center", gap: "4px" }}>
+                <ExternalLink size={11} /> Open in Jira
+              </a>
+            )}
+          </div>
+        </Section>
+      )}
+
+      {/* Code frames */}
+      {brief.code_frames && brief.code_frames.length > 0 && (
+        <Section label="🐙 Code Context" color="#34d399">
+          {brief.code_frames.map((f, i) => (
+            <div key={i} style={{ marginBottom: "8px", background: "#0f172a",
+              border: "1px solid rgba(52,211,153,0.2)", borderRadius: "6px", padding: "10px 12px" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "6px" }}>
+                <span style={{ fontSize: "11px", color: "#34d399", fontFamily: "monospace" }}>
+                  {f.file}:{f.line} · {f.function}()
+                </span>
+                <span style={{ fontSize: "10px", color: "#475569" }}>{f.last_commit_msg?.slice(0, 50)}</span>
+              </div>
+              <pre style={{ margin: 0, fontSize: "11px", color: "#94a3b8", fontFamily: "monospace",
+                overflowX: "auto", lineHeight: 1.5 }}>{f.snippet}</pre>
+            </div>
+          ))}
+        </Section>
+      )}
+
+      {/* Related context */}
+      {brief.related_items && brief.related_items.length > 0 && (
+        <Section label="📎 Related Context" color="#64748b">
+          {brief.related_items.map((item, i) => (
+            <div key={i} style={{ marginBottom: "8px", background: "rgba(255,255,255,0.03)",
+              border: "1px solid rgba(255,255,255,0.07)", borderRadius: "6px", padding: "10px 12px" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "4px" }}>
+                <span style={{ fontSize: "11px", fontWeight: 600, color: "#94a3b8" }}>
+                  {sourceIcon(item.source_type)} {item.title}
+                </span>
+                {item.url && (
+                  <a href={item.url} target="_blank" rel="noreferrer"
+                    style={{ fontSize: "10px", color: "#475569", textDecoration: "none",
+                      display: "flex", alignItems: "center", gap: "3px" }}>
+                    <ExternalLink size={9} /> View
+                  </a>
+                )}
+              </div>
+              <p style={{ margin: 0, fontSize: "11px", color: "#64748b", lineHeight: 1.5 }}>{item.snippet}</p>
+            </div>
+          ))}
+        </Section>
+      )}
+
+      {/* Next actions */}
+      {brief.next_actions && brief.next_actions.length > 0 && (
+        <Section label="✅ Next Actions" color="#4ade80">
+          <ol style={{ margin: 0, paddingLeft: "18px" }}>
+            {brief.next_actions.map((a, i) => (
+              <li key={i} style={{ fontSize: "12px", color: "#86efac", marginBottom: "5px", lineHeight: 1.5 }}>{a}</li>
+            ))}
+          </ol>
+        </Section>
+      )}
+
+      {/* Footer link */}
+      <div style={{ marginTop: "14px", display: "flex", justifyContent: "flex-end" }}>
+        <Link href="/rrt-briefs" style={{ fontSize: "12px", color: "#2dd4bf",
+          textDecoration: "none", display: "inline-flex", alignItems: "center", gap: "4px" }}>
+          <ExternalLink size={11} /> View all RRT Briefs →
+        </Link>
+      </div>
+    </div>
+  );
+}
+
+function Section({ label, color, children }: { label: string; color: string; children: React.ReactNode }) {
+  return (
+    <div style={{ marginBottom: "12px" }}>
+      <div style={{ fontSize: "10.5px", fontWeight: 700, color, textTransform: "uppercase",
+        letterSpacing: "0.06em", marginBottom: "6px" }}>{label}</div>
+      {children}
+    </div>
+  );
+}
+
+
 function SimulateAlertModal({ onClose, onSimulate }: {
   onClose: () => void;
   onSimulate: (data: { service_name: string; error_message: string; error_count: number; severity: string }) => Promise<import("@/lib/api").SimulateAlertResponse>;
 }) {
+  const { getToken } = useAuth();
   const [form, setForm] = useState({
     service_name: "payment-service",
     error_message: "PaymentError: Stripe API timeout after 30s — retries exhausted for card_id=card_abc123",
@@ -604,10 +748,44 @@ function SimulateAlertModal({ onClose, onSimulate }: {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<import("@/lib/api").SimulateAlertResponse | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [brief, setBrief] = useState<RRTBrief | null>(null);
+  const [polling, setPolling] = useState(false);
+
+  // Poll for the RRT brief after simulation is dispatched
+  useEffect(() => {
+    if (!result?.error_signature) return;
+    const sig = result.error_signature;
+    let attempts = 0;
+    const MAX = 12; // 12 × 3s = 36s max
+    setPolling(true);
+
+    const interval = setInterval(async () => {
+      attempts++;
+      try {
+        const token = await getToken();
+        if (!token) return;
+        const briefs = await rrtBriefsApi.list(token, { limit: 10, days: 1 });
+        const match = briefs.find(b => b.error_signature === sig);
+        if (match) {
+          setBrief(match);
+          setPolling(false);
+          clearInterval(interval);
+          return;
+        }
+      } catch { /* ignore */ }
+      if (attempts >= MAX) {
+        setPolling(false);
+        clearInterval(interval);
+      }
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [result?.error_signature, getToken]);
 
   function applyScenario(s: typeof DEMO_SCENARIOS[0]) {
     setForm(f => ({ ...f, service_name: s.service, error_message: s.message, error_count: s.count }));
     setResult(null);
+    setBrief(null);
     setErr(null);
   }
 
@@ -616,6 +794,7 @@ function SimulateAlertModal({ onClose, onSimulate }: {
     if (!form.service_name.trim() || !form.error_message.trim()) return;
     setLoading(true);
     setErr(null);
+    setBrief(null);
     try {
       const res = await onSimulate(form);
       setResult(res);
@@ -630,8 +809,8 @@ function SimulateAlertModal({ onClose, onSimulate }: {
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", zIndex: 100,
       display: "flex", alignItems: "center", justifyContent: "center" }}>
       <div style={{ background: "#1e293b", border: "1px solid rgba(255,255,255,0.1)",
-        borderRadius: "16px", padding: "28px", width: "560px", maxWidth: "95vw",
-        maxHeight: "90vh", overflowY: "auto" }}>
+        borderRadius: "16px", padding: "28px", width: "660px", maxWidth: "95vw",
+        maxHeight: "92vh", overflowY: "auto" }}>
 
         {/* Header */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
@@ -733,12 +912,12 @@ function SimulateAlertModal({ onClose, onSimulate }: {
             </div>
           </div>
 
-          {/* Result / error */}
+          {/* Dispatch result banner */}
           {result && (
             <div style={{
               background: result.routing_used_fallback ? "rgba(251,146,60,0.08)" : "rgba(34,197,94,0.1)",
               border: `1px solid ${result.routing_used_fallback ? "rgba(251,146,60,0.3)" : "rgba(34,197,94,0.3)"}`,
-              borderRadius: "8px", padding: "12px 16px", marginBottom: "16px",
+              borderRadius: "8px", padding: "12px 16px", marginBottom: "8px",
             }}>
               <div style={{ display: "flex", gap: "8px", alignItems: "flex-start" }}>
                 <CheckCircle size={16} color={result.routing_used_fallback ? "#fb923c" : "#4ade80"}
@@ -746,7 +925,7 @@ function SimulateAlertModal({ onClose, onSimulate }: {
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: "13px", fontWeight: 600,
                     color: result.routing_used_fallback ? "#fb923c" : "#4ade80", marginBottom: "4px" }}>
-                    {result.routing_used_fallback ? "⚠️ No routing rules matched" : "Simulation running!"}
+                    {result.routing_used_fallback ? "⚠️ No routing rules matched" : "✅ Pipeline dispatched — generating brief…"}
                   </div>
                   <div style={{ fontSize: "12px", color: "#94a3b8", lineHeight: 1.5 }}>{result.message}</div>
                   {!result.routing_used_fallback && result.routed_to.length > 0 && (
@@ -766,23 +945,30 @@ function SimulateAlertModal({ onClose, onSimulate }: {
                       <a href="/routing-rules" style={{ color: "#2dd4bf" }}>Routing Rules page</a>.
                     </div>
                   )}
-                  <div style={{ marginTop: "8px" }}>
-                    <Link href="/rrt-briefs" style={{ fontSize: "12px", color: "#2dd4bf", textDecoration: "none",
-                      display: "inline-flex", alignItems: "center", gap: "4px" }}>
-                      <ExternalLink size={11} /> View RRT Briefs →
-                    </Link>
-                  </div>
                 </div>
               </div>
             </div>
           )}
+
+          {/* Polling indicator */}
+          {polling && !brief && (
+            <div style={{ display: "flex", alignItems: "center", gap: "8px",
+              fontSize: "12px", color: "#64748b", padding: "8px 0" }}>
+              <Loader2 size={13} style={{ animation: "spin 1s linear infinite", color: "#14b8a6" }} />
+              Waiting for RRT brief to generate…
+            </div>
+          )}
+
+          {/* Inline brief panel */}
+          {brief && <InlineBriefPanel brief={brief} />}
+
           {err && (
             <div style={{ background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.3)",
               borderRadius: "8px", padding: "12px 16px", marginBottom: "16px",
               fontSize: "13px", color: "#f87171" }}>{err}</div>
           )}
 
-          <div style={{ display: "flex", gap: "12px", justifyContent: "flex-end" }}>
+          <div style={{ display: "flex", gap: "12px", justifyContent: "flex-end", marginTop: "16px" }}>
             <button type="button" onClick={onClose}
               style={{ padding: "10px 20px", borderRadius: "8px",
                 background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)",
