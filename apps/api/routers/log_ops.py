@@ -700,176 +700,278 @@ async def simulate_alert(
             )
         routing_targets = [{"team_name": "Fallback", "slack_webhook": webhook, "email_recipients": []}]
 
-    # ── Auto-seed demo brief for known demo scenarios (no Celery needed) ─────────
-    # When the payment-service demo scenario is triggered, we synchronously write
-    # a fully-populated RRT brief into the DB so the modal can display it
-    # immediately — no manual seed script required before the demo.
-    _DEMO_SERVICE = "payment-service"
-    _DEMO_ERROR   = "paymentError: Stripe API timeout".lower()
-    if (
-        body.service_name.lower() == _DEMO_SERVICE
-        and _DEMO_ERROR in body.error_message.lower()
-    ):
-        try:
-            from datetime import timedelta
-            from ..models.rrt_brief import RRTBrief as _RRTBrief
-            import hashlib as _hl2
+    # ── Auto-seed demo briefs for all known demo scenarios ────────────────────
+    # Detect which scenario this is; build a demo brief and send Slack directly.
+    _svc   = body.service_name.lower()
+    _emsg  = body.error_message.lower()
+    _is_payment = _svc == "payment-service" and "paymentError: Stripe API timeout".lower() in _emsg
+    _is_auth    = _svc == "auth-service"    and "jwt verification failed".lower() in _emsg
+    _is_oom     = _svc == "postgres-primary" and "out of memory" in _emsg
+    _is_webhook = _svc == "webhook-worker"  and "queue" in _emsg and "backlog" in _emsg
 
-            _brief_id = "de1195f3-5fe2-4aed-baf8-32a5002a3527"
-            # Always tag error_group_dict so generate_rrt_brief uses this brief's
-            # rich data regardless of whether we create it now or it already exists.
+    if _is_payment or _is_auth or _is_oom or _is_webhook:
+        try:
+            import httpx as _httpx
+            from datetime import datetime as _dt, timezone as _tz, timedelta
+            from ..models.rrt_brief import RRTBrief as _RRTBrief
+
+            _now     = _dt.now(tz=_tz.utc)
+            _now_str = _now.strftime("%Y-%m-%d %H:%M UTC")
+
+            # ── Per-scenario data ──────────────────────────────────────────────
+            if _is_payment:
+                _brief_id   = "de1195f3-5fe2-4aed-baf8-32a5002a3527"
+                _owner_team = "Payments Team"
+                _jira_key   = "OPS-143"
+                _brief_data = dict(
+                    title="[DEMO] payment-service: PaymentError — Stripe API timeout after 30s, retries exhausted",
+                    what_happened=(
+                        f"The payment-service began throwing PaymentError: Stripe API timeout after 30s at 00:29 UTC. "
+                        f"Retries were exhausted without a successful response from Stripe. "
+                        f"card_id=card_abc123 affected. OpsLens detected {body.error_count} occurrences in 5 min."
+                    ),
+                    impact="All payment processing via the affected Stripe integration is failing. Customers receive checkout errors. Revenue impact: active — every failed transaction is a lost conversion.",
+                    suspected_cause=(
+                        "Most likely: Stripe API degradation — P99 latency elevated beyond 30s timeout threshold. "
+                        "Secondary: PR #312 reduced Stripe client timeout from 60s → 30s two hours before incident — possible regression. "
+                        "Retry logic may also lack exponential backoff."
+                    ),
+                    next_actions=[
+                        "Check Stripe status page: https://status.stripe.com — active API incident?",
+                        "Pull payment-service logs — filter PaymentError + Stripe timeout",
+                        "Review PR #312 (timeout 60s→30s) as regression candidate — consider reverting",
+                        "Test with a fresh card token to isolate token-specific vs systemic failure",
+                        "Check NAT gateway / outbound network metrics for connection exhaustion",
+                        "Confirm retry logic uses exponential backoff with jitter",
+                        "Escalate to Payments Team on-call if not resolved within 15 minutes",
+                    ],
+                    related_items=[
+                        {"source_type": "jira",   "title": "OPS-142: Payment timeouts during peak load — Stripe API degradation", "url": "https://your-jira.atlassian.net/browse/OPS-142", "snippet": "Recurring Stripe API timeouts. Root cause: missing exponential backoff. Fix: jitter + backoff, circuit breaker. Status: In Progress.", "score": 0.94},
+                        {"source_type": "github", "title": "PR #312: Add retry logic for Stripe webhook delivery",               "url": "https://github.com/your-org/payment-service/pull/312",           "snippet": "Merged 2 hours before incident. Changed Stripe client timeout from 60s to 30s. May have introduced the regression.", "score": 0.87},
+                        {"source_type": "slack",  "title": "#payments-alerts — Stripe elevated error rates",                     "url": None,                                                                "snippet": "stripe_bot: ⚠️ Elevated API error rates on /v1/charges. P99 latency: 28s (normal: 800ms). Started 00:24 UTC.", "score": 0.81},
+                    ],
+                    code_frames=[{"file": "payment-service/stripe_client.py", "line": 87, "function": "charge_card", "repo": "your-org/payment-service", "snippet": "    response = stripe.Charge.create(\n        amount=amount_cents,\n        currency='usd',\n        source=card_id,\n        timeout=30,  # ← reduced in PR #312, was 60\n    )", "language": "python"}],
+                    jira_ticket_key="OPS-143",
+                    jira_ticket_url="https://your-jira.atlassian.net/browse/OPS-143",
+                )
+                _slack_related = (
+                    "🎫 *<https://your-jira.atlassian.net/browse/OPS-142|OPS-142: Payment timeouts — Stripe API degradation>*\n  _Missing exponential backoff. Fix: jitter + backoff + circuit breaker._\n"
+                    "🐙 *<https://github.com/your-org/payment-service/pull/312|PR #312: Retry logic — timeout changed 60s→30s>*\n  _Merged 2 hrs before incident. Regression candidate._\n"
+                    "💬 *#payments-alerts — Stripe elevated error rates*\n  _P99 latency: 28s (normal: 800ms). Started 00:24 UTC._"
+                )
+                _slack_next = (
+                    "1. Check https://status.stripe.com — active API incident?\n"
+                    "2. Pull payment-service logs, filter PaymentError + Stripe timeout\n"
+                    "3. Review PR #312 (timeout 60s→30s) — consider reverting\n"
+                    "4. Test with fresh card token to isolate blast radius\n"
+                    "5. Confirm retry logic uses exponential backoff with jitter\n"
+                    "6. Escalate to Payments Team on-call if not resolved in 15 min"
+                )
+
+            elif _is_auth:
+                _brief_id   = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+                _owner_team = "Platform Team"
+                _jira_key   = "AUTH-201"
+                _brief_data = dict(
+                    title="[DEMO] auth-service: InternalServerError — JWT verification failed, DB pool exhausted",
+                    what_happened=(
+                        f"The auth-service began returning 500 Internal Server Error at 02:14 UTC. "
+                        f"JWT verification is failing because the database connection pool (pool_size=20) is exhausted. "
+                        f"OpsLens detected {body.error_count} occurrences in 5 min — all authentication requests are affected."
+                    ),
+                    impact="100% of login and token-refresh requests are failing. Users cannot authenticate. All services that depend on auth-service for token validation are degraded. Session-based features (dashboard, API keys, webhooks) unavailable.",
+                    suspected_cause=(
+                        "The auth-service DB connection pool (pool_size=20) is exhausted. "
+                        "PR #289 introduced a missing `await session.close()` in the token refresh path — connections are being leaked on every refresh call. "
+                        "Under sustained traffic, the pool drains within ~3 minutes."
+                    ),
+                    next_actions=[
+                        "Restart auth-service pods to flush leaked connections (immediate mitigation)",
+                        "Review PR #289 for missing session.close() / context manager misuse",
+                        "Increase pool_size temporarily to 50 to buy time while fix is prepared",
+                        "Add connection pool exhaustion alert: fire at pool_utilization > 80%",
+                        "Deploy hotfix: wrap all DB calls in async with session: context managers",
+                        "Monitor auth-service error rate — should drop to 0 within 60s of restart",
+                        "Escalate to Platform Team on-call if restart does not resolve within 5 min",
+                    ],
+                    related_items=[
+                        {"source_type": "jira",   "title": "AUTH-198: Connection pool exhaustion under load testing",            "url": "https://your-jira.atlassian.net/browse/AUTH-198", "snippet": "Pool exhausted at 200 concurrent users during load test. pool_size=20 insufficient. Recommendation: increase to 50 + add connection leak detection.", "score": 0.92},
+                        {"source_type": "github", "title": "PR #289: Add token refresh endpoint with sliding expiry",            "url": "https://github.com/your-org/auth-service/pull/289",      "snippet": "Merged yesterday. Token refresh path missing async with session context — connections not closed on exception path. Likely regression.", "score": 0.89},
+                        {"source_type": "slack",  "title": "#platform-alerts — auth-service DB pool saturation",                "url": None,                                                       "snippet": "db_monitor: ⚠️ auth-service connection pool at 100% utilization. New connections queuing. Started 02:11 UTC.", "score": 0.84},
+                    ],
+                    code_frames=[{"file": "auth-service/token_refresh.py", "line": 54, "function": "refresh_token", "repo": "your-org/auth-service", "snippet": "    db = AsyncSession()       # ← session opened\n    user = await db.get(User, user_id)\n    token = _generate_token(user)\n    return token              # ← session never closed!", "language": "python"}],
+                    jira_ticket_key="AUTH-201",
+                    jira_ticket_url="https://your-jira.atlassian.net/browse/AUTH-201",
+                )
+                _slack_related = (
+                    "🎫 *<https://your-jira.atlassian.net/browse/AUTH-198|AUTH-198: Connection pool exhaustion under load>*\n  _pool_size=20 insufficient. Recommendation: increase to 50 + leak detection._\n"
+                    "🐙 *<https://github.com/your-org/auth-service/pull/289|PR #289: Token refresh endpoint — missing session.close()>*\n  _Merged yesterday. Connection leak on exception path. Regression._\n"
+                    "💬 *#platform-alerts — auth-service DB pool at 100%*\n  _db_monitor: ⚠️ New connections queuing. Started 02:11 UTC._"
+                )
+                _slack_next = (
+                    "1. Restart auth-service pods to flush leaked connections immediately\n"
+                    "2. Review PR #289 for missing async with session context manager\n"
+                    "3. Increase pool_size temporarily to 50 while hotfix is prepared\n"
+                    "4. Add pool_utilization > 80% alert to prevent recurrence\n"
+                    "5. Deploy hotfix: wrap all DB calls in async with session:\n"
+                    "6. Escalate to Platform Team on-call if restart fails in 5 min"
+                )
+
+            elif _is_oom:
+                _brief_id   = "b2c3d4e5-f6a7-8901-bcde-f12345678901"
+                _owner_team = "Infrastructure Team"
+                _jira_key   = "INFRA-89"
+                _brief_data = dict(
+                    title="[DEMO] postgres-primary: OOM — shared_buffers exceeded, query killed",
+                    what_happened=(
+                        f"The Linux OOM killer terminated the postgres process on postgres-primary at 03:47 UTC. "
+                        f"shared_buffers were exhausted by a runaway query performing a full table scan on the orders table. "
+                        f"OpsLens detected {body.error_count} fatal errors — the primary DB replica is unavailable."
+                    ),
+                    impact="postgres-primary is down. All write operations across all services are failing. Read replicas are still serving reads but are lagging. Estimated blast radius: 100% of write-path API endpoints (orders, payments, user updates) returning 500s.",
+                    suspected_cause=(
+                        "A missing index on orders.created_at triggered a sequential scan across 47M rows. "
+                        "PR #401 added a new analytics query (SELECT * FROM orders WHERE created_at > ...) without an index. "
+                        "Under production load, the query consumed all available shared_buffers (8GB) causing OOM."
+                    ),
+                    next_actions=[
+                        "Failover to read replica immediately — promote replica to primary",
+                        "Identify and kill the runaway query: SELECT pid, query FROM pg_stat_activity WHERE state='active'",
+                        "Add missing index: CREATE INDEX CONCURRENTLY idx_orders_created_at ON orders(created_at)",
+                        "Review PR #401 — analytics query needs EXPLAIN ANALYZE before merging",
+                        "Increase shared_buffers limit or add pg_bouncer connection pooling",
+                        "Add slow query alert: fire when any query exceeds 30s execution time",
+                        "Post-incident: implement query review checklist for migrations touching large tables",
+                    ],
+                    related_items=[
+                        {"source_type": "jira",   "title": "INFRA-85: PostgreSQL memory pressure during analytics jobs",    "url": "https://your-jira.atlassian.net/browse/INFRA-85", "snippet": "Recurring memory pressure when analytics jobs run against production. Recommendation: dedicated read replica for analytics + query timeout limits.", "score": 0.91},
+                        {"source_type": "github", "title": "PR #401: Add orders analytics dashboard queries",               "url": "https://github.com/your-org/backend/pull/401",      "snippet": "Merged 4 hours before incident. Added SELECT * FROM orders WHERE created_at > ... without index on created_at. Full table scan on 47M rows.", "score": 0.93},
+                        {"source_type": "slack",  "title": "#infra-alerts — postgres-primary memory warning",              "url": None,                                                "snippet": "pg_monitor: ⚠️ shared_buffers at 94% utilization. Active query count: 47. Largest query: 12GB memory. Started 03:41 UTC.", "score": 0.88},
+                    ],
+                    code_frames=[{"file": "backend/analytics/orders_query.py", "line": 23, "function": "get_orders_report", "repo": "your-org/backend", "snippet": "    # PR #401 — missing index on created_at!\n    result = await db.execute(\n        select(Order).where(\n            Order.created_at > start_date  # full table scan — 47M rows\n        )\n    )", "language": "python"}],
+                    jira_ticket_key="INFRA-89",
+                    jira_ticket_url="https://your-jira.atlassian.net/browse/INFRA-89",
+                )
+                _slack_related = (
+                    "🎫 *<https://your-jira.atlassian.net/browse/INFRA-85|INFRA-85: PostgreSQL memory pressure — analytics jobs>*\n  _Recommendation: dedicated read replica for analytics + query timeouts._\n"
+                    "🐙 *<https://github.com/your-org/backend/pull/401|PR #401: Orders analytics — missing index on created_at>*\n  _Full table scan on 47M rows. Merged 4 hours before incident._\n"
+                    "💬 *#infra-alerts — postgres-primary memory warning*\n  _pg_monitor: ⚠️ shared_buffers at 94%. Active queries: 47. Started 03:41 UTC._"
+                )
+                _slack_next = (
+                    "1. Failover to read replica — promote to primary immediately\n"
+                    "2. Kill runaway query: SELECT pid, query FROM pg_stat_activity WHERE state='active'\n"
+                    "3. CREATE INDEX CONCURRENTLY idx_orders_created_at ON orders(created_at)\n"
+                    "4. Review PR #401 — EXPLAIN ANALYZE required before merge\n"
+                    "5. Add slow query alert: fire at >30s execution time\n"
+                    "6. Escalate to Infrastructure Team on-call now"
+                )
+
+            else:  # _is_webhook
+                _brief_id   = "c3d4e5f6-a7b8-9012-cdef-123456789012"
+                _owner_team = "Platform Team"
+                _jira_key   = "OPS-178"
+                _brief_data = dict(
+                    title="[DEMO] webhook-worker: QueueBacklogError — delivery queue depth > 10,000, consumers stalled",
+                    what_happened=(
+                        f"The webhook-worker queue depth exceeded 10,000 messages at 01:52 UTC and consumers stalled. "
+                        f"New webhook events are enqueuing but not being processed. "
+                        f"OpsLens detected {body.error_count} backpressure errors — downstream integrations (Slack, PagerDuty, HubSpot) are not receiving events."
+                    ),
+                    impact="All outbound webhook deliveries are stalled. Slack notifications, PagerDuty alerts, HubSpot CRM updates, and customer-facing webhook subscriptions are delayed or lost. Events older than the retention window (24h) will be permanently dropped.",
+                    suspected_cause=(
+                        "The primary consumer is deadlocked waiting on a database lock held by a long-running analytics transaction. "
+                        "PR #356 introduced a webhook delivery retry loop that does not release DB locks between retries, "
+                        "causing cascading lock contention under high retry volume."
+                    ),
+                    next_actions=[
+                        "Restart webhook-worker consumers to break the deadlock immediately",
+                        "Identify blocking transaction: SELECT * FROM pg_locks JOIN pg_stat_activity USING (pid) WHERE NOT granted",
+                        "Review PR #356 — retry loop must release locks between attempts",
+                        "Scale webhook-worker horizontally (add 2 consumer replicas) to clear backlog faster",
+                        "Set queue depth alert: fire when depth > 1,000 (current threshold too high at 10,000)",
+                        "Audit events >2h old — notify affected customers of delivery delay",
+                        "Escalate to Platform Team on-call if queue not draining within 10 min after restart",
+                    ],
+                    related_items=[
+                        {"source_type": "jira",   "title": "OPS-171: Webhook queue backup during high retry volume",        "url": "https://your-jira.atlassian.net/browse/OPS-171", "snippet": "Queue backs up when retry volume exceeds 500/min. Root cause: consumers not scaled to match retry burst. Fix: autoscale consumers + dead-letter queue.", "score": 0.90},
+                        {"source_type": "github", "title": "PR #356: Add webhook delivery retry with exponential backoff",  "url": "https://github.com/your-org/webhook-worker/pull/356", "snippet": "Merged 6 hours before incident. Retry loop holds DB lock across retries — causes lock contention under high retry volume. Regression.", "score": 0.88},
+                        {"source_type": "slack",  "title": "#platform-alerts — webhook queue depth warning",               "url": None,                                                  "snippet": "queue_monitor: ⚠️ webhook_delivery queue depth: 8,432 and rising. Consumer throughput: 0 msg/s. Started 01:48 UTC.", "score": 0.85},
+                    ],
+                    code_frames=[{"file": "webhook-worker/delivery.py", "line": 112, "function": "deliver_with_retry", "repo": "your-org/webhook-worker", "snippet": "    for attempt in range(MAX_RETRIES):\n        with db.begin():          # ← lock held across all retries!\n            event = db.get(WebhookEvent, event_id)\n            result = _send(event)\n            if result.ok: break   # lock released only on success", "language": "python"}],
+                    jira_ticket_key="OPS-178",
+                    jira_ticket_url="https://your-jira.atlassian.net/browse/OPS-178",
+                )
+                _slack_related = (
+                    "🎫 *<https://your-jira.atlassian.net/browse/OPS-171|OPS-171: Webhook queue backup — high retry volume>*\n  _Fix: autoscale consumers + dead-letter queue._\n"
+                    "🐙 *<https://github.com/your-org/webhook-worker/pull/356|PR #356: Retry with backoff — DB lock held across retries>*\n  _Lock contention under high retry volume. Merged 6h before incident._\n"
+                    "💬 *#platform-alerts — webhook queue depth warning*\n  _queue_monitor: ⚠️ depth 8,432 and rising. Consumer throughput: 0 msg/s. 01:48 UTC._"
+                )
+                _slack_next = (
+                    "1. Restart webhook-worker consumers to break the deadlock\n"
+                    "2. Identify blocking transaction via pg_locks + pg_stat_activity\n"
+                    "3. Review PR #356 — release locks between retry attempts\n"
+                    "4. Scale consumer replicas to 3 to clear backlog faster\n"
+                    "5. Lower queue depth alert threshold from 10,000 → 1,000\n"
+                    "6. Audit events >2h old — notify affected customers\n"
+                    "7. Escalate to Platform Team on-call if queue not draining in 10 min"
+                )
+
+            # ── Upsert brief into DB ───────────────────────────────────────────
             error_group_dict["seeded_brief_id"] = _brief_id
-            # Also tell generate_rrt_brief to skip its own Slack send (we do it here)
-            error_group_dict["skip_slack"] = True
+            error_group_dict["skip_slack"]      = True
+
             _existing_row = await db.execute(
                 sa.select(_RRTBrief).where(
                     _RRTBrief.tenant_id == ctx.tenant_id,
                     _RRTBrief.id == _brief_id,
                 )
             )
-            _existing = _existing_row.scalar_one_or_none()
-            if not _existing:
-                from datetime import datetime as _dt, timezone as _tz
-                _now = _dt.now(tz=_tz.utc)
-                _brief = _RRTBrief(
+            if not _existing_row.scalar_one_or_none():
+                db.add(_RRTBrief(
                     id=_brief_id,
                     tenant_id=ctx.tenant_id,
-                    title="[DEMO] payment-service: PaymentError — Stripe API timeout after 30s, retries exhausted",
-                    what_happened=(
-                        "The payment-service began throwing PaymentError: Stripe API timeout after 30s "
-                        "at 00:29 UTC. Retries were exhausted without a successful response from Stripe. "
-                        "The affected card token was card_id=card_abc123. "
-                        f"OpsLens detected {body.error_count} occurrences within a 5-minute window and triggered this brief automatically."
-                    ),
-                    impact=(
-                        "All payment processing requests routed through the affected Stripe integration are failing. "
-                        "Customers attempting checkout are receiving payment failure errors. "
-                        "Revenue impact: active — every failed transaction is a lost conversion."
-                    ),
                     started_at=_now - timedelta(minutes=6),
                     detected_at=_now,
-                    suspected_cause=(
-                        "Most likely: Stripe API degradation — P99 latency elevated beyond 30s timeout threshold. "
-                        "Secondary: PR #312 reduced Stripe client timeout from 60s → 30s two hours before incident — "
-                        "possible regression. Check Stripe status page and consider reverting timeout change as immediate mitigation. "
-                        "Retry logic may also lack exponential backoff — 47 occurrences in 5 min suggests tight retry intervals."
-                    ),
-                    next_actions=[
-                        "Check Stripe status page: https://status.stripe.com — active API incident?",
-                        "Pull payment-service logs — filter PaymentError + Stripe timeout, inspect full stack trace",
-                        "Review recent deployments to payment-service in the last 2 hours (PR #312 changed timeout 60s→30s)",
-                        "Test with a fresh card token to rule out token-specific vs systemic failure",
-                        "Check NAT gateway / outbound network metrics for connection exhaustion",
-                        "Confirm retry logic uses exponential backoff with jitter",
-                        "Escalate to Payments Team on-call if not resolved within 15 minutes",
-                    ],
-                    related_items=[
-                        {
-                            "source_type": "jira",
-                            "title": "OPS-142: Payment timeouts during peak load — Stripe API degradation",
-                            "url": "https://your-jira.atlassian.net/browse/OPS-142",
-                            "snippet": (
-                                "Recurring Stripe API timeouts observed during peak traffic. "
-                                "Root cause: missing exponential backoff in payment-service retry logic. "
-                                "Fix: jitter + backoff, increase timeout to 60s with circuit breaker. "
-                                "Status: In Progress. Assigned: Payments Team."
-                            ),
-                            "score": 0.94,
-                        },
-                        {
-                            "source_type": "github",
-                            "title": "PR #312: Add retry logic for Stripe webhook delivery",
-                            "url": "https://github.com/your-org/payment-service/pull/312",
-                            "snippet": (
-                                "Merged 2 hours before incident. Changed Stripe client timeout from 60s to 30s. "
-                                "May have introduced the regression — consider reverting as immediate mitigation."
-                            ),
-                            "score": 0.87,
-                        },
-                        {
-                            "source_type": "slack",
-                            "title": "#payments-alerts — Stripe elevated error rates",
-                            "url": None,
-                            "snippet": (
-                                "stripe_bot: ⚠️ Elevated API error rates on /v1/charges. "
-                                "P99 latency: 28s (normal: 800ms). Started 00:24 UTC. Investigating."
-                            ),
-                            "score": 0.81,
-                        },
-                    ],
-                    owner_team="Payments Team",
-                    owner_contacts=["payments-oncall@yourcompany.com"],
+                    owner_team=_owner_team,
+                    owner_contacts=[],
                     status="open",
                     error_signature=signature,
-                    error_sample="\n".join(error_group_dict["sample_lines"]),
-                    code_frames=[
-                        {
-                            "file": "payment-service/stripe_client.py",
-                            "line": 87,
-                            "function": "charge_card",
-                            "repo": "your-org/payment-service",
-                            "snippet": (
-                                "    response = stripe.Charge.create(\n"
-                                "        amount=amount_cents,\n"
-                                "        currency='usd',\n"
-                                "        source=card_id,\n"
-                                "        timeout=30,  # ← reduced in PR #312, was 60\n"
-                                "    )"
-                            ),
-                            "language": "python",
-                            "last_commit_sha": "a3f9d12",
-                            "last_commit_msg": "Add retry logic for Stripe webhook delivery",
-                            "last_commit_author": "dev-seed",
-                            "last_commit_url": "https://github.com/your-org/payment-service/commit/a3f9d12",
-                            "github_url": "https://github.com/your-org/payment-service/blob/main/stripe_client.py#L87",
-                        },
-                    ],
-                    jira_ticket_key="OPS-143",
-                    jira_ticket_url="https://your-jira.atlassian.net/browse/OPS-143",
-                    channels_sent=["#payments-alerts", "#incidents"],
-                )
-                db.add(_brief)
+                    error_sample="\n".join(error_group_dict.get("sample_lines", [])[:10]),
+                    channels_sent=["#incidents"],
+                    **_brief_data,
+                ))
                 await db.commit()
-                logger.info("Auto-seeded demo RRT brief for tenant=%s sig=%s", ctx.tenant_id, signature)
-                _existing = _brief  # use the just-created brief object
+                logger.info("Auto-seeded demo RRT brief %s for tenant=%s", _brief_id[:8], ctx.tenant_id)
 
-            # ── Send Slack directly from API (bypass Celery for demo) ──────────
-            # Self-contained: hardcoded rich payload, single httpx POST.
-            # No ORM attribute access, no shared modules, cannot silently fail.
-            try:
-                import httpx as _httpx
-                _now_str = __import__("datetime").datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
-                _demo_payload = {
-                    "text": "🔴 [OPEN] Incident Brief — [DEMO] payment-service: PaymentError — Stripe API timeout",
-                    "blocks": [
-                        {"type": "header", "text": {"type": "plain_text", "text": "🔴 [OPEN] Incident Brief — [DEMO] payment-service: PaymentError — Stripe API timeout after 30s"}},
-                        {"type": "context", "elements": [{"type": "mrkdwn", "text": f"Detected *{_now_str}*  •  Occurred *{body.error_count}x* in last 5 min  •  Owner: *Payments Team*  •  Brief ID: `de1195f3`"}]},
-                        {"type": "divider"},
-                        {"type": "section", "fields": [
-                            {"type": "mrkdwn", "text": "*📋 What Happened*\nThe payment-service began throwing PaymentError: Stripe API timeout after 30s at 00:29 UTC. Retries were exhausted without a successful response from Stripe. The affected card token was card_id=card_abc123. OpsLens detected multiple occurrences within a 5-minute window."},
-                            {"type": "mrkdwn", "text": f"*⚡ Impact*\nAll payment processing requests routed through the affected Stripe integration are failing. Customers attempting checkout are receiving payment failure errors. Revenue impact: active — every failed transaction is a lost conversion."},
-                        ]},
-                        {"type": "divider"},
-                        {"type": "section", "text": {"type": "mrkdwn", "text": "*🔍 Suspected Cause*\nMost likely: Stripe API degradation — P99 latency elevated beyond 30s timeout threshold. Secondary: PR #312 reduced Stripe client timeout from 60s → 30s two hours before incident — possible regression. Check Stripe status page and consider reverting timeout change as immediate mitigation."}},
-                        {"type": "divider"},
-                        {"type": "section", "text": {"type": "mrkdwn", "text": "*📎 Related Context*\n🎫 *<https://your-jira.atlassian.net/browse/OPS-142|OPS-142: Payment timeouts during peak load — Stripe API degradation>*\n  _Recurring Stripe API timeouts observed during peak traffic. Fix: jitter + backoff, increase timeout to 60s with circuit breaker._\n🐙 *<https://github.com/your-org/payment-service/pull/312|PR #312: Add retry logic for Stripe webhook delivery>*\n  _Merged 2 hours before incident. Changed Stripe client timeout from 60s to 30s. May have introduced the regression._\n💬 *#payments-alerts — Stripe elevated error rates*\n  _stripe_bot: ⚠️ Elevated API error rates on /v1/charges. P99 latency: 28s (normal: 800ms). Started 00:24 UTC._"}},
-                        {"type": "divider"},
-                        {"type": "section", "text": {"type": "mrkdwn", "text": "*✅ Next Actions*\n1. Check Stripe status page: https://status.stripe.com — active API incident?\n2. Pull payment-service logs — filter PaymentError + Stripe timeout, inspect full stack trace\n3. Review recent deployments to payment-service in the last 2 hours (PR #312 changed timeout 60s→30s)\n4. Test with a fresh card token to rule out token-specific vs systemic failure\n5. Check NAT gateway / outbound network metrics for connection exhaustion\n6. Confirm retry logic uses exponential backoff with jitter\n7. Escalate to Payments Team on-call if not resolved within 15 minutes"}},
-                        {"type": "divider"},
-                        {"type": "section", "text": {"type": "mrkdwn", "text": f"🎫 Jira ticket: *<https://your-jira.atlassian.net/browse/OPS-143|OPS-143>*  •  <https://opslens.ai/incidents/{_brief_id}|View full brief>"}},
-                    ],
-                }
-                _resp = _httpx.post(webhook, json=_demo_payload, timeout=10)
-                if _resp.status_code == 200:
-                    logger.info("Demo Slack brief sent directly from API for tenant=%s", ctx.tenant_id)
-                else:
-                    logger.warning("Demo Slack POST returned %s: %s", _resp.status_code, _resp.text[:200])
-            except Exception as _slack_exc:
-                logger.exception("Demo direct Slack send failed (non-fatal): %s", _slack_exc)
+            # ── Send Slack directly (no Celery — hardcoded payload, zero deps) ─
+            _demo_payload = {
+                "text": f"🔴 [OPEN] Incident Brief — {_brief_data['title']}",
+                "blocks": [
+                    {"type": "header",  "text": {"type": "plain_text", "text": f"🔴 [OPEN] Incident Brief — {_brief_data['title'][:90]}"}},
+                    {"type": "context", "elements": [{"type": "mrkdwn", "text": f"Detected *{_now_str}*  •  Occurred *{body.error_count}x* in last 5 min  •  Owner: *{_owner_team}*  •  Jira: *{_jira_key}*"}]},
+                    {"type": "divider"},
+                    {"type": "section", "fields": [
+                        {"type": "mrkdwn", "text": f"*📋 What Happened*\n{_brief_data['what_happened']}"},
+                        {"type": "mrkdwn", "text": f"*⚡ Impact*\n{_brief_data['impact']}"},
+                    ]},
+                    {"type": "divider"},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": f"*🔍 Suspected Cause*\n{_brief_data['suspected_cause']}"}},
+                    {"type": "divider"},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": f"*📎 Related Context*\n{_slack_related}"}},
+                    {"type": "divider"},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": f"*✅ Next Actions*\n{_slack_next}"}},
+                    {"type": "divider"},
+                    {"type": "section", "text": {"type": "mrkdwn", "text": f"🎫 Jira: *<{_brief_data['jira_ticket_url']}|{_jira_key}>*  •  View brief: `{_brief_id[:8]}`"}},
+                ],
+            }
+            _resp = _httpx.post(webhook, json=_demo_payload, timeout=10)
+            if _resp.status_code == 200:
+                logger.info("Demo Slack brief sent for scenario=%s tenant=%s", _brief_id[:8], ctx.tenant_id)
+            else:
+                logger.warning("Demo Slack POST returned %s: %s", _resp.status_code, _resp.text[:200])
 
         except Exception as _seed_exc:
-            # Never block the simulation if seeding fails
-            logger.exception("Demo brief auto-seed failed (non-fatal): %s", _seed_exc)
+            logger.exception("Demo brief seed/notify failed (non-fatal): %s", _seed_exc)
 
     # ── Dispatch async pipeline ───────────────────────────────────────────────
     enrich_task_id = None
